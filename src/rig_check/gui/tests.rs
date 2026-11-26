@@ -222,9 +222,9 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                         "Back on Spank 1",
                     ],
                     StepId(6, 1) => &[
-                        "reported the guitar disconnected",
-                        "reported the guitar connected again",
-                        "firmware 3.10",
+                        "Disconnect detected",
+                        "reported that the guitar reconnected",
+                        "VDI restored. The guitar's identity matches step 3.1 (firmware 3.10).",
                     ],
                     StepId(6, 2) => &[
                         "the PODxt Live tone is the starting tone",

@@ -36,6 +36,10 @@ pub struct Faults {
     pub change_uploaded_words_once: bool,
     /// The Variax never answers (VDI unplugged from the start).
     pub variax_silent: bool,
+    /// Cable changes affect identity replies but no connection notices arrive.
+    pub suppress_vdi_notices: bool,
+    #[cfg(test)]
+    pub fail_variax_read: bool,
     /// The Variax store is not confirmed with `0x71`.
     pub silent_variax_store: bool,
     /// The PODxt store is not confirmed.
@@ -636,40 +640,40 @@ impl SimRig {
         } else {
             &mut self.variax_out
         };
-        match queue.front() {
-            Some(head) if head.at <= self.clock + wait => {
-                let head = queue.pop_front().expect("front exists");
-                self.clock = self.clock.max(head.at);
-                match (podxt, head.packet.as_slice()) {
-                    (true, [0xc0, index]) => {
-                        self.podxt.playing = self.podxt.stored[usize::from(*index)];
-                        self.podxt.channel = Some(u16::from(*index));
-                    }
-                    (true, [0xb0, cc, value])
-                        if super::guided::PODXT_KNOBS
-                            .iter()
-                            .any(|(knob, _)| knob == cc) =>
-                    {
-                        self.podxt.playing[32 + usize::from(*cc)] = *value;
-                    }
-                    (false, [0xc0, program]) => {
-                        if let Some(preset) = preset_for_program_number(*program) {
-                            self.variax.active = self.variax.stored[flash_index(preset)];
-                            self.variax.selected = Some(preset);
-                        }
-                    }
-                    (false, [0xf0, 0, 1, 0xc, 3, 0x11, _, _, _, state, 0xf7]) => {
-                        self.variax.connected = *state != 0;
-                    }
-                    _ => {}
+        let deadline = self.clock + wait;
+        while queue.front().is_some_and(|head| head.at <= deadline) {
+            let head = queue.pop_front().expect("front exists");
+            self.clock = self.clock.max(head.at);
+            match (podxt, head.packet.as_slice()) {
+                (true, [0xc0, index]) => {
+                    self.podxt.playing = self.podxt.stored[usize::from(*index)];
+                    self.podxt.channel = Some(u16::from(*index));
                 }
-                Some(head.packet)
+                (true, [0xb0, cc, value])
+                    if super::guided::PODXT_KNOBS
+                        .iter()
+                        .any(|(knob, _)| knob == cc) =>
+                {
+                    self.podxt.playing[32 + usize::from(*cc)] = *value;
+                }
+                (false, [0xc0, program]) => {
+                    if let Some(preset) = preset_for_program_number(*program) {
+                        self.variax.active = self.variax.stored[flash_index(preset)];
+                        self.variax.selected = Some(preset);
+                    }
+                }
+                (false, [0xf0, 0, 1, 0xc, 3, 0x11, _, _, _, state, 0xf7]) => {
+                    self.variax.connected = *state != 0;
+                    if self.faults.suppress_vdi_notices {
+                        continue;
+                    }
+                }
+                _ => {}
             }
-            _ => {
-                self.clock += wait;
-                None
-            }
+            return Some(head.packet);
         }
+        self.clock = deadline;
+        None
     }
 }
 
@@ -722,7 +726,12 @@ impl Link for SimLink {
     }
 
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.rig.borrow_mut().read(self.podxt, wait))
+        let mut rig = self.rig.borrow_mut();
+        #[cfg(test)]
+        if !self.podxt && rig.faults.fail_variax_read {
+            return Err("Simulated Variax transport read failed.".into());
+        }
+        Ok(rig.read(self.podxt, wait))
     }
 
     fn elapsed(&self) -> Duration {

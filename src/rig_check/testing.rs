@@ -5,6 +5,8 @@ use super::record::{Mode, Outcome, StepRecord};
 use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
 use std::cell::Cell;
 
+type GuidanceObserver = Box<dyn FnMut(StepId, &str)>;
+
 /// Answers every card with `default`, except listed steps.
 pub struct Script {
     pub accept: bool,
@@ -20,6 +22,8 @@ pub struct Script {
     pub on_card: Option<Box<dyn FnMut(StepId)>>,
     pub on_prepare: Option<Box<dyn FnMut(StepId)>>,
     pub on_missed: Option<Box<dyn FnMut(StepId)>>,
+    pub on_guidance: Option<GuidanceObserver>,
+    pub stop_when: Option<Box<dyn Fn() -> bool>>,
     pub answer: Answer,
     pub cards: Vec<StepId>,
     pub card_notes: Vec<(StepId, String)>,
@@ -58,6 +62,8 @@ impl Script {
             on_card: None,
             on_prepare: None,
             on_missed: None,
+            on_guidance: None,
+            stop_when: None,
             answer: Answer::Yes,
             cards: Vec::new(),
             card_notes: Vec::new(),
@@ -130,6 +136,9 @@ impl Operator for Script {
     }
 
     fn instruct(&mut self, step: StepId, see: &str, hear: &str) {
+        if let Some(callback) = &mut self.on_guidance {
+            callback(step, see);
+        }
         self.instructions
             .push((step, format!("SEE {see} HEAR {hear}")));
     }
@@ -145,7 +154,10 @@ impl Operator for Script {
         self.retry_choices.pop_front().unwrap_or(self.retry)
     }
 
-    fn prepare_action(&mut self, step: StepId, _: &str, _: &str) -> Decision {
+    fn prepare_action(&mut self, step: StepId, see: &str, _: &str) -> Decision {
+        if let Some(callback) = &mut self.on_guidance {
+            callback(step, see);
+        }
         if let Some(callback) = &mut self.on_prepare {
             callback(step);
         }
@@ -168,6 +180,9 @@ impl Operator for Script {
 
     fn progress(&mut self, progress: Progress) {
         if let Some(step) = self.current.get() {
+            if let Some(callback) = &mut self.on_guidance {
+                callback(step, &progress.action);
+            }
             self.progress.push((step, progress));
         }
     }
@@ -192,7 +207,8 @@ impl Operator for Script {
     }
 
     fn stop_requested(&self) -> bool {
-        self.stop_during.is_some() && self.current.get() == self.stop_during
+        (self.stop_during.is_some() && self.current.get() == self.stop_during)
+            || self.stop_when.as_ref().is_some_and(|stop| stop())
     }
 }
 
