@@ -208,8 +208,15 @@ of this app.
 | Region | Size | Contents |
 | --- | --- | --- |
 | Header | about 80, taller when the metadata row needs it | Bank, preset slots 1–5, model, author, notes, Undo, Redo, Unsaved |
-| Middle | remaining | Guitar body, large, and the inspector |
-| Bottom | 300 | One alternate-tuning panel: table on the left, semitone neck on the right |
+| Body | fitted art, one scale | Guitar photo and pickup sprites. The well is the fitted art, not half the page. |
+| Inspector | leftover width | Body type, Pickups, and Controls |
+| Tuning | at most table + frame + a 420-point neck | String table and semitone neck. An unavailable 12-string column is omitted. |
+
+At the default 1120×760 window the body keeps at least 0.75 scale and, when
+the model has no twelve-string section, uses the full workspace height. The
+tuning band then sits in the right column instead of stretching across the
+page. The shared rects are [`editor_layout::editor_regions`](../../src/shared/ui/editor_layout.rs).
+The family editor applies them after #289.
 
 The wood header, the body well, the brushed-metal inspector, and the tuning
 panel are CSS. The photos on this page are the Spank body and the Spank
