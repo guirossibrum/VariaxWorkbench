@@ -1,6 +1,7 @@
 //! Inactive capture lifecycle for a platform-supplied ALSA PCM.
 //!
-//! There is no native platform implementation or production initializer.
+//! The optional native platform module adopts an explicitly supplied PCM.
+//! The application has no production initializer for it.
 
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -12,6 +13,9 @@ use crate::recording::capture::{
 use crate::rig::{ProductProfile, audio};
 
 use super::{AlsaAdapterError, AlsaNegotiatedPcm, AlsaPodxtCaptureAdapter};
+
+#[cfg(feature = "linux-alsa-native")]
+pub mod native;
 
 /// Evidence for the same attachment and hardware PCM that will supply audio.
 /// The platform must obtain this independently of the recorder plan and PCM

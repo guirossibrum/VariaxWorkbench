@@ -114,22 +114,19 @@ pending recovery events. An overrun or suspend ends capture without
 recovery, retries or a guessed lost-frame count. Cleanup errors are
 retained separately from the reason capture stopped.
 
-The platform boundary is exercised with fake ALSA only. A concrete libasound
-implementation, open/configure path and production connection remain
-pending. The source-backed declaration
-and period limits are in [POD USB audio](pod-usb-audio.md). The dedicated
-[#145](https://github.com/guirossibrum/VariaxWorkbench/issues/145) contract
-is still open. The recorded module evidence is for
-`7.2.15-1-omarchy`. The assignment host reports `7.2.15-4-omarchy`.
-The latter build's correspondence to the pinned source and module evidence
-is unverified. The contract must document the effects of open, hw_params,
-prepare, start and cleanup, including any USB interface, altsetting or rate
-request. The existing source notes identify altsetting 1 at probe. The PCM
-open and start effects still need their own source trace. The exact request that negotiates the
-rational clock through stock ALSA, runtime channel order, and how to prove
-the physical Record Send mapping for the selected PCM remain unresolved.
-The owner procedure and approval for in-app live acceptance stay in
-[#128](https://github.com/guirossibrum/VariaxWorkbench/issues/128).
+The optional Linux adapter connects this lifecycle to libasound 1.2.16.1's
+PCM ABI. It takes ownership of a prepared PCM, checks the independently
+supplied evidence against the same handle's raw capture address and state,
+and queries its current hardware parameters. It reads at most one period per
+call in nonblocking mode. Native calls are covered by injected fakes. The
+public handoff requires a capture authorization with no issuer in the current
+build. The application initializer stays disconnected.
+
+The [#145 source contract](hardware-gates/g4-contract.md) records the
+installed module checks and the open, configure, prepare, start and cleanup
+effects. The exact ALSA request and independent physical route observer
+remain open. The owner procedure and approval for in-app live acceptance
+stay in [#128](https://github.com/guirossibrum/VariaxWorkbench/issues/128).
 
 ### DAW route and in-app recording
 
@@ -221,7 +218,7 @@ counts for criterion 2; it does not imply an adapter or live capability.
 | Criterion | Current implementation or evidence | Status and remaining dependency |
 | --- | --- | --- |
 | 1. Integrate recorder behavior with the common capture API | `ValidatedPlan` and `CaptureSession` own software-file and synthetic Panel sessions; `Take` remains the shared storage/save implementation. The Panel's simulated-callback choice writes generated interleaved S16 into Rust-owned fake halves, submits explicit software notifications to the same `CaptureSession`, and drains into the same `Take`; there is no second queue or Take. An atomic backpressure rejection retains the Panel cursor and permits retrying the same frames; tests verify accepted data and saved WAV chronology. Workflow tests cover both integer clocks, cancellation/restart, exact PCM/WAV payloads, save collision/failure/success, and re-open parsing. | Partial. This adds a portable software workflow only; complete platform/source-planning operations remain outstanding. |
-| 2. Establish each platform adapter contract or record a bounded blocker | Linux ALSA translation is source-qualified. An inactive PCM lifecycle passes fake-boundary tests. Windows has the version-pinned ASIO static trace and a Rust-owned offline double-buffer/notification model; the latter tests selector response `1` selection without defining native ABI. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Partial. Linux still needs a concrete libasound platform implementation and the #145 setup and route evidence. Windows still lacks the versioned native ABI, physical source channel/rate contract, and interface admission; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
+| 2. Establish each platform adapter contract or record a bounded blocker | Linux has an inactive prepared-handle libasound adapter and fake native-boundary tests. Windows has the version-pinned ASIO static trace and a Rust-owned offline double-buffer/notification model; the latter tests selector response `1` selection without defining native ABI. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Partial. Linux still needs a reviewed acquisition procedure, exact negotiation and physical route evidence. Windows still lacks the versioned native ABI, physical source channel/rate contract, and interface admission; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
 | 3. Admit source records and negotiated format/clock provenance | The frozen registry admits one static Linux PODxt Live declaration. External records remain absent; Windows and macOS facts do not provide an admitted plan or runtime negotiation. | Partial. Requires independently sourced identity/revision, channel map, format, rational clock, backend, and provenance for each additional source. |
 | 4. Preserve bounded queue, chronology, error, recovery, and lifecycle behavior | `CaptureSession` uses bounded chronological audio/dropout events, owner-thread drain, generation checks, terminal errors, recovery events, and stop/cancel ownership. The offline ASIO-style model interleaves borrowed source-order channel buffers, applies the channel map once in `CaptureSession`, and atomically stages only the bounded clock tracker and current chunk. Adapter lifecycle/delivery operations are bound to the exact external session identity and original owner; matching-plan replacement sessions are rejected before state changes. Tests cover bounded staging independent of Take length, malformed foreign-thread notifications, same-thread alternate sessions, fresh foreign-thread sessions, repeated lifecycle, cancel/disconnect/dispose, fresh generations, and late callbacks. | Partial. The offline software tests do not verify native callback ownership, physical stream recovery, or device timing. |
 | 5. Use common controls for admitted native/external plans | Panel offers route, clock, input, and shared start/feed/stop/cancel/save controls; its Linux PODxt test option revalidates the static declaration and routes generated S24 PCM through the ALSA read-result translator and common session. The source-neutral simulated-callback choice is available for 44.1/48 kHz software clocks and uses the common Panel session, Take, and save path. External-plan checks report missing admission fields. | Partial. Both generated-data paths verify offline planning/adapter translation and common Panel lifecycle, but neither negotiates or captures a native stream. An external plan still requires an independently admitted interface record; it cannot be inferred from PODxt, WAV, or synthetic metadata. |

@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Offline test recorder for synthetic and file-backed audio.
 //!
 //! This is not device capture. Nothing here opens ALSA, PipeWire, PulseAudio,

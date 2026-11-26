@@ -3,8 +3,8 @@
 //!
 //! This consumes values returned by ALSA negotiation and interleaved capture
 //! periods supplied by a caller. The inactive stream lifecycle accepts an
-//! injected platform PCM and has no ALSA FFI, discovery, open implementation,
-//! or production start route. Native numeric values match the ALSA 1.2.16.1
+//! injected platform PCM. An optional libasound module can adopt an already
+//! prepared handle. Discovery, open and production start remain unavailable. Native numeric values match the ALSA 1.2.16.1
 //! header contract documented in `docs/audio-capture-session.md`.
 
 pub mod stream;
