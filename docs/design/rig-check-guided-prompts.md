@@ -108,9 +108,11 @@ that countdown and does not follow the cable. When the countdown ends,
 `instruct` shows the cable cue, and listening starts. The cues are
 "Unplug the VDI cable from the guitar. Leave the PODxt Live USB cable
 connected." and "Plug the VDI cable back into the guitar." They live in
-`src/rig_check/recover/vdi.rs`. An identity check can finish the phase
-before the countdown: already unplugged, or already answering with the
-starting identity. This checkpoint does not change that order.
+`src/rig_check/recover/vdi.rs`. Before the first unplug countdown,
+an identity check can establish that the guitar is already unplugged
+or quiet. The first reconnect attempt starts at Prepare. On Try again,
+an identity check can finish either phase before another countdown,
+including when the guitar already answers with the starting identity.
 
 ### Window keys
 
@@ -198,9 +200,11 @@ then return no state, so neither call is a state preflight. 7.5 asks
 for nothing before its window (`|_| Ok(None)`). Those three stay
 passive sweeps. The proposal does not turn them into state checks.
 
-For 7.2, 7.4, and 7.5, motion during Get ready is shown as "Seen during
-Get ready. It does not count." The one listening window opens at NOW
-and needs new motion after that. 7.2 is one window for volume and tone.
+For 7.2, 7.4, and 7.5, Get ready shows only the wait instruction and
+timer. The one passive listening window opens at NOW with empty sweep
+ranges and counts only fresh motion after the cue. Queued motion from
+the countdown cannot contribute to those ranges. 7.2 uses one window
+for volume and tone.
 7.4 is one expression-pedal sweep. 7.5 is one passive poll of the six
 tone knobs and sends nothing, as
 `the_six_knob_window_records_exact_and_near_end_sweeps_without_sends`
@@ -218,12 +222,12 @@ the countdown.
 6.1 does not listen during its countdown. The countdown body stays
 Lane 1's wait sentence. When the countdown ends, the cable cue is
 shown and listening starts. A cable change during the countdown is not
-the completion path. The identity preflight before the countdown still
-finishes a phase that is already unplugged, or already back with the
-starting identity, and then no countdown opens. This checkpoint does
-not change 6.1's listener, identity checks, sentences, gates, or
-traffic. Lane 1's tests cover notice and no-notice, no prompt during
-a read, timing, timeout, and Stop.
+the completion path. The first unplug attempt and phase retries keep
+the preflight described above. The first reconnect attempt shows its
+wait sentence after Prepare. When needed, bounded identity fallback
+runs between listening intervals with the cable cue cleared. Reconnect
+requires the starting identity. Lane 1's tests cover notice and
+no-notice, no prompt during a read, timing, timeout, and Stop.
 
 ## Footswitch and expression pedal
 
@@ -283,22 +287,29 @@ The control is not focused. Focus on review stays **Return to current
 step**. Back, Backspace, Enter, C, and terminal `[b]` and `[c]` do not
 activate it.
 
-Choosing it revalidates the step against the current run before any
-card is shown. The checks are the ones the runner already has:
+Choosing it checks eligibility against the current run before showing
+a confirmation or card. Use the runner's existing checks, the current
+run's verified rig evidence and results, and the data the step will
+use. Opening review or checking eligibility sends no device request.
+If the current rig cannot be established from that evidence, keep the
+skip.
 
 - **Rig.** `precheck` still accepts the step for the connected rig in
   this run. A missing device, a different verification result, or an
   offline-device refusal leaves the skip in place.
-- **Gate.** `real_device_check` for that step still passes. A closed
-  gate leaves the skip in place. No gate constant changes.
-- **Order.** Catalogue order still allows the step. A Needs entry that
-  did not pass, an earlier failure that makes the step read-only, or a
-  save whose earlier applicable steps did not pass, leaves the skip in
-  place.
-- **Step prerequisites.** The data that step already requires is still
-  present. 7.3 still needs its starting channel and backup. 7.1 still
-  needs its starting preset and program. If that data cannot be
-  established, the skip stays.
+- **Gate.** In Real mode, `real_device_check` still passes for that
+  step. A closed approval or gate leaves the skip in place.
+- **Order.** Every Needs entry must have passed. A retry must still fit
+  catalogue order and the current run's safety state. If any failure
+  has made the run read-only, a live step stays skipped even if its
+  catalogue position precedes the failure. The save rules still apply
+  to later dependents.
+- **Step prerequisites.** Use the data the step needs for this run.
+  7.3 requires the starting channel and both starting and target
+  tones from the backup. 7.1 requires the starting preset and full
+  program plus the target program from the backup. If later activity
+  leaves any required data or restore condition uncertain, keep the
+  skip.
 
 Any check that cannot be established leaves the recorded skip as it
 is. The review names the first reason. The card stays closed.
@@ -313,11 +324,11 @@ review lines stay as they are, and the confirm asks for the words
 `run skipped` or `keep`. Enter means keep.
 
 **Run it** does not send. It shows that step's normal card, which still
-focuses Skip. Start or R is required. The attempt already stored stays
-in the report. The new attempt is appended. The latest outcome counts.
-Showing that card is allowed only after the revalidation above. An
-older skip, after later steps have run, is not offered on the strength
-of the old card alone.
+focuses Skip. Start or R is required. At Start, apply the same
+eligibility rules before executing. A prerequisite that can no longer
+be established leaves the original skip in place. The attempt already
+stored stays in the report. Append the new attempt and use its outcome
+for subsequent eligibility checks.
 
 After that result, Continue offers, in catalogue order, each later step
 that has not executed and was held only by this skip. That includes a
@@ -334,7 +345,9 @@ same pending card, with the simulated message count unchanged. A second
 case revalidates a skipped step whose rig, gate, order, and
 prerequisites still hold, presses Run it, then Start, records both
 attempts, and returns to that same card. A third case leaves the skip
-in place when a prerequisite can no longer be established. Back during
+in place when a prerequisite can no longer be established. A fourth
+covers a skipped live step followed by a failure later in the
+catalogue, and verifies that the live step stays skipped. Back during
 any case sends nothing.
 
 A person-skip still blocks later saves, because a save requires every
@@ -389,10 +402,12 @@ skip. "Expected skip, kept: {id} {title}. Firmware {version} is the
 tested version, so this step is already complete." In this continuation
 the lines are:
 
-- 2.7, Compatibility check for other firmware versions. PODxt Live
-  firmware 3.01 is the tested version.
-- 3.7, Compatibility check for other firmware versions. Variax
-  firmware 3.10 is the tested version.
+- "Expected skip, kept: 2.7 Compatibility check for other firmware
+  versions. PODxt Live firmware 3.01 is the tested version, so this
+  step is already complete."
+- "Expected skip, kept: 3.7 Compatibility check for other firmware
+  versions. Variax firmware 3.10 is the tested version, so this step
+  is already complete."
 
 The progress tag stays SKIP. A second line under the title repeats
 "Expected skip, kept." A skip the person chose keeps "Skipped by you.
@@ -432,7 +447,7 @@ Write **Approve** or **Change** on each row.
 | 1 | For 7.1–7.5, Get ready shows the countdown and "Do not act yet." The act sentence appears at NOW, at 34 points. | |
 | 2 | For 7.1–7.5, Enter during Get ready does nothing. Continue is absent until NOW. OK stays the focused prepare button. 6.1's countdown keys stay as Lane 1 wrote them. | |
 | 3 | Passive sweeps 7.2, 7.4, and 7.5 count only new motion after NOW, in the one listening window they already use. No readback or second request is added. 7.5 sends nothing. 7.1 and 7.3 keep the state preflight they already run before Prepare. That preflight is not repeated at NOW and is not copied onto the sweeps. | |
-| 4 | 6.1 shows Lane 1's wait sentence during the countdown. The unplug or replug cue is shown after the countdown, and listening starts then. A cable change during the countdown is not the completion path. The identity preflight stays before the countdown. | |
+| 4 | 6.1 shows Lane 1's wait sentence during the countdown. The unplug or replug cue is shown after the countdown, and listening starts then. A cable change during the countdown is not the completion path. The first unplug attempt and phase retries keep their existing identity preflight. | |
 | 5 | 7.3 says channel footswitch. 7.4 says expression pedal. CC 4 and CC 7 read "expression pedal" on every PODxt listen. | |
 | 6 | Back and Return stay review-only. "Run this skipped step" is a separate, unfocused control, confirmed by "Keep it skipped" as the focused choice. | |
 | 7 | The retry keeps both attempts, recomputes only unexecuted dependents, and does not replay a live send or a store. An earlier skipped step is offered only after the current rig, its gate, catalogue order, and its prerequisites are revalidated. Otherwise it stays skipped. | |
@@ -443,8 +458,9 @@ Write **Approve** or **Change** on each row.
 No code in this checkpoint. After the marks:
 
 - The common chrome and the 7.3 / 7.4 sentences are a #248 implementation.
-  Practice covers a sweep during Get ready that does not count, the same
-  sweep after NOW in the one window, and 7.5 still sending nothing.
+  Practice covers an early sweep whose queued events are ignored and a
+  fresh sweep that completes the one NOW window. The 7.5 case also
+  verifies that it sends nothing.
   7.1 and 7.3 still use only the preflight they already have.
 - The Skip control, confirm, revalidation, dependency recomputation, and
   the Practice path are #276, against rows 6 and 7.
