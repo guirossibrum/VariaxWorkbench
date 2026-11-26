@@ -33,7 +33,7 @@ pub trait RigPort {
     fn finish_direct_usb(&mut self) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
-    fn direct_usb_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
+    fn direct_usb_inventory(&mut self) -> Result<super::computer::UsbView, String> {
         Err("No macOS USB inventory for this port.".into())
     }
     /// The computer's own files for steps 0.1, 0.2 and 8.1 (read-only).
@@ -481,29 +481,19 @@ impl RigPort for RealPort<'_> {
     }
 
     #[cfg(all(target_os = "macos", feature = "usb"))]
-    fn direct_usb_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
+    fn direct_usb_inventory(&mut self) -> Result<super::computer::UsbView, String> {
+        use super::computer::other::{MacUsbAttachment, mac_usb_view};
+
         refuse_in_tests()?;
         let devices = macos_inventory::inventory()?;
-        self.mac_inventory = Some(devices.clone());
-        Ok(devices
-            .into_iter()
-            .map(|device| super::computer::UsbDevice {
-                port: device
-                    .route()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| device.label()),
-                address: device.address,
-                vendor: 0x0e41,
-                product: 0x4650,
-                name: Some("PODxt Live".into()),
-                manufacturer: None,
-                serial: None,
-                speed: None,
-                bus: None,
-                interfaces: vec![],
-                node: None,
-            })
-            .collect())
+        let view = mac_usb_view(devices.iter().map(|device| MacUsbAttachment {
+            route: device.route(),
+            location_id: device.location_id,
+            address: device.address,
+            midi_interfaces_present: device.midi_interfaces_present,
+        }));
+        self.mac_inventory = Some(devices);
+        Ok(view)
     }
 
     fn system(&self) -> Box<dyn FileSource + '_> {
