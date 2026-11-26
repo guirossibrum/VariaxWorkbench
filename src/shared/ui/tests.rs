@@ -1024,28 +1024,43 @@ fn body_canvas_drag_reports_move_rotate_and_clamp() {
                 let _ = show_body(ui, &body, &pickup, &views, true, None);
             },
         );
+        let modifiers = Modifiers {
+            ctrl: fine,
+            ..Default::default()
+        };
         let mut degrees = None;
-        harness.run(
-            vec![egui::Event::PointerMoved(up)],
-            Modifiers {
-                ctrl: fine,
-                ..Default::default()
-            },
-            |_, ui| {
-                let output = show_body(ui, &body, &pickup, &views, true, None);
-                assert!(output.events.iter().any(|event| matches!(
-                    event,
-                    BodyEvent::DragStarted {
-                        index: 0,
-                        kind: DragKind::Rotate
-                    }
-                )));
-                degrees = output.events.iter().find_map(|event| match event {
-                    BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
-                    _ => None,
-                });
-            },
-        );
+        harness.run(vec![egui::Event::PointerMoved(up)], modifiers, |_, ui| {
+            let output = show_body(ui, &body, &pickup, &views, true, None);
+            assert!(output.events.iter().any(|event| matches!(
+                event,
+                BodyEvent::DragStarted {
+                    index: 0,
+                    kind: DragKind::Rotate
+                }
+            )));
+            degrees = output.events.iter().find_map(|event| match event {
+                BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+                _ => None,
+            });
+        });
+        if fine {
+            assert!(
+                degrees.is_none(),
+                "a Ctrl-held first sample added {degrees:?}"
+            );
+            let further = up + egui::vec2(0.0, dy);
+            harness.run(
+                vec![egui::Event::PointerMoved(further)],
+                modifiers,
+                |_, ui| {
+                    let output = show_body(ui, &body, &pickup, &views, true, None);
+                    degrees = output.events.iter().find_map(|event| match event {
+                        BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+                        _ => None,
+                    });
+                },
+            );
+        }
         degrees.expect("rotate")
     };
     let coarse = rotate(false, -20.0);
@@ -1548,6 +1563,120 @@ fn body_canvas_drag_tracks_the_press_point_and_rebases_rotation() {
         _ => None,
     });
     assert_eq!(back_degrees, Some(0.0));
+}
+
+#[test]
+fn ctrl_held_first_rotation_sample_rebases_without_adding_angle() {
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let views = [PickupView {
+        inches: 1.8,
+        degrees: 8.7,
+        enabled: true,
+        selected: true,
+    }];
+    let placement = PickupPlacement::default();
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &views, true, None).art_rect;
+    });
+    let scale = placement.screen_scale(art);
+    let center = placement.screen_point(art, 1.8);
+    let sprite = body_canvas::sprite_art_size(pickup.pixels, placement.art) * scale;
+    let rotate_at = center + egui::vec2(0.0, sprite.y * 0.4);
+    let ctrl = Modifiers {
+        ctrl: true,
+        ..Default::default()
+    };
+    let show = |harness: &mut Harness, events| -> Vec<BodyEvent> {
+        let mut reported = Vec::new();
+        harness.run(events, ctrl, |_, ui| {
+            reported = show_body(ui, &body, &pickup, &views, true, None).events;
+        });
+        reported
+    };
+    show(
+        &mut harness,
+        vec![
+            egui::Event::PointerMoved(rotate_at),
+            pointer(rotate_at, true),
+        ],
+    );
+    let first_at = rotate_at + egui::vec2(0.0, -8.0);
+    let first = show(&mut harness, vec![egui::Event::PointerMoved(first_at)]);
+    assert!(first.iter().any(|event| matches!(
+        event,
+        BodyEvent::DragStarted {
+            index: 0,
+            kind: DragKind::Rotate
+        }
+    )));
+    assert!(
+        first
+            .iter()
+            .all(|event| !matches!(event, BodyEvent::Rotated { .. }))
+    );
+    let second_at = first_at + egui::vec2(0.0, -8.0);
+    let second = show(&mut harness, vec![egui::Event::PointerMoved(second_at)]);
+    let degrees = second
+        .iter()
+        .find_map(|event| match event {
+            BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+            _ => None,
+        })
+        .expect("fine rotation after the rebase");
+    let expected = body_canvas::rotate_degrees(8.7, -8.0, true);
+    assert!(
+        (degrees - expected).abs() < 1.0e-4,
+        "{degrees} vs {expected}"
+    );
+    let released = show(&mut harness, vec![pointer(second_at, false)]);
+    assert!(released.iter().any(|event| matches!(
+        event,
+        BodyEvent::DragFinished {
+            index: 0,
+            kind: DragKind::Rotate
+        }
+    )));
+    assert!(
+        released
+            .iter()
+            .all(|event| !matches!(event, BodyEvent::Rotated { .. }))
+    );
+
+    let mut harness = Harness::new();
+    harness.run(vec![], Default::default(), |_, ui| {
+        let _ = show_body(ui, &body, &pickup, &views, true, None);
+    });
+    let move_show = |harness: &mut Harness, events| -> Vec<BodyEvent> {
+        let mut reported = Vec::new();
+        harness.run(events, ctrl, |_, ui| {
+            reported = show_body(ui, &body, &pickup, &views, true, None).events;
+        });
+        reported
+    };
+    move_show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+    );
+    let moved_to = center + egui::vec2(30.0, 0.0);
+    let moved = move_show(&mut harness, vec![egui::Event::PointerMoved(moved_to)]);
+    let inches = moved.iter().find_map(|event| match event {
+        BodyEvent::Moved { index: 0, inches } => Some(*inches),
+        _ => None,
+    });
+    let expected_inches = body_canvas::move_inches(1.8, 30.0 / scale, placement);
+    let inches = inches.expect("ctrl-held move");
+    assert!(
+        (inches - expected_inches).abs() < 1.0e-3,
+        "{inches} vs {expected_inches}"
+    );
+    assert!(
+        moved
+            .iter()
+            .all(|event| !matches!(event, BodyEvent::Rotated { .. }))
+    );
 }
 
 #[test]
