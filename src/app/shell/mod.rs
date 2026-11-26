@@ -719,6 +719,29 @@ impl Workbench {
                         if let Some(notice) = variax_workbench::offline_device_notice() {
                             status_line(ui, notice, theme::MUTED);
                         }
+                        if let Some(service) = &self.detection
+                            && self.detection_status.is_none()
+                        {
+                            // Reattachment waits for verified identity. Keep passive
+                            // observations visible while a previous editor stays offline.
+                            for device in service.passive_pods().filter(|device| {
+                                !self.tabs.entries.iter().any(|tab| {
+                                    tab.device.as_ref().is_some_and(|attached| {
+                                        attached.connection == tabs::Connection::Present
+                                            && attached.device.key == device.key
+                                    })
+                                })
+                            }) {
+                                status_line(
+                                    ui,
+                                    &format!(
+                                        "{} detected on {} · identity unverified",
+                                        device.model, device.key.attachment.path
+                                    ),
+                                    theme::MUTED,
+                                );
+                            }
+                        }
                         if let Some(error) = &self.detection_status {
                             status_line(ui, error, theme::DANGER);
                         }

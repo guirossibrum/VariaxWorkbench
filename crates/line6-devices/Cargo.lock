@@ -93,9 +93,14 @@ name = "line6-devices"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "macos-usb-inventory",
  "rusb",
  "sha2",
 ]
+
+[[package]]
+name = "macos-usb-inventory"
+version = "0.1.0"
 
 [[package]]
 name = "pkg-config"
