@@ -192,8 +192,8 @@ The tracked archive checks below can be rerun against an authorized local
 copy of the firmware. The additional component verifiers, result logs and
 checksum index are retained locally under the ignored
 `backups/podxt-301-audit/` area. See its `SHA256SUMS` entries for the Room
-graph, panel data and flash geometry checkpoints. The Room sample-path
-checkpoint has its own private checksum index in the same area.
+graph, panel data and flash geometry checkpoints. The Room sample-path and
+second-child checkpoints each have a private checksum index in the same area.
 
 #### Room sample path
 
@@ -211,9 +211,9 @@ loaded Room state, and writes a 16-sample block and four history values.
 A bounded interpretation of its decoded instructions matched an
 independent scalar calculation for silence, an impulse and an alternating
 input with seeded history, using synthetic memory and binary32 arithmetic.
-The next child uses the first child's output buffer and its own delay
-state. The third reads and writes the first child's input buffer in the
-stock fixture. Their sample arithmetic was outside the replay.
+The second child takes that output block and rewrites it in place. The third
+child reads the two adjacent blocks and writes its mix into the original
+input block. That last relationship comes from the decoded reads and stores.
 
 The next runtime evidence needed is a route-labelled interrupt-entry
 snapshot for Live 3.01, or matching code that reconstructs it. It must
@@ -221,6 +221,29 @@ identify the interrupt source and buffer phase, the enabled callback rows
 and order, and the producer of the first child's input block for the
 selected analog, Variax or USB route. Matching input, state and output
 vectors are needed to check DSP arithmetic and audio equivalence.
+
+#### Room second child
+
+The stock loader clears the second child’s 4,096-word delay allocation. The
+initializer saves the ring base and cursor in the child’s working state. The
+child advances and saves the cursor once per 16-sample block. Four passes
+then gather delay values into 16 words of shared scratch, rewrite the sample
+block and store updates at tap-relative ring positions. These passes advance
+a temporary pointer. Other decoded paths use the same scratch base.
+
+An instruction replay and an independent binary32 block recurrence agreed
+bit for bit in 63 synthetic comparisons. Each compared the 16 output words,
+the entire ring, the saved cursor and the final scratch span. Cases cover
+silence, consecutive blocks fed by the first child, seeded delay, cursor
+wrap and ring-write wrap. Clearing a revisited ring span changed the later
+output. Two address interpretations for the final lookahead produced the
+same samples and saved state because the lookahead value is discarded. The
+physical read address, DSP precision and interrupt timing remain unverified.
+
+The comparison bounds the stock 16-sample entry. The alternate entry and
+the third child's arithmetic still need replay. Route-labelled interrupt
+state and matching input, state and output vectors are still needed for
+whole-graph verification and audio equivalence.
 
 ### PODxt Live 3.01 factory channels
 
