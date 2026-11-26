@@ -429,7 +429,9 @@ impl Wizard {
             });
     }
 
-    const REAL_MODE_TITLE: &str = if cfg!(target_os = "macos") {
+    const REAL_MODE_TITLE: &str = if cfg!(target_os = "windows") {
+        "This computer"
+    } else if cfg!(target_os = "macos") {
         "This Mac"
     } else {
         "Real rig"
@@ -539,7 +541,12 @@ impl Wizard {
                     .strong()
                     .color(TEXT),
             );
-            let description = if cfg!(target_os = "macos") {
+            let description = if cfg!(target_os = "windows") {
+                concat!(
+                    "Practice uses simulated devices. This computer runs computer-only checks. ",
+                    "The Windows connection isn't available in this version yet."
+                )
+            } else if cfg!(target_os = "macos") {
                 concat!(
                     "Practice uses simulated devices. This Mac runs computer-only checks. ",
                     "The Mac connection isn't available in this version yet"

@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Windows offline alpha packaging adds the unsigned x64 MSVC ZIP recipe, a manual artifact workflow, and checksums for the ZIP and its files. Windows device actions report that the connection is unavailable. Rig Check Practice remains simulated, and This computer offers the Windows version, USB inventory, built-in engine comparison and audio inventory without opening a stream. Windows MSVC passes Rust type-checking, and a local MinGW build of both executables passes the PE and ZIP checks. Linux passed 1,091 all-feature app tests, 949 offline-profile app tests, 207 device-library tests and five synthetic package tests. The native MSVC package run and Windows desktop launch await verification. [Packaging and validation](windows-package.md) · [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279).
+
 - [x] Rig-lock tests give each handoff its own tracking state and exercise intent, cleanup and reacquisition in a fixed sequence. The inherited-descriptor subprocess runs in its own test binary. Ten consecutive offline device-suite runs with 16 test threads each passed all 207 tests, with two ignored and no device access.
 
 - [x] Rig Check adapts trim and tuning to the starting preset. Practice covers the +6 dB trim direction, enabled tuning, unsupported acoustic and sitar tuning, and model-data skips that leave own-byte saves available. [#277](https://github.com/guirossibrum/VariaxWorkbench/issues/277).

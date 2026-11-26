@@ -1,0 +1,16 @@
+Variax Workbench and Rig Check — Windows x64 offline alpha
+
+Extract the whole ZIP before opening either executable. No installer,
+Line 6 driver or separate runtime is required.
+
+The apps are unsigned. If Windows SmartScreen says "Windows protected
+your PC", choose More info, then Run anyway if you trust this download.
+SHA256SUMS.txt lists the checksums of the extracted files. The download
+also includes a separate SHA-256 checksum for the ZIP.
+
+Variax Workbench opens and edits preset and library files offline.
+In Rig Check, choose Practice for a simulated rig or This computer for
+the Windows, USB inventory, offline engine and audio inventory checks.
+The Windows connection isn't available in this version yet.
+
+Rig Check reports are saved under %LOCALAPPDATA%\Rig Check\reports.

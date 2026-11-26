@@ -104,8 +104,8 @@ pub fn real_device_check(id: StepId) -> Result<(), String> {
     if !step.needs_device_approval() {
         return Ok(());
     }
-    if cfg!(target_os = "macos") {
-        return Err(crate::MAC_CONNECTION_UNAVAILABLE.into());
+    if let Some(notice) = crate::offline_device_notice() {
+        return Err(notice.into());
     }
     if !approved(id) {
         return Err(format!(
@@ -144,8 +144,8 @@ mod tests {
         {
             assert!(approved(step.id), "{}", step.id);
             let result = real_device_check(step.id);
-            if cfg!(target_os = "macos") {
-                assert_eq!(result, Err(crate::MAC_CONNECTION_UNAVAILABLE.into()));
+            if let Some(notice) = crate::offline_device_notice() {
+                assert_eq!(result, Err(notice.into()));
             } else {
                 assert!(result.is_ok(), "{}", step.id);
             }
@@ -157,8 +157,8 @@ mod tests {
         for step in STEPS.iter().filter(|step| step.kind == Kind::Audio) {
             assert!(!approved(step.id), "{}", step.id);
             let error = real_device_check(step.id).unwrap_err();
-            if cfg!(target_os = "macos") {
-                assert_eq!(error, crate::MAC_CONNECTION_UNAVAILABLE);
+            if let Some(notice) = crate::offline_device_notice() {
+                assert_eq!(error, notice);
             } else {
                 assert!(error.contains("not yet authorized by the owner (#267)"));
                 assert!(error.contains("Nothing was sent"));

@@ -350,8 +350,8 @@ mod tests {
         assert!(run.step(StepId(3, 3)).outcome.passed());
         assert!(approvals::approved(VARIAX_EVIDENCE));
         let availability = approvals::real_device_check(VARIAX_EVIDENCE);
-        if cfg!(target_os = "macos") {
-            assert_eq!(availability, Err(crate::MAC_CONNECTION_UNAVAILABLE.into()));
+        if let Some(notice) = crate::offline_device_notice() {
+            assert_eq!(availability, Err(notice.into()));
         } else {
             assert!(availability.is_ok());
         }

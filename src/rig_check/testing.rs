@@ -777,9 +777,10 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
-    fn real_mode_on_mac_only_offers_computer_checks() {
+    fn real_mode_offline_platforms_only_offer_computer_checks() {
+        let notice = crate::offline_device_notice().unwrap();
         let mut person = Script::run_all();
         let mut port = RealPort::with_system(Box::new(
             crate::rig_check::computer::linux::synthetic_machine(true, true),
@@ -788,12 +789,17 @@ mod tests {
         for step in STEPS.iter().filter(|step| step.needs_device_approval()) {
             assert_eq!(
                 run.step(step.id).outcome,
-                Outcome::NotAvailable(crate::MAC_CONNECTION_UNAVAILABLE.into()),
+                Outcome::NotAvailable(notice.into()),
                 "{}",
                 step.id
             );
         }
-        assert_eq!(person.cards, [StepId(0, 1), StepId(0, 2), StepId(8, 1)]);
+        let expected = if cfg!(target_os = "windows") {
+            &[StepId(0, 1), StepId(0, 2), StepId(0, 3), StepId(8, 1)][..]
+        } else {
+            &[StepId(0, 1), StepId(0, 2), StepId(8, 1)]
+        };
+        assert_eq!(person.cards, expected);
         assert!(person.cards.iter().all(|id| run.step(*id).outcome.passed()));
     }
 

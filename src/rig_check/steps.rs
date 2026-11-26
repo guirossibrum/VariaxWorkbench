@@ -219,12 +219,10 @@ fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
         computer::linux::system(&*system)
     } else if cfg!(target_os = "macos") {
         computer::other::mac_system(&computer::other::SystemCommands)
+    } else if cfg!(target_os = "windows") {
+        computer::other::windows_system(&computer::other::SystemCommands)
     } else {
-        computer::other::this_os(&computer::other::SystemCommands)
-            .ok_or("No computer collector for this operating system.")?
-            .into_iter()
-            .filter(|(name, _)| !is_device_line(name))
-            .collect()
+        return Err("No computer collector for this operating system.".into());
     };
     if ctx.mode == Mode::Practice {
         ctx.rec
@@ -299,13 +297,6 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-/// Windows/macOS lines that belong to step 0.2 rather than 0.1.
-fn is_device_line(name: &str) -> bool {
-    ["USB", "driver", "MIDI"]
-        .iter()
-        .any(|word| name.contains(word))
-}
-
 fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let view =
         crate::hardware_gates::run_if_unlocked(crate::hardware_gates::Gate::OsDiscovery, || {
@@ -316,12 +307,10 @@ fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 let commands = &computer::other::SystemCommands;
                 let lines = if cfg!(target_os = "macos") {
                     computer::other::mac_devices(commands)
+                } else if cfg!(target_os = "windows") {
+                    computer::other::windows_devices(commands)
                 } else {
-                    computer::other::this_os(commands)
-                        .ok_or("No computer collector for this operating system.")?
-                        .into_iter()
-                        .filter(|(name, _)| is_device_line(name) || name == "Collector")
-                        .collect()
+                    return Err("No computer collector for this operating system.".into());
                 };
                 Ok(UsbView {
                     devices: Vec::new(),

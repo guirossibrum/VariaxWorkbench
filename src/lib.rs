@@ -23,6 +23,18 @@ pub mod macos_dialog;
 
 pub const MAC_CONNECTION_UNAVAILABLE: &str =
     "The Mac connection isn't available in this version yet.";
+pub const WINDOWS_CONNECTION_UNAVAILABLE: &str =
+    "The Windows connection isn't available in this version yet.";
+
+pub const fn offline_device_notice() -> Option<&'static str> {
+    if cfg!(target_os = "windows") {
+        Some(WINDOWS_CONNECTION_UNAVAILABLE)
+    } else if cfg!(target_os = "macos") {
+        Some(MAC_CONNECTION_UNAVAILABLE)
+    } else {
+        None
+    }
+}
 
 pub mod host;
 pub mod identity_stage;

@@ -210,15 +210,43 @@ fn detect_macos(commands: &dyn super::computer::other::CommandRunner) -> Vec<Str
     lines
 }
 
+const WINDOWS_SOUND_INVENTORY: &str = concat!(
+    "$ErrorActionPreference = 'Stop'; ",
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ",
+    "Get-CimInstance -ClassName Win32_SoundDevice | Select-Object -ExpandProperty Name"
+);
+
+fn detect_windows(commands: &dyn super::computer::other::CommandRunner) -> Vec<String> {
+    let mut lines = vec!["Audio system: Windows (WASAPI)".into()];
+    let args = [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_SOUND_INVENTORY,
+    ];
+    if let Some(inventory) = commands.run("powershell", &args) {
+        for name in inventory.lines().map(str::trim) {
+            if name.to_ascii_lowercase().contains("podxt") {
+                lines.push(format!("PODxt audio device: {name}"));
+            }
+        }
+        if lines.len() == 1 {
+            lines.push("PODxt audio device: none reported by Windows.".into());
+        }
+        lines.push("Audio formats and defaults are not part of this listing.".into());
+    } else {
+        lines.push("Windows audio device listing unavailable.".into());
+    }
+    lines.push("No audio stream was opened.".into());
+    lines
+}
+
 pub fn detect(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let lines = if cfg!(target_os = "linux") || ctx.mode == super::record::Mode::Practice {
         let system = ctx.port.system();
         detect_linux(&*system)?
     } else if cfg!(target_os = "windows") {
-        vec![
-            "Audio system: WASAPI (ASIO through the Line 6 driver if installed)".into(),
-            "Device formats: not available on this OS yet (needs the #262 adapter); no stream was opened.".into(),
-        ]
+        detect_windows(&super::computer::other::SystemCommands)
     } else {
         detect_macos(&super::computer::other::SystemCommands)
     };
@@ -305,6 +333,31 @@ mod tests {
         assert!(text.ends_with("No audio stream was opened."));
         assert!(detect_macos(&Profiler(Some("")))[1].contains("none reported"));
         assert!(detect_macos(&Profiler(None))[1].contains("unavailable"));
+    }
+
+    #[test]
+    fn windows_audio_check_uses_only_a_read_only_sound_device_inventory() {
+        struct Inventory(Option<&'static str>);
+        impl crate::rig_check::computer::other::CommandRunner for Inventory {
+            fn run(&self, program: &str, args: &[&str]) -> Option<String> {
+                assert_eq!(program, "powershell");
+                assert_eq!(
+                    args,
+                    [
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        WINDOWS_SOUND_INVENTORY
+                    ]
+                );
+                self.0.map(str::to_owned)
+            }
+        }
+        let listed = detect_windows(&Inventory(Some("Built-in speakers\r\nPODxt Live\r\n")));
+        assert!(listed[1].contains("PODxt Live"));
+        assert_eq!(listed.last().unwrap(), "No audio stream was opened.");
+        assert!(detect_windows(&Inventory(Some("")))[1].contains("none reported"));
+        assert!(detect_windows(&Inventory(None))[1].contains("unavailable"));
     }
 
     #[test]

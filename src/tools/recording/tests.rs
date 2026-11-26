@@ -43,10 +43,9 @@ fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
     click_recording(&context, &mut app, "open-recording");
     assert!(app.recording_open);
     assert!(app.recording_visible.contains(recording::OFFLINE_BANNER));
-    assert!(
-        app.recording_visible
-            .contains(recording::DEVICE_CAPTURE_LOCKED)
-    );
+    assert!(app.recording_visible.contains(
+        variax_workbench::offline_device_notice().unwrap_or(recording::DEVICE_CAPTURE_LOCKED)
+    ));
     assert!(app.recording_visible.contains(recording::NO_AUTO_START));
     assert!(
         app.recording_visible

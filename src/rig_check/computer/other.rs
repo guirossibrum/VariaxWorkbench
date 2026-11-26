@@ -24,10 +24,28 @@ impl CommandRunner for SystemCommands {
         if cfg!(test) || !(cfg!(target_os = "windows") || cfg!(target_os = "macos")) {
             return None;
         }
-        let output = std::process::Command::new(program)
-            .args(args)
-            .output()
-            .ok()?;
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            use std::path::PathBuf;
+
+            let system = PathBuf::from(std::env::var_os("SystemRoot")?);
+            if !system.is_absolute() {
+                return None;
+            }
+            let binary = match program {
+                "cmd" => "cmd.exe",
+                "pnputil" => "pnputil.exe",
+                "powershell" => "WindowsPowerShell/v1.0/powershell.exe",
+                _ => return None,
+            };
+            let mut command = std::process::Command::new(system.join("System32").join(binary));
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            command
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut command = std::process::Command::new(program);
+        let output = command.args(args).output().ok()?;
         output
             .status
             .success()
@@ -98,7 +116,7 @@ pub fn windows_line6_devices(pnputil: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn windows(commands: &dyn CommandRunner) -> Vec<Line> {
+pub fn windows_system(commands: &dyn CommandRunner) -> Vec<Line> {
     let mut lines = vec![
         line("Operating system", "Windows"),
         line("Collector", NOT_VERIFIED),
@@ -119,6 +137,12 @@ pub fn windows(commands: &dyn CommandRunner) -> Vec<Line> {
             ),
         ),
     ];
+    lines.extend(super::build_lines());
+    lines
+}
+
+pub fn windows_devices(commands: &dyn CommandRunner) -> Vec<Line> {
+    let mut lines = vec![line("Collector", NOT_VERIFIED)];
     let drivers = commands
         .run("pnputil", &["/enum-drivers"])
         .map(|text| windows_line6_drivers(&text));
@@ -143,12 +167,18 @@ pub fn windows(commands: &dyn CommandRunner) -> Vec<Line> {
         Some(_) => lines.push(line("Line 6 USB device", "none connected")),
         None => lines.push(line("Line 6 USB device", NOT_AVAILABLE)),
     }
-    lines.push(line(
-        "MIDI ports",
-        "listed by the transport adapter once #262 is implemented",
-    ));
+    lines.push(line("MIDI ports", crate::WINDOWS_CONNECTION_UNAVAILABLE));
     lines.push(line("USB host controller", NOT_AVAILABLE));
-    lines.extend(super::build_lines());
+    lines
+}
+
+pub fn windows(commands: &dyn CommandRunner) -> Vec<Line> {
+    let mut lines = windows_system(commands);
+    lines.extend(
+        windows_devices(commands)
+            .into_iter()
+            .filter(|(name, _)| name != "Collector"),
+    );
     lines
 }
 
