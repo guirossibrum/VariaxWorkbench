@@ -96,6 +96,25 @@ pub fn follow_window<L: Link>(
     }
 }
 
+/// Follow on a locked link until the caller finishes or the guitar disconnects.
+/// The caller is responsible for verifying the rig's identity before the
+/// guided check and rechecking a guitar when it reconnects.
+pub fn follow_action<L: Link>(
+    session: &mut Session<L>,
+    cancelled: impl Fn() -> bool,
+    publish: impl FnMut(FollowUpdate),
+) -> Result<(), String> {
+    if session.link.path() != Path::VariaxViaPodxt
+        || !session.allows(Operation::VariaxIdentity)
+        || !session.allows(Operation::VariaxRead)
+    {
+        return Err(
+            "Variax Follow requires the PODxt Live relay and identity and read permissions.".into(),
+        );
+    }
+    listen_updates(session, None, cancelled, publish)
+}
+
 fn listen_updates<L: Link>(
     session: &mut Session<L>,
     window: Option<Duration>,

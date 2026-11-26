@@ -31,11 +31,13 @@ pub const DEFAULT_DECISION: Decision = Decision::Skip;
 /// A step returns an error starting with this when the person declined
 /// inside the step (for example the typed save confirmation). Nothing ran.
 pub const SKIPPED: &str = "SKIPPED: ";
+pub const STOPPED: &str = "STOPPED: ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retry {
     TryAgain,
     Skip,
+    Stop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +105,13 @@ impl Progress {
         }
     }
 
+    pub fn watching(action: impl Into<String>) -> Self {
+        Self {
+            guided: true,
+            ..Self::action(action)
+        }
+    }
+
     pub fn waiting(action: impl Into<String>, limit: std::time::Duration, guided: bool) -> Self {
         Self {
             wait: Some(limit),
@@ -125,6 +134,15 @@ pub trait Operator {
     fn instruct(&mut self, step: StepId, see: &str, hear: &str);
     /// A guided action was not seen in time.
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry;
+    /// Confirm the specific movement before opening the listener.
+    fn prepare_action(&mut self, step: StepId, see: &str, hear: &str) -> Decision;
+    /// Start watching. The returned check lets the person end this action.
+    fn watch_action(
+        &mut self,
+        step: StepId,
+        description: &str,
+        clock: std::sync::Arc<super::guided::ActionClock>,
+    ) -> Box<dyn Fn() -> bool>;
     /// A listening question with Yes / No / Not sure and an optional note.
     fn ask(&mut self, question: &Question) -> (Answer, String);
     /// The latest action, with optional completed work or time limit.
@@ -371,14 +389,19 @@ impl<'a> Runner<'a> {
                     ctx.op.progress(Progress::action(step.title));
                     steps::execute(&mut ctx)
                 };
-                let stopped_now = self.op.stop_requested();
+                let stopped_now = self.op.stop_requested()
+                    || result
+                        .as_ref()
+                        .is_err_and(|reason| reason.starts_with(STOPPED));
                 let outcome = match result {
                     Ok(()) => Outcome::Passed,
                     Err(reason) if reason.starts_with(SKIPPED) => {
                         rec.show(reason.trim_start_matches(SKIPPED));
                         Outcome::SkippedByPerson
                     }
-                    Err(error) if stopped_now => Outcome::Stopped(error),
+                    Err(error) if stopped_now => {
+                        Outcome::Stopped(error.trim_start_matches(STOPPED).into())
+                    }
                     Err(error) => Outcome::Failed(error),
                 };
                 self.data.read_only |= matches!(outcome, Outcome::Failed(_));

@@ -1,95 +1,288 @@
 //! Guided physical actions 7.1-7.4 (#260).
 //!
-//! Each action opens a listening window: nothing is sent while the person
+//! Each action opens a listener: nothing is sent while the person
 //! acts (a selector message during a read stopped a #238 run). Detection
 //! completes the current step on its own, so the person does not have to
-//! walk back to the computer, but the next step still shows its own card
-//! and waits. A window that sees nothing asks "Didn't see it: Try again /
-//! Skip".
+//! walk back to the computer, but the next action waits for their OK. They
+//! can also choose Continue to check what arrived, or Stop the run.
 
 use super::practice::{UserAction, preset_label};
 use super::procedures::{
     same_program, variax_full_read, with_podxt, with_variax, with_variax_progress,
 };
-use super::runner::{Ctx, Progress, Retry, SKIPPED};
+use super::runner::{Ctx, Decision, Progress, Retry, SKIPPED, STOPPED};
 use super::variax_reads::other_preset;
 use line6_devices::family::podxt::{self, BankKind, Location};
 use line6_devices::family::variax::{self, FollowUpdate, Preset};
 use line6_devices::gate::Operation;
 use line6_devices::session::{Link, Session};
 use std::cell::Cell;
-use std::time::Duration;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+use std::time::{Duration, Instant};
 
-/// How long one listening window stays open.
-pub const WINDOW: Duration = Duration::from_secs(30);
-/// When the simulated person acts after the window opens (practice mode).
-pub const PRACTICE_DELAY: Duration = Duration::from_secs(5);
+pub const READY_DELAY: Duration = Duration::from_secs(10);
+pub const ACTION_WINDOW: Duration = Duration::from_secs(60);
+const PRACTICE_DELAY: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+pub struct ActionClock {
+    start: Instant,
+    extra: AtomicU64,
+    observation: Mutex<Option<String>>,
+}
+
+impl Default for ActionClock {
+    fn default() -> Self {
+        Self {
+            start: Instant::now(),
+            extra: AtomicU64::new(0),
+            observation: Mutex::new(None),
+        }
+    }
+}
+
+impl ActionClock {
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
+
+    pub fn ready_duration(&self) -> Duration {
+        READY_DELAY + Duration::from_secs(self.extra.load(Ordering::Relaxed))
+    }
+
+    pub fn add_ten_seconds(&self) {
+        if self.elapsed() < self.ready_duration() {
+            self.extra.fetch_add(10, Ordering::Relaxed);
+        }
+    }
+
+    pub fn observe(&self, observation: impl Into<String>) {
+        *self.observation.lock().expect("action observation") = Some(observation.into());
+    }
+
+    pub fn observation(&self) -> Option<String> {
+        self.observation.lock().expect("action observation").clone()
+    }
+}
+
+pub(super) struct ActiveAction {
+    pub clock: Arc<ActionClock>,
+    advance: Box<dyn Fn() -> bool>,
+    elapsed: Box<dyn Fn() -> Duration>,
+}
+
+impl ActiveAction {
+    pub fn done(&self) -> bool {
+        (self.advance)() || self.expired()
+    }
+
+    pub fn expired(&self) -> bool {
+        (self.elapsed)() >= self.clock.ready_duration() + ACTION_WINDOW
+    }
+
+    pub fn early(&self) -> bool {
+        (self.elapsed)() < self.clock.ready_duration()
+    }
+}
 
 const VARIAX_LISTEN: &[Operation] = &[Operation::VariaxIdentity, Operation::VariaxRead];
 const PODXT_LISTEN: &[Operation] = &[Operation::PodxtIdentity, Operation::PodxtRead];
 
 /// Use the editor's decoded Variax Follow stream until the action is observed.
-pub fn watch_variax<L: Link>(
+pub(super) fn watch_variax<L: Link>(
     session: &mut Session<L>,
-    waiting_for_replug: bool,
     stopping: &dyn Fn() -> bool,
+    action: &ActiveAction,
     mut accepts: impl FnMut(FollowUpdate) -> bool,
 ) -> Result<bool, String> {
     let seen = Cell::new(false);
-    variax::follow_window(
+    variax::follow_action(
         session,
-        WINDOW,
-        waiting_for_replug,
-        || stopping() || seen.get(),
-        |update| seen.set(accepts(update)),
+        || stopping() || seen.get() || action.done(),
+        |update| {
+            let description = match update {
+                FollowUpdate::Connected => "the guitar connected".into(),
+                FollowUpdate::Disconnected => "the guitar disconnected".into(),
+                FollowUpdate::ProgramChange(preset) => format!("preset {}", preset_label(preset)),
+                FollowUpdate::Volume(value) => format!("guitar volume {value}"),
+                FollowUpdate::TonePosition(value) => format!("guitar tone {value}"),
+                _ => return,
+            };
+            action.clock.observe(description);
+            seen.set(accepts(update));
+        },
     )?;
     if stopping() {
-        return Err("Stopped by you.".into());
+        return Err(format!("{STOPPED}Stopped by you."));
     }
     Ok(seen.get())
 }
 
-/// One guided window with retries on the person's request.
+/// Show the instruction, then let the person arm the listener with OK.
+pub(super) fn begin_action(
+    ctx: &mut Ctx<'_>,
+    see: &str,
+    hear: &str,
+    what: &str,
+    actions: &[UserAction],
+) -> Result<ActiveAction, String> {
+    if ctx.stopping() {
+        return Err(format!("{STOPPED}Stopped by you."));
+    }
+    match ctx.op.prepare_action(ctx.rec.id, see, hear) {
+        Decision::Run => {}
+        Decision::Skip => return Err(format!("{SKIPPED}You skipped {what}.")),
+        Decision::Stop => return Err(format!("{STOPPED}You stopped before {what}.")),
+    }
+    ctx.op.instruct(ctx.rec.id, see, hear);
+    let clock = Arc::new(ActionClock::default());
+    ctx.op
+        .progress(Progress::watching(format!("Watching for {what}")));
+    let advance = ctx.op.watch_action(ctx.rec.id, what, clock.clone());
+    let elapsed: Box<dyn Fn() -> Duration> = if let Some(rig) = ctx.port.simulation() {
+        let model = rig.borrow();
+        let start = model.clock;
+        let delay = model
+            .faults
+            .guided_action_delay
+            .unwrap_or(READY_DELAY + PRACTICE_DELAY);
+        drop(model);
+        for action in actions {
+            ctx.port.user_acts(action.clone(), delay);
+        }
+        Box::new(move || rig.borrow().clock.saturating_sub(start))
+    } else {
+        let clock = clock.clone();
+        Box::new(move || clock.elapsed())
+    };
+    Ok(ActiveAction {
+        clock,
+        advance,
+        elapsed,
+    })
+}
+
+/// A by-ear sound comparison is confirmed by the player, without audio capture.
+pub(super) fn play_phrase(ctx: &mut Ctx<'_>, see: &str, hear: &str) -> Result<(), String> {
+    loop {
+        let action = begin_action(ctx, see, hear, "you to finish playing", &[])?;
+        if ctx.mode == super::record::Mode::Practice {
+            return Ok(());
+        }
+        while !ctx.stopping() && !action.done() {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        if ctx.stopping() {
+            return Err(format!("{STOPPED}You stopped while playing."));
+        }
+        if !action.expired() {
+            return Ok(());
+        }
+        missed(
+            ctx,
+            "Continue after you finished playing",
+            "no confirmation",
+        )?;
+    }
+}
+
+pub(super) fn wait_until_ready(ctx: &Ctx<'_>, action: &ActiveAction) -> Result<(), String> {
+    if ctx.mode == super::record::Mode::Practice {
+        return Ok(());
+    }
+    while action.early() && !ctx.stopping() && !action.done() {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if ctx.stopping() || action.done() {
+        return Err(format!("{STOPPED}You stopped before the action started."));
+    }
+    Ok(())
+}
+
+pub(super) fn missed(ctx: &mut Ctx<'_>, what: &str, seen: &str) -> Result<(), String> {
+    let observation = format!("Expected {what}. Saw {seen}.");
+    ctx.rec.note(observation.clone());
+    match ctx.op.not_seen(ctx.rec.id, &observation) {
+        Retry::TryAgain => {
+            ctx.rec.note("You chose Try again.");
+            Ok(())
+        }
+        Retry::Skip => Err(format!("{SKIPPED}{observation} You chose Skip.")),
+        Retry::Stop => Err(format!("{STOPPED}{observation} You chose Stop.")),
+    }
+}
+
+/// One guided action with retries on the person's request.
 fn guided<T>(
     ctx: &mut Ctx<'_>,
     see: &str,
     hear: &str,
     what: &str,
     practice: &[UserAction],
-    mut window: impl FnMut(&mut Ctx<'_>) -> Result<Option<T>, String>,
+    mut already: impl FnMut(&mut Ctx<'_>) -> Result<Option<T>, String>,
+    mut window: impl FnMut(&mut Ctx<'_>, &ActiveAction) -> Result<Option<T>, String>,
 ) -> Result<T, String> {
     loop {
-        if ctx.stopping() {
-            return Err("Stopped by you before the listening window opened.".into());
+        if let Some(current) = already(ctx)? {
+            ctx.rec
+                .show(format!("Already in the expected state for {what}."));
+            return Ok(current);
         }
-        ctx.op.instruct(ctx.rec.id, see, hear);
-        ctx.op.progress(Progress::waiting(
-            format!("Waiting for {what}"),
-            WINDOW,
-            true,
-        ));
-        // Practice mode: the simulated person acts a few seconds later.
-        for action in practice {
-            ctx.port.user_acts(action.clone(), PRACTICE_DELAY);
-        }
-        if let Some(found) = window(ctx)? {
-            ctx.rec.note(format!("Seen: {what}."));
+        let advance = begin_action(ctx, see, hear, what, practice)?;
+        let before = ctx.rec.evidence.len();
+        if let Some(found) = window(ctx, &advance)? {
+            let timing = if advance.early() {
+                " during the get-ready countdown"
+            } else {
+                " during the action window"
+            };
+            ctx.rec.note(format!("Seen: {what}{timing}."));
             return Ok(found);
         }
-        ctx.rec
-            .note(format!("Not seen within {} s: {what}.", WINDOW.as_secs()));
-        match ctx.op.not_seen(ctx.rec.id, what) {
-            Retry::TryAgain => ctx.rec.note("You chose Try again."),
-            Retry::Skip => {
-                return Err(format!("{SKIPPED}Didn't see it ({what}); you chose Skip."));
-            }
-        }
+        let seen = ctx
+            .rec
+            .evidence
+            .get(before..)
+            .and_then(|notes| notes.last())
+            .cloned()
+            .or_else(|| advance.clock.observation())
+            .unwrap_or_else(|| "no matching change".into());
+        missed(ctx, what, &seen)?;
     }
 }
 
-fn variax_program_window(ctx: &mut Ctx<'_>, target: Preset) -> Result<Option<()>, String> {
+fn already_on_variax(
+    ctx: &mut Ctx<'_>,
+    expected: &[u32; super::practice::PROGRAM_WORDS],
+) -> Result<Option<()>, String> {
+    let read = with_variax_progress(ctx, VARIAX_LISTEN, |session, stopping, progress| {
+        super::procedures::drain(session)?;
+        variax_full_read(
+            session,
+            stopping,
+            progress,
+            "Checking the guitar's current program",
+        )
+    })?;
+    let matches = ctx
+        .data
+        .variax_library
+        .iter()
+        .filter(|(_, words)| same_program(&read.words, words))
+        .count();
+    Ok((matches == 1 && same_program(&read.words, expected)).then_some(()))
+}
+
+fn variax_program_window(
+    ctx: &mut Ctx<'_>,
+    target: Preset,
+    advance: &ActiveAction,
+) -> Result<Option<()>, String> {
     let seen = with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
-        watch_variax(session, false, stopping, |update| {
+        watch_variax(session, stopping, advance, |update| {
             update == FollowUpdate::ProgramChange(target)
         })
     })?;
@@ -105,25 +298,27 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
     let target = other_preset(start);
     let name = preset_label(target);
+    let backup = ctx
+        .data
+        .variax_library
+        .iter()
+        .find(|(preset, _)| *preset == target)
+        .map(|(_, words)| *words)
+        .ok_or("The target preset is missing from the backup.")?;
     guided(
         ctx,
         &format!("Turn the selector to {name}."),
         &format!("{name}."),
         &format!("program change to {name}"),
         &[UserAction::TurnSelector(target)],
-        |ctx| variax_program_window(ctx, target),
+        |ctx| already_on_variax(ctx, &backup),
+        |ctx, advance| variax_program_window(ctx, target, advance),
     )?;
     let read = with_variax_progress(ctx, VARIAX_LISTEN, |session, stopping, progress| {
         super::procedures::drain(session)?;
         variax_full_read(session, stopping, progress, &format!("Checking {name}"))
     })?;
-    let backup = ctx
-        .data
-        .variax_library
-        .iter()
-        .find(|(p, _)| *p == target)
-        .map(|(_, w)| *w);
-    if backup.is_some_and(|b| same_program(&read.words, &b)) {
+    if same_program(&read.words, &backup) {
         ctx.rec.show(format!(
             "{name} plays the program from the 3.4 backup (1,092 words)."
         ));
@@ -137,7 +332,8 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &format!("{start_name}, your starting sound."),
         &format!("program change back to {start_name}"),
         &[UserAction::TurnSelector(start)],
-        |ctx| variax_program_window(ctx, start),
+        |ctx| already_on_variax(ctx, &start_program),
+        |ctx, advance| variax_program_window(ctx, start, advance),
     )?;
     let back = with_variax_progress(ctx, VARIAX_LISTEN, |session, stopping, progress| {
         super::procedures::drain(session)?;
@@ -197,10 +393,16 @@ pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "volume (CC 7) and tone (CC 79) sweeps",
         &[UserAction::SweepVariaxKnobs],
         |ctx| {
+            with_variax(ctx, VARIAX_LISTEN, |session, _| {
+                variax::procedures::identify(session)
+            })?;
+            Ok(None)
+        },
+        |ctx, advance| {
             let mut volume = Range::default();
             let mut tone = Range::default();
             let seen = with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
-                watch_variax(session, false, stopping, |update| {
+                watch_variax(session, stopping, advance, |update| {
                     match update {
                         FollowUpdate::Volume(value) => volume.add(value),
                         FollowUpdate::TonePosition(value) => tone.add(value),
@@ -227,6 +429,7 @@ pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
 
 fn podxt_window(
     ctx: &mut Ctx<'_>,
+    advance: &ActiveAction,
     mut accepts: impl FnMut(podxt::ReadUpdate) -> bool,
 ) -> Result<bool, String> {
     let op = &*ctx.op;
@@ -241,11 +444,24 @@ fn podxt_window(
     let result = match ctx.port.podxt(step) {
         Ok(link) => {
             let mut session = Session::new(link, &policy, &mut lines);
-            podxt::follow_window(
+            podxt::follow_action(
                 &mut session,
-                WINDOW,
-                || op.stop_requested() || seen.get(),
+                || op.stop_requested() || seen.get() || advance.done(),
                 |update| {
+                    match &update {
+                        podxt::ReadUpdate::Channel(location) => advance
+                            .clock
+                            .observe(format!("PODxt channel {}", location.label())),
+                        podxt::ReadUpdate::Controller { number, value } => {
+                            let name = match *number {
+                                4 | 7 => "pedal",
+                                n if n == podxt::Control::Drive.cc() => "Drive",
+                                _ => "control",
+                            };
+                            advance.clock.observe(format!("PODxt {name} {value}"));
+                        }
+                        _ => {}
+                    }
                     seen.set(accepts(update));
                 },
             )
@@ -255,20 +471,38 @@ fn podxt_window(
     super::procedures::absorb(ctx, lines);
     match result {
         Ok(()) => Ok(seen.get()),
-        Err(error) if seen.get() && error == "PODxt read cancelled." => Ok(true),
+        Err(error) if error == "PODxt read cancelled." && !ctx.stopping() => Ok(seen.get()),
         Err(error) => Err(error),
     }
+}
+
+fn already_on_podxt(
+    ctx: &mut Ctx<'_>,
+    target: Location,
+    expected: &podxt::EditBuffer,
+) -> Result<Option<podxt::EditBuffer>, String> {
+    const CHANNEL: &[Operation] = &[
+        Operation::PodxtIdentity,
+        Operation::PodxtRead,
+        Operation::PodxtGlobalRead,
+    ];
+    with_podxt(ctx, CHANNEL, |session| {
+        let playing = podxt::read_current(session)?.tone;
+        let channel = podxt::playing_channel(session)?;
+        Ok((channel == target && playing.same_tone(expected)).then_some(playing))
+    })
 }
 
 fn channel_window(
     ctx: &mut Ctx<'_>,
     target: Location,
     expected_name: &str,
+    advance: &ActiveAction,
 ) -> Result<Option<podxt::EditBuffer>, String> {
     let mut primed = false;
     let mut matching_channel = false;
     let mut readback = None;
-    podxt_window(ctx, |update| match update {
+    podxt_window(ctx, advance, |update| match update {
         podxt::ReadUpdate::Channel(location) if primed => {
             matching_channel = location == target;
             false
@@ -323,7 +557,8 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &format!("Channel {}.", target.label()),
         &format!("channel change to {}", target.label()),
         &[UserAction::PodxtFootswitch(target.index())],
-        |ctx| channel_window(ctx, target, &stored.name()),
+        |ctx| already_on_podxt(ctx, target, &stored),
+        |ctx, advance| channel_window(ctx, target, &stored.name(), advance),
     )?;
     if !stored.same_tone(&now) {
         return Err(format!(
@@ -342,7 +577,8 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &format!("Channel {}, your starting tone.", start.label()),
         &format!("channel change back to {}", start.label()),
         &[UserAction::PodxtFootswitch(start.index())],
-        |ctx| channel_window(ctx, start, &start_tone.name()),
+        |ctx| already_on_podxt(ctx, start, &start_tone),
+        |ctx, advance| channel_window(ctx, start, &start_tone.name(), advance),
     )?;
     if !back.same_tone(&start_tone) {
         return Err(format!(
@@ -370,8 +606,14 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "pedal sweep (CC 7 or CC 4)",
         &[UserAction::MovePedal],
         |ctx| {
+            with_podxt(ctx, PODXT_LISTEN, |session| {
+                podxt::read_current(session).map(|current| current.tone)
+            })?;
+            Ok(None)
+        },
+        |ctx, advance| {
             let mut range = Range::default();
-            let seen = podxt_window(ctx, |event| {
+            let seen = podxt_window(ctx, advance, |event| {
                 if let podxt::ReadUpdate::Controller {
                     number: 7 | 4,
                     value,
@@ -381,6 +623,7 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 }
                 range.swept()
             })?;
+            ctx.rec.note(format!("Pedal range: {}", range.text()));
             Ok(seen.then_some(range))
         },
     )?;
@@ -400,9 +643,9 @@ pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
     } else {
         before + 20
     };
-    let observe = |want_original: bool, ctx: &mut Ctx<'_>| {
+    let observe = |want_original: bool, ctx: &mut Ctx<'_>, advance: &ActiveAction| {
         let mut value = None;
-        podxt_window(ctx, |update| {
+        podxt_window(ctx, advance, |update| {
             if let podxt::ReadUpdate::Controller {
                 number,
                 value: observed,
@@ -424,13 +667,20 @@ pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
         Ok(value)
     };
+    let current_drive = |ctx: &mut Ctx<'_>, original: bool| {
+        let current = with_podxt(ctx, PODXT_LISTEN, |session| {
+            podxt::read_current(session).map(|current| current.tone.cc(cc))
+        })?;
+        Ok(((current == before) == original).then_some(current))
+    };
     let changed = guided(
         ctx,
         &format!("Turn Drive away from its starting value of {before}."),
         "The drive setting changes.",
         "a new Drive value",
         &[UserAction::PodxtKnob(trial)],
-        |ctx| observe(false, ctx),
+        |ctx| current_drive(ctx, false),
+        |ctx, advance| observe(false, ctx, advance),
     )?;
     ctx.rec.show(format!(
         "Drive changed from {before} to {changed}, verified in the tone."
@@ -441,7 +691,8 @@ pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Your starting Drive setting.",
         "the starting Drive value",
         &[UserAction::PodxtKnob(before)],
-        |ctx| observe(true, ctx),
+        |ctx| current_drive(ctx, true),
+        |ctx, advance| observe(true, ctx, advance),
     )?;
     ctx.rec
         .show(format!("Drive is back at {before}, verified in the tone."));
@@ -519,6 +770,25 @@ mod tests {
     }
 
     #[test]
+    fn a_pedal_sweep_during_ready_or_late_in_the_action_window_is_detected() {
+        for (when, expected) in [(2, "get-ready countdown"), (50, "action window")] {
+            let mut person = Script::run_all();
+            let (run, _, _) = run_practice(
+                Faults {
+                    guided_action_delay: Some(std::time::Duration::from_secs(when)),
+                    ..Faults::default()
+                },
+                &mut person,
+                &mut NoReport,
+                RunData::default(),
+            );
+            let pedal = run.step(StepId(7, 4));
+            assert!(pedal.outcome.passed(), "{pedal:?}");
+            assert!(pedal.evidence.iter().any(|line| line.contains(expected)));
+        }
+    }
+
+    #[test]
     fn a_missed_action_offers_try_again_or_skip() {
         let mut person = Script::run_all();
         person.retry = Retry::Skip;
@@ -533,7 +803,7 @@ mod tests {
                 run.step(id)
                     .evidence
                     .iter()
-                    .any(|l| l.starts_with("Not seen within 30 s"))
+                    .any(|l| l.starts_with("Expected "))
             );
         }
         assert!(

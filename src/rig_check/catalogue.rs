@@ -60,6 +60,10 @@ pub enum Kind {
     Audio,
 }
 
+pub fn asks_for_action(id: StepId) -> bool {
+    step(id).is_some_and(|step| step.kind == Kind::Guided)
+}
+
 pub struct Step {
     pub id: StepId,
     pub title: &'static str,

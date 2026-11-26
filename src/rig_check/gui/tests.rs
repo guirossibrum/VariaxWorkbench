@@ -155,6 +155,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                 Reply::Decision(Decision::Run)
             }
             Prompt::Save { confirmation, .. } => Reply::Typed(Some(confirmation)),
+            Prompt::PrepareAction { .. } => Reply::Decision(Decision::Run),
             Prompt::NotSeen { .. } => Reply::Retry(Retry::Skip),
             Prompt::Ask(_) => Reply::Answer(Answer::Yes, String::new()),
             Prompt::Finished(record) if record.started.is_some() => {

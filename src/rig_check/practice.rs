@@ -41,6 +41,7 @@ pub struct Faults {
     pub silent_podxt_store: bool,
     /// The person does not perform a guided action in time.
     pub user_does_not_act: bool,
+    pub guided_action_delay: Option<Duration>,
     /// Report the Variax as firmware 3.09 (unverified).
     pub unverified_variax: bool,
     /// Report the PODxt Live as firmware 2.00 (unverified).

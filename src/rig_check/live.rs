@@ -3,7 +3,7 @@
 //! the step's policy does not include the PODxt store operation.
 
 use super::procedures::{with_podxt, with_podxt_stopping};
-use super::runner::{Ctx, Progress};
+use super::runner::Ctx;
 use line6_devices::family::podxt;
 use line6_devices::gate::Operation;
 use line6_devices::midi::hex;
@@ -222,36 +222,47 @@ pub fn podxt_recall(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 pub fn podxt_tune(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    ctx.op.instruct(
-        ctx.rec.id,
-        "Pluck one open string now.",
-        "The tuner may mute the sound briefly.",
-    );
-    let limit = std::time::Duration::from_secs(5);
-    ctx.op.progress(Progress::waiting(
-        "Waiting for the PODxt tuner",
-        limit,
-        true,
-    ));
-    let count = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
-        let mut count = 0;
-        podxt::tuner_window(session, limit, stopping, |update| {
-            if let podxt::ReadUpdate::Tuner(reading) = update
-                && reading.note.is_some()
-                && reading.deviation.is_some()
-            {
-                count += 1;
-            }
-        })?;
-        Ok(count)
-    })?;
-    if count == 0 {
-        return Err("The tuner sent no complete note and deviation pair.".into());
+    loop {
+        let action = super::guided::begin_action(
+            ctx,
+            "Pluck one open string on the guitar.",
+            "The PODxt tuner may mute the sound briefly.",
+            "a note and its tuning deviation",
+            &[],
+        )?;
+        super::guided::wait_until_ready(ctx, &action)?;
+        let found = std::cell::Cell::new(false);
+        let result = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
+            podxt::tuner_window(
+                session,
+                super::guided::ACTION_WINDOW,
+                || stopping() || found.get() || action.done(),
+                |update| {
+                    if let podxt::ReadUpdate::Tuner(reading) = update
+                        && let (Some(note), Some(deviation)) = (reading.note, reading.deviation)
+                    {
+                        action
+                            .clock
+                            .observe(format!("Tuner note {note}, deviation {deviation}"));
+                        found.set(true);
+                    }
+                },
+            )
+        });
+        match result {
+            Err(error) if error != "PODxt read cancelled." || ctx.stopping() => return Err(error),
+            _ => {}
+        }
+        if found.get() {
+            ctx.rec.show("Received a tuner reading. The tuner is off.");
+            return Ok(());
+        }
+        super::guided::missed(
+            ctx,
+            "a tuner note and deviation",
+            "no complete tuner reading",
+        )?;
     }
-    ctx.rec.show(format!(
-        "Received {count} tuner readings. The tuner is off."
-    ));
-    Ok(())
 }
 
 fn podxt_editor_controls(ctx: &mut Ctx<'_>) -> Result<(), String> {

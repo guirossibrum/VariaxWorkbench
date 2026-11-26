@@ -216,7 +216,8 @@ pub(super) fn open_editor<L: Link>(
     check_stop(cancelled)
 }
 
-fn playing_channel<L: Link>(session: &mut Session<L>) -> Result<Location, String> {
+/// Read the playing channel on a verified PODxt Live session.
+pub fn playing_channel<L: Link>(session: &mut Session<L>) -> Result<Location, String> {
     read_global(session, Global::CurrentChannel)?
         .and_then(|index| Location::new(BankKind::Tones, index))
         .ok_or_else(|| "No valid playing-channel reply from the PODxt Live.".into())

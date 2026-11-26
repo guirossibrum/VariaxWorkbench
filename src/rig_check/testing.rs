@@ -15,6 +15,9 @@ pub struct Script {
     pub save_typing: SaveTyping,
     pub save_overrides: Vec<(StepId, SaveTyping)>,
     pub retry: Retry,
+    pub retry_choices: std::collections::VecDeque<Retry>,
+    pub on_card: Option<Box<dyn FnMut(StepId)>>,
+    pub on_missed: Option<Box<dyn FnMut(StepId)>>,
     pub answer: Answer,
     pub cards: Vec<StepId>,
     pub notices: Vec<String>,
@@ -46,6 +49,9 @@ impl Script {
             save_typing: SaveTyping::Exact,
             save_overrides: Vec::new(),
             retry: Retry::Skip,
+            retry_choices: std::collections::VecDeque::new(),
+            on_card: None,
+            on_missed: None,
             answer: Answer::Yes,
             cards: Vec::new(),
             notices: Vec::new(),
@@ -88,6 +94,9 @@ impl Operator for Script {
 
     fn confirm(&mut self, step: &Step, _: Mode) -> Decision {
         self.cards.push(step.id);
+        if let Some(callback) = &mut self.on_card {
+            callback(step.id);
+        }
         self.current.set(Some(step.id));
         self.overrides
             .iter()
@@ -114,8 +123,24 @@ impl Operator for Script {
             .push((step, format!("SEE {see} HEAR {hear}")));
     }
 
-    fn not_seen(&mut self, _: StepId, _: &str) -> Retry {
-        self.retry
+    fn not_seen(&mut self, step: StepId, _: &str) -> Retry {
+        if let Some(callback) = &mut self.on_missed {
+            callback(step);
+        }
+        self.retry_choices.pop_front().unwrap_or(self.retry)
+    }
+
+    fn prepare_action(&mut self, _: StepId, _: &str, _: &str) -> Decision {
+        Decision::Run
+    }
+
+    fn watch_action(
+        &mut self,
+        _: StepId,
+        _: &str,
+        _: std::sync::Arc<super::guided::ActionClock>,
+    ) -> Box<dyn Fn() -> bool> {
+        Box::new(|| false)
     }
 
     fn ask(&mut self, question: &Question) -> (Answer, String) {
@@ -350,9 +375,7 @@ mod tests {
         ] {
             assert!(
                 person.progress.iter().any(|(step, progress)| {
-                    *step == id
-                        && progress.guided
-                        && progress.wait == Some(super::super::guided::WINDOW)
+                    *step == id && progress.guided && progress.action.starts_with("Watching for")
                 }),
                 "{id}"
             );

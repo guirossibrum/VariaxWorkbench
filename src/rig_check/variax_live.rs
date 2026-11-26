@@ -134,17 +134,17 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
     if models.is_empty() {
         return Err("No verified test model: add your reference folder to step 0.3 (--engine-folder) so test models are built and checked on this computer first.".into());
     }
+    super::guided::play_phrase(
+        ctx,
+        "Strum all six strings on your starting sound (A). Then press Continue.",
+        "Your starting sound.",
+    )?;
     let mut result = Ok(());
     for (name, model, question_text) in models {
         if ctx.stopping() {
             result = Err("Stopped by you.".to_string());
             break;
         }
-        ctx.op.instruct(
-            ctx.rec.id,
-            "Play your own sound now (A): strum all six strings.",
-            "Your own sound, unchanged.",
-        );
         let back = match audition(ctx, &model, &name) {
             Ok(back) => back,
             Err(error) => {
@@ -156,6 +156,14 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
             result = Err(format!(
                 "{name}: the working buffer differs from the program that was sent."
             ));
+            break;
+        }
+        if let Err(error) = super::guided::play_phrase(
+            ctx,
+            "Strum all six strings the same way with the test sound (B). Then press Continue.",
+            &format!("{name}, the temporary test sound."),
+        ) {
+            result = Err(error);
             break;
         }
         let question = Question {
@@ -381,13 +389,13 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         .as_ref()
         .map(|bytes| write::Program::new(&name, bytes))
         .transpose()?;
-    ctx.op.instruct(
-        ctx.rec.id,
-        "Listen for the change, then play when asked.",
-        "The starting sound changes temporarily.",
-    );
+    let phrase = match edit {
+        AuditionEdit::Trim => "Play a short phrase, then press Continue.",
+        AuditionEdit::Tuning => "Pluck the low E string, then press Continue.",
+    };
+    super::guided::play_phrase(ctx, phrase, "Your starting sound.")?;
     let mut attempted = false;
-    let sent = with_variax_progress(ctx, VARIAX_LIVE, |session, stopping, progress| {
+    let mut sent = with_variax_progress(ctx, VARIAX_LIVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
         let baseline =
             variax_full_read(session, stopping, progress, "Checking the starting program")?.words;
@@ -417,6 +425,9 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
     });
     if sent.is_ok() {
         ctx.rec.show("The edited working buffer was verified.");
+        sent = super::guided::play_phrase(ctx, phrase, "Your temporary edited sound.");
+    }
+    if sent.is_ok() {
         let (answer, note) = ctx.op.ask(&Question {
             step: ctx.rec.id,
             text: question.into(),

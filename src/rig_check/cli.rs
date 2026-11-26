@@ -4,13 +4,18 @@ use super::catalogue::{START_NOTICE, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, StepRecord, plain_result};
 use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
-use std::io::{BufRead, Write};
+use std::cell::Cell;
+use std::io::{self, BufRead, Write};
+use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub struct Terminal<R, W> {
     input: R,
     output: W,
     results: Vec<StepRecord>,
     start_accepted: bool,
+    keyboard: Option<Rc<Receiver<String>>>,
+    stop: Rc<Cell<bool>>,
 }
 
 impl<R: BufRead, W: Write> Terminal<R, W> {
@@ -20,6 +25,8 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
             output,
             results: Vec::new(),
             start_accepted: false,
+            keyboard: None,
+            stop: Rc::new(Cell::new(false)),
         }
     }
 
@@ -32,7 +39,15 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
         self.raw_response().map(|text| text.trim().to_owned())
     }
 
+    pub fn prompt_for_report_copy(&mut self) -> String {
+        self.say("Save a copy of the report to (file path, Enter to skip):");
+        self.line()
+    }
+
     fn raw_response(&mut self) -> Option<String> {
+        if let Some(keyboard) = &self.keyboard {
+            return keyboard.recv().ok();
+        }
         let mut text = String::new();
         if self.input.read_line(&mut text).ok()? == 0 {
             return None;
@@ -102,6 +117,24 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
     }
 }
 
+impl<W: Write> Terminal<io::Empty, W> {
+    /// Read standard input while the main thread waits for device activity.
+    pub fn from_stdin(output: W) -> Self {
+        let (send, keys) = mpsc::channel();
+        std::thread::spawn(move || {
+            for input in io::stdin().lock().lines() {
+                let Ok(line) = input else { break };
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut term = Self::new(io::empty(), output);
+        term.keyboard = Some(Rc::new(keys));
+        term
+    }
+}
+
 pub fn card_text(step: &Step, mode: Mode) -> String {
     let needs = if step.needs.is_empty() {
         "nothing".to_string()
@@ -137,16 +170,22 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
     }
 
     fn confirm(&mut self, step: &Step, mode: Mode) -> Decision {
+        self.stop.set(false);
         let card = card_text(step, mode);
         let back = history::back(&self.results, None, self.start_accepted);
         loop {
             self.say(&card);
             let label = if back.is_some() { "[b] Back   " } else { "" };
+            let start = if super::catalogue::asks_for_action(step.id) {
+                "Start"
+            } else {
+                "Run"
+            };
             self.say(&format!(
-                "{label}[r] Run   [s] Skip   [q] Stop the run.   Enter = Skip (do not run)"
+                "{label}[r] {start}   [s] Skip   [q] Stop the run.   Enter = Skip (do not run)"
             ));
             match self.line().to_ascii_lowercase().as_str() {
-                "r" | "run" => return Decision::Run,
+                "r" | "run" | "start" => return Decision::Run,
                 "q" | "stop" => return Decision::Stop,
                 "b" | "back" => {
                     if let Some(back) = back {
@@ -173,12 +212,61 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         ));
     }
 
+    fn prepare_action(&mut self, step: StepId, see: &str, hear: &str) -> Decision {
+        self.say(&format!(
+            "Step {step}: get ready.\nSEE: {see}\nHEAR: {hear}"
+        ));
+        self.say("Enter = OK when ready. [s] Skip   [q] Stop");
+        match self.response().as_deref() {
+            None | Some("q" | "stop") => Decision::Stop,
+            Some("" | "ok") => Decision::Run,
+            _ => Decision::Skip,
+        }
+    }
+
+    fn watch_action(
+        &mut self,
+        _: StepId,
+        what: &str,
+        clock: std::sync::Arc<super::guided::ActionClock>,
+    ) -> Box<dyn Fn() -> bool> {
+        self.say(&format!(
+            "Get ready. Start in {} s. Watching for {what}. Enter = Continue   [+10] More time   [q] Stop",
+            super::guided::READY_DELAY.as_secs()
+        ));
+        let keyboard = self.keyboard.clone();
+        let stop = self.stop.clone();
+        let advanced = Cell::new(false);
+        Box::new(move || {
+            if advanced.get() || stop.get() {
+                return true;
+            }
+            let Some(keys) = &keyboard else { return false };
+            match keys.try_recv() {
+                Ok(line) => match line.trim().to_ascii_lowercase().as_str() {
+                    "" | "c" | "continue" => advanced.set(true),
+                    "q" | "stop" => stop.set(true),
+                    "+10" => clock.add_ten_seconds(),
+                    _ => {}
+                },
+                Err(TryRecvError::Disconnected) => stop.set(true),
+                Err(TryRecvError::Empty) => {}
+            }
+            advanced.get() || stop.get()
+        })
+    }
+
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry {
         self.say(&format!(
-            "Step {step}: didn't see it ({what}). [t] Try again  [s] Skip.  Enter = Skip"
+            "Step {step}: {what} [t] Try again  [s] Skip  [q] Stop. Enter = Skip"
         ));
-        match self.line().to_ascii_lowercase().as_str() {
-            "t" | "try" | "try again" => Retry::TryAgain,
+        match self
+            .response()
+            .map(|answer| answer.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("t" | "try" | "try again") => Retry::TryAgain,
+            None | Some("q" | "stop") => Retry::Stop,
             _ => Retry::Skip,
         }
     }
@@ -259,7 +347,7 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
     }
 
     fn stop_requested(&self) -> bool {
-        false
+        self.stop.get()
     }
 }
 
@@ -293,7 +381,7 @@ mod tests {
         record.note("Identity reply: f0 00 01 0c 03 f7");
         record.hints.push("Check the cable.".into());
 
-        let mut terminal = Terminal::new(&b"r\nc\n"[..], Vec::new());
+        let mut terminal = Terminal::new(&b"x\nc\n"[..], Vec::new());
         assert_eq!(terminal.finished(&record), ResultDecision::Continue);
         assert_eq!(
             terminal.finished(&record),
