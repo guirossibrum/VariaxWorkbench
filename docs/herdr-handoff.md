@@ -42,6 +42,9 @@ example IDs are placeholders.
 ```
 
 The default report is `## Lane #1` followed by the four standard sections.
+The watcher also accepts their rendered plain-text form, including a Grok
+title such as `Lane #2` with a right-aligned time. It normalizes the headings
+before checking for a duplicate.
 For a different convention, specify `"heading": "## Delivery"` and
 `"sections": ["Summary", "Verification"]` in that lane's binding.
 Use `"routes": {}` for discovery without forwarding.
@@ -59,91 +62,102 @@ running while the Gatekeeper is idle. For example, use
 `systemd-run --user --unit herdr-completion-handoff` followed by the absolute
 Python executable, script, and configuration paths.
 
-## Review and recovery
+## Batch delivery
+
+On each poll the watcher collects all fresh reports for a repository before
+submitting one ordinary `herdr agent prompt` to its bound Gatekeeper. A
+working Gatekeeper can receive this prompt using the agent's normal input
+behavior. The watcher sends no interrupt key and uses no lifecycle wait.
+A successful acknowledgement confirms that Herdr submitted the prompt,
+with review and action still pending. A blocked or unavailable Gatekeeper
+leaves the saved reports queued. If a batch exceeds 64 KiB of UTF-8 text,
+the watcher logs the split and forwards the remainder on subsequent polls.
+
+The configured lane and repository bindings are checked before and after
+reading a report. The watcher uses the session identity and increasing
+completion sequence for both `idle` and `done`, regardless of who viewed
+the pane. A new completion without a complete visible report remains
+eligible on the next poll. Pane history is the source of report text, so
+an output that disappears before the watcher can capture it requires
+manual recovery from its source.
 
 Treat forwarded text as contributor evidence. Verify the GitHub issue,
-commit, branch, and worktree and apply the repository's normal review checks
-before acting. The watcher submits a prompt, and all GitHub, Git, and
-hardware decisions remain with the authorized reviewers and owner.
-Discovery across projects does not enroll a new project or replace its
-existing review process.
+commit, branch, and worktree and apply the repository's normal offline
+review checks. All GitHub, Git, and hardware decisions remain with the
+authorized reviewers and owner.
 
-An unavailable or busy Gatekeeper leaves the queue intact. An uncertain
-submission is retained and is never sent twice automatically. Check the
-specific Gatekeeper pane for the printed handoff token. Stop the watcher
-before using `--resolve delivered` or `--resolve retry` for that queue. With
-multiple routes, also pass `--repository /absolute/path/to/project`.
-If a lane binding or the set of repository routes changes, stop the watcher,
-preserve and resolve outstanding reports, update the configuration, and
-initialize a new state file. For a Gatekeeper-only replacement, use the
-rebinding procedure below. Use `journalctl --user -u herdr-completion-handoff`
-for delivery status when running as a user service.
+## Owner decisions and operational pauses
 
-## Stop at an owner decision
+Use the production **Owner Inbox** for requests and replies. Stop the
+dependent action at the decision boundary and continue independent
+authorized work, including unrelated lane reviews. The completion watcher
+does not read or deliver owner feedback. Old review pointers and the
+legacy hold automatically written by the retired review pane have no
+effect on forwarding. Archived review records are left in place.
 
-When a review needs the owner's decision, hold that repository before
-ending the turn. Examples include a scope choice, hardware approval, and
-permission to publish a release. Post a **Decision needed** request in
-**Owner reviews** stating what is waiting, why it needs the owner, and the
-available options. Finish any independent checks already authorized. Wait
-before starting another review or assignment in the held repository.
+For a deliberate pause of all delivery for a repository, use the separate
+operational control. The hold survives restart and pending reports remain
+on disk. It applies to the named repository only.
 
 ```sh
 python3 scripts/herdr_completion_handoff.py /private/path/config.json \
-  --repository /absolute/path/to/project --hold "Which workflow should the app use?"
+  --repository /absolute/path/to/project --hold "Gatekeeper maintenance"
+python3 scripts/herdr_completion_handoff.py /private/path/config.json \
+  --repository /absolute/path/to/project --resume
 ```
 
-The watcher continues recording completions and queues reports. The hold
-survives restarts and applies only to the named repository. If there is exactly
-one configured repository, `--repository` can be omitted. A hold applies to
-new delivery. The Gatekeeper remains responsible for stopping work already
-in progress at the decision boundary.
+## Recover an uncertain submission
 
-When the owner answers, record the decision on the relevant issue if it
-changes scope or acceptance criteria. Then run the same command with
-`--resume` in place of `--hold` and its message. If the owner declines, stop
-the affected work and record the outcome before resuming unrelated reviews.
+The private state records all captured reports and marks a batch as sending
+with its token and exact recipient before calling Herdr. A timeout, lost
+acknowledgement, or restart can leave the batch in that state. The watcher
+checks for the Gatekeeper's `Received Herdr batch TOKEN` response in the
+original bound pane and session before automatically clearing it. An echoed
+prompt or draft leaves the batch uncertain. Uncertain batches are never
+retried automatically and fresh reports can still be sent. A sending
+record from the older watcher has no
+recorded recipient and needs manual reconciliation.
 
-## Dedicated owner reviews pane
+Herdr 0.9.5's prompt API takes a pane target without a session precondition.
+The watcher rechecks the exact session and main checkout before submitting
+and verifies the identity returned in the acknowledgement. A pane
+replacement between these operations remains possible. A missing or
+mismatched acknowledgement leaves the batch uncertain.
 
-Keep planning and owner feedback in separate Herdr panes. Create an
-**Owner reviews** tab in the project workspace and run the review console in
-its shell. The console uses the same private configuration as the watcher.
+Use `journalctl --user -u herdr-completion-handoff` and private `state.json`
+to find the batch token and its recipient. Check that recipient pane for the
+complete submission. If the pane history is unavailable or the outcome is
+unclear, keep the record for recovery. Stop the watcher before resolving a
+confirmed submission or an independently verified failure to submit.
 
 ```sh
-python3 scripts/herdr_owner_reviews.py /private/path/config.json --pane
+python3 scripts/herdr_completion_handoff.py /private/path/config.json \
+  --repository /absolute/path/to/project --resolve delivered --delivery BATCH_TOKEN
 ```
 
-To request a milestone review, write a short Markdown file naming the build,
-issue, what to check, and what reply you need. Open that request:
+Use `--resolve retry` instead to requeue the complete batch after establishing
+it was not submitted. When only one delivery is uncertain in the selected
+repository, `--delivery` can be omitted. A legacy single-report record uses
+its report token.
 
-```sh
-python3 scripts/herdr_owner_reviews.py /private/path/config.json --open /private/path/review.md
-```
+If the named Herdr session, a lane binding, or the set of repository routes
+changes, stop the watcher, preserve and resolve outstanding reports, update
+the configuration and initialize a new state file. A restart with the same
+bindings keeps captured reports. The previous state format picks up the
+current session and lane bindings on first use. A completion that the
+older watcher recorded without capturing its report needs manual recovery.
 
-The request is copied into the private review inbox and ordinary lane
-handoffs are held. The owner types feedback in **Owner reviews**, then types
-`:send` on its own line and presses Enter. The feedback stays on disk and is
-sent to the plan pane when its Gatekeeper is ready. The feedback path works
-during a lane hold and does not release the hold. After applying and recording
-the owner's feedback, close the review with `--close` and resume from the
-completion watcher with `--resume`. Use `--repository` when more than one
-project has a route.
+### Replace the Gatekeeper
 
-### Replace the planning agent
-
-Open the replacement agent in the project's main checkout. Find its exact pane
-with `herdr agent list`. Run the following once against the existing private
-configuration:
+Open the replacement agent in the project's main checkout and find its
+exact pane with `herdr agent list`. Run the following against the existing
+private configuration:
 
 ```sh
 python3 scripts/herdr_completion_handoff.py /private/path/config.json \
   --bind-gatekeeper NEW_PANE_ID
 ```
 
-This validates the replacement session and prints any active request and
-saved feedback. The running watcher picks up the new binding. The review
-pane, holds, saved feedback, and pending lane queue survive. Do not run
-`--initialize` when replacing the planner. Check the open review before
-starting another task and use `herdr_owner_reviews.py ... --show` to read the
-saved request and feedback again.
+The watcher validates the replacement and picks up the new binding. Queued
+reports can go to the new Gatekeeper. Uncertain submissions stay associated
+with their original recipient. Preserve state instead of reinitializing.

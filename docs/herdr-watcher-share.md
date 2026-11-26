@@ -25,15 +25,13 @@ The watcher polls about every eight seconds. It keeps the last 500 completion
 records, each with its repository, workspace, pane, agent session, and
 completion number. It forwards a report only if the exact session and
 repository still match, the report fits the configured template, and the
-bound Gatekeeper is ready. The on-disk queue survives an agent replacement
-or watcher restart.
+bound Gatekeeper can accept a normal prompt, including while working. The
+watcher batches fresh reports by repository. Saved reports survive a restart.
 
 ## Reuse it in your project
 
-- Use [the watcher](../scripts/herdr_completion_handoff.py) and
-  [the owner review console](../scripts/herdr_owner_reviews.py) from the
-  same revision and keep them in the same directory. It needs Python 3.10+,
-  Git, Herdr, and access to the relevant local Herdr session.
+- Use [the watcher](../scripts/herdr_completion_handoff.py). It needs
+  Python 3.10+, Git, Herdr, and access to the relevant local Herdr session.
 - In an ignored, private configuration, use the repository's main checkout
   as the route key. Bind its Gatekeeper and contributor panes using the
   exact pane and session objects returned by Herdr. The
@@ -49,21 +47,19 @@ or watcher restart.
 
 ## Holds, replacement, and manual recovery
 
-- While a repository is held, completed lane reports queue. The separate
-  **Owner reviews** pane saves human feedback and passes it to the plan pane
-  even during the hold. The Gatekeeper records the outcome before resuming.
+- Explicit operational holds queue lane reports. Owner decisions go through
+  the production **Owner Inbox** and pause only the dependent action.
 - To replace the planner, use `--bind-gatekeeper NEW_PANE_ID` against the
-  existing private configuration. The command prints the pending review and
-  saved feedback. Do not initialize a new state file for a planner swap.
+  existing private configuration. Queued reports follow the new binding and
+  uncertain submissions stay with their original recipient. Preserve state.
 - Inspect the service with
   `journalctl --user -u herdr-completion-handoff`. The private `state.json`
   shows discovery events and queued lane reports. Keep pane text, local
   configuration, and owner feedback private.
-- Some agent terminals render Markdown and strip the literal heading
-  markers. Herdr can detect the completion even when the report parser
-  cannot forward it. Lane 2's rendered Grok report showed this behavior.
-  In that case, read the completed pane directly. Use the runbook's recovery
-  procedure for an uncertain send to avoid a duplicate.
+- The watcher accepts literal Markdown and rendered headings such as Grok's
+  timestamped lane title and plain section labels. If a fresh report is
+  unavailable in pane history, read its source directly. Reconcile uncertain
+  batches using the runbook before any retry.
 
 A Gatekeeper still checks the current issue, exact commit, branch,
 worktree, and verification evidence. The watcher does not merge code,
