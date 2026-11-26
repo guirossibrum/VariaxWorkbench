@@ -49,6 +49,29 @@ These are the owner's requirements from #243 (2026-11-25).
    evidence. No network access. Personal data is redacted. Backups go in a
    separate, optional evidence folder.
 
+## Continue a saved run
+
+Choose **Open last report** or **Choose report…** on launch. Use the original
+report alongside its companion `.state` file and `-evidence` folder. The
+preview shows the first failed or unfinished check, the prior results eligible
+for reuse and any backup check that needs to run again. Choose **Resume…** and
+confirm the start and revalidation notices. A continuation gets a new report
+with its source, reused results and earlier attempts.
+
+Rig Check compares the supported identities and the required starting tone,
+channel and guitar program with the saved run. A changed tone or program stops
+continuation before live or save checks. Return to the starting settings using
+the original report, then reopen it. Rig Check refuses a stopped final guard
+or an unresolved prior edit or store. A completed store is reused and its
+command is never replayed. New saves still require the usual approvals,
+prerequisite checks and typed confirmations.
+
+The f13eaf7 Mac build used catalogue 1.5 and checked Drive alone. Rig Check
+checks that build's original step IDs and backup evidence before reusing its
+results. The old Drive failure stays in the earlier attempts. A resumed run
+retries 7.5 with the six-knob sweep and runs the footswitch return before live
+work. A complete verified library does not require another full backup.
+
 ## Risk levels
 
 | Level | Meaning |

@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] Native Mac acceptance for the private two-app universal DMG with the six-knob sweep, report continuation, the merged layout and the Variax checksum comparison. Gatekeeper review and merge come before building and transferring it. [#298](https://github.com/guirossibrum/VariaxWorkbench/issues/298).
+
 - [ ] First-connection library cache receipt publication, offline startup, and editor and connection integration. Offline Variax snapshot validation is complete (#284). The consent-based offer awaits review. [Design and Lane 3 handoff](first-connection-cache.md).
 
 - [ ] #206 owner verification of global string levels. All three approvals remain closed. The editor verifies RAM with `0x57`. Flash persistence needs a separate owner procedure, and piezo listening needs its own DSP bypass and recovery procedure. [Owner test card](../src/families/variax/editor/string-volume-test-card.md).

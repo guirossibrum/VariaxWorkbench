@@ -369,7 +369,11 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let model = podxt::member_name(identity.member);
     if let Some(root) = &ctx.data.evidence_dir {
         let folder = ctx.rec.evidence_folder("podxt-identity");
-        evidence::save_folder(root, &folder, &[("identity.bin".into(), reply.clone())])?;
+        let manifest =
+            evidence::save_folder(root, &folder, &[("identity.bin".into(), reply.clone())])?;
+        ctx.rec
+            .checksums
+            .push(("PODxt identity manifest".into(), manifest));
     }
     ctx.rec.note(format!("Identity reply: {}", hex(&reply)));
     ctx.rec.show(format!(
@@ -443,11 +447,14 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .note(format!("Dump SHA-256 {hash}: {}", hex(&tone.raw)));
     if let Some(root) = &ctx.data.evidence_dir {
         let folder = ctx.rec.evidence_folder("podxt-start");
-        evidence::save_folder(
+        let manifest = evidence::save_folder(
             root,
             &folder,
             &[("edit-buffer.bin".into(), tone.raw.clone())],
         )?;
+        ctx.rec
+            .checksums
+            .push(("PODxt start manifest".into(), manifest));
         ctx.rec
             .note(format!("Captured starting PODxt edit buffer in {folder}."));
     }
@@ -529,6 +536,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         podxt::backup::save_podxt_library(&mut folder, &library)?;
         let path = folder.finish(true)?;
         let manifest = std::fs::read(path.join("MANIFEST.sha256")).map_err(|e| e.to_string())?;
+        let manifest_hash = ctx.rec.checksum("PODxt library manifest", &manifest);
         ctx.rec.note(format!(
             "Saved the 299-entry backup to {} (manifest SHA-256 {}).",
             if ctx.data.evidence_dir.is_some() {
@@ -536,7 +544,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
             } else {
                 "a temporary practice folder"
             },
-            &super::record::sha256_hex(&manifest)[..16]
+            &manifest_hash[..16]
         ));
         ctx.data.podxt_backup_dir = Some(path);
     }
@@ -655,7 +663,10 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 .map(|(index, reply)| (format!("reply-{:02}.bin", index + 1), reply.clone())),
         );
         let folder = ctx.rec.evidence_folder("variax-start");
-        evidence::save_folder(root, &folder, &files)?;
+        let manifest = evidence::save_folder(root, &folder, &files)?;
+        ctx.rec
+            .checksums
+            .push(("Variax start manifest".into(), manifest));
         ctx.rec.note(format!(
             "Captured starting Variax program and raw replies in {folder}."
         ));
@@ -776,6 +787,9 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
         let folder = ctx.rec.evidence_folder("variax-library");
         let manifest = evidence::save_folder(&root, &folder, &files)?;
         ctx.data.variax_backup_folder = Some(folder.clone());
+        ctx.rec
+            .checksums
+            .push(("Variax library manifest".into(), manifest.clone()));
         ctx.rec.note(format!(
             "Saved {} programs to the evidence folder {folder} (manifest SHA-256 {manifest}).",
             files.len()

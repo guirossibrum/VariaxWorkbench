@@ -166,6 +166,7 @@ pub fn match_hash(words: &Program) -> Option<String> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RigState {
     pub report: String,
+    pub report_sha256: Option<String>,
     pub started: String,
     pub podxt_channel: Option<u16>,
     pub podxt_tone_sha256: Option<String>,
@@ -179,6 +180,7 @@ impl RigState {
     pub fn from_run(run: &RunRecord, data: &RunData, report: &str) -> Self {
         Self {
             report: report.into(),
+            report_sha256: None,
             started: run.started.clone(),
             podxt_channel: data.start_channel.map(|c| c.index()),
             podxt_tone_sha256: data.start_tone.as_ref().map(|t| sha256_hex(&t.raw)),
@@ -191,7 +193,7 @@ impl RigState {
     pub fn text(&self) -> String {
         let opt = |v: &Option<String>| v.clone().unwrap_or_default();
         format!(
-            "rig-check-state 1\nreport={}\nstarted={}\npodxt_channel={}\npodxt_tone_sha256={}\nvariax_preset={}\nvariax_match_sha256={}\nfinished={}\n",
+            "rig-check-state 1\nreport={}\nstarted={}\npodxt_channel={}\npodxt_tone_sha256={}\nvariax_preset={}\nvariax_match_sha256={}\nfinished={}\nreport_sha256={}\n",
             self.report,
             self.started,
             self.podxt_channel.map_or(String::new(), |c| c.to_string()),
@@ -199,7 +201,8 @@ impl RigState {
             self.variax_preset
                 .map_or(String::new(), |(b, s)| format!("{b}.{s}")),
             opt(&self.variax_match_sha256),
-            self.finished
+            self.finished,
+            opt(&self.report_sha256)
         )
     }
 
@@ -223,6 +226,7 @@ impl RigState {
                         .and_then(|(b, s)| Some((b.parse().ok()?, s.parse().ok()?)))
                 }
                 "variax_match_sha256" => state.variax_match_sha256 = some(value),
+                "report_sha256" => state.report_sha256 = some(value),
                 "finished" => state.finished = value == "true",
                 _ => {}
             }
@@ -248,6 +252,22 @@ impl RigState {
             self.preset().map_or("unknown".into(), preset_label)
         )
     }
+}
+
+/// Lock a checkpoint for its writer's lifetime. The stable sidecar stays in
+/// place while the report and state files are replaced. The OS releases the
+/// lock if the app exits or crashes.
+pub(super) fn lock_checkpoint(path: &Path) -> Result<std::fs::File, String> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("run-lock"))
+        .map_err(|error| format!("Cannot open the checkpoint lock: {error}"))?;
+    file.try_lock().map_err(|error| {
+        format!("Cannot lock the checkpoint. Another Rig Check may be using it: {error}")
+    })?;
+    Ok(file)
 }
 
 /// Write the state file next to the report (atomic replace of our own file).
@@ -576,6 +596,7 @@ mod tests {
     fn state_files_round_trip() {
         let state = RigState {
             report: "rig-check-x.txt".into(),
+            report_sha256: None,
             started: "2026-11-25 01:00:00 UTC".into(),
             podxt_channel: Some(17),
             podxt_tone_sha256: Some("aa".into()),

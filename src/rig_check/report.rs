@@ -99,6 +99,14 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
         }
     }
 
+    if let Some(source) = &run.continued_from {
+        section(&mut out, "CONTINUATION");
+        let _ = writeln!(out, "Source report: {source}");
+        for line in &run.continuation {
+            let _ = writeln!(out, "{line}");
+        }
+    }
+
     section(&mut out, "COMPUTER");
     if run.computer.is_empty() {
         let _ = writeln!(out, "(not collected: step 0.1/0.2 did not run)");
@@ -142,6 +150,9 @@ fn render_step(out: &mut String, step: &StepRecord) {
         step.title,
         step.outcome.label()
     );
+    if step.reused {
+        let _ = writeln!(out, "  Reused from the source report.");
+    }
     if let Some(attempt) = step.attempt {
         let _ = writeln!(out, "  Attempt: {attempt}");
     }
@@ -241,7 +252,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
     let steps = run.steps.iter().map(json_step).collect::<Vec<_>>();
     let prior = run.prior_attempts.iter().map(json_step).collect::<Vec<_>>();
     format!(
-        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
+        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"continued_from\":{},\"continuation\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
         json_string(run.app_version),
         run.git_commit.map_or("null".into(), json_string),
         json_string(run.catalogue_version),
@@ -251,6 +262,10 @@ pub fn json(run: &RunRecord, written: &str) -> String {
         run.finished,
         run.stopped_at
             .map_or("null".into(), |id| json_string(&id.to_string())),
+        run.continued_from
+            .as_deref()
+            .map_or("null".into(), json_string),
+        json_list(&run.continuation),
         json_string(&run.rig_state),
         json_string(&run.rig_description),
         json_pairs(&run.computer),
@@ -262,9 +277,10 @@ pub fn json(run: &RunRecord, written: &str) -> String {
 
 fn json_step(step: &StepRecord) -> String {
     format!(
-        "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"technical\":{},\"hints\":{}}}",
+        "{{\"id\":{},\"title\":{},\"reused\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"display_results\":{},\"technical\":{},\"hints\":{}}}",
         json_string(&step.id.to_string()),
-        json_string(step.title),
+        json_string(&step.title),
+        step.reused,
         json_string(step.outcome.code()),
         step.outcome.reason().map_or("null".into(), json_string),
         step.outcome
@@ -284,6 +300,7 @@ fn json_step(step: &StepRecord) -> String {
         )),
         json_pairs(&step.checksums),
         json_list(&step.evidence),
+        json_list(&step.result),
         json_list(&step.technical_lines().collect::<Vec<_>>()),
         json_list(&step.hints),
     )
@@ -352,6 +369,10 @@ impl ReportFile {
 }
 
 impl ReportSink for ReportFile {
+    fn report_digest(&self) -> Option<String> {
+        Some(super::record::sha256_hex(self.last.as_bytes()))
+    }
+
     fn update(&mut self, run: &RunRecord) -> Result<(), String> {
         let written = utc_text(self.clock.unwrap_or_else(unix_now));
         let text = render(run, &self.redactor, &written);
@@ -368,8 +389,8 @@ pub fn save_copy(text: &str, path: &Path) -> Result<(), String> {
 
 /// The JSON block of a saved report, if present and complete.
 pub fn json_block(text: &str) -> Option<&str> {
-    let start = text.find(JSON_BEGIN)? + JSON_BEGIN.len();
-    let end = text[start..].find(JSON_END)? + start;
+    let end = text.rfind("\nEND RIG CHECK JSON")?;
+    let start = text[..end].rfind("\nBEGIN RIG CHECK JSON\n")? + JSON_BEGIN.len() + 1;
     Some(text[start..end].trim())
 }
 

@@ -37,6 +37,7 @@ pub mod record;
 pub mod recover;
 pub mod redact;
 pub mod report;
+pub mod resume;
 pub mod runner;
 pub mod steps;
 #[cfg(test)]
@@ -79,6 +80,20 @@ pub fn run_with_state(
     let mut runner = Runner::new(port, op, sink, data);
     runner.state_file = Some(state_file);
     runner.run()
+}
+
+/// Revalidate and continue a report in a new checkpoint.
+pub fn continue_on(
+    port: &mut dyn RigPort,
+    op: &mut dyn Operator,
+    sink: &mut dyn ReportSink,
+    data: RunData,
+    state_file: std::path::PathBuf,
+    plan: resume::Plan,
+) -> (record::RunRecord, RunData) {
+    let mut runner = Runner::new(port, op, sink, data);
+    runner.state_file = Some(state_file);
+    runner.run_from(Some(plan))
 }
 
 /// Run the whole catalogue on a caller-supplied port (the real rig).
