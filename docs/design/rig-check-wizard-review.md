@@ -10,8 +10,10 @@ Screen index and the three open layout questions:
 Headless pictures: [docs/rig-check/mockups](../rig-check/mockups/).
 A later checkpoint, [guided prompts](rig-check-guided-prompts.md), maps
 the current Get ready wording, the footswitch and expression-pedal
-prompts, and a proposed recovery from an accidental Skip. It does not
-replace this checklist, and it is not owner approval.
+prompts, a proposed recovery from an accidental Skip, and how a
+continuation names its resume target, a prerequisite reread, and a
+kept expected firmware skip. It does not replace this checklist, and
+it is not owner approval.
 
 ## Approval on record
 

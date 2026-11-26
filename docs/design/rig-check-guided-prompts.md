@@ -1,15 +1,18 @@
 # Rig Check guided prompts
 
 [#248](https://github.com/guirossibrum/VariaxWorkbench/issues/248).
-Design checkpoint for the owner. The wizard and terminal text cited
-here is the text on `dac532129971e18571bc2b4065ffcbbe76caf985`. Those
-files are unchanged through `cfd31f47cd51a3e56febd0a09e621bd17fdaf73c`,
-the branch base. It maps that wizard and terminal, and proposes three
-changes for a later implementation:
-when the act-now sentence appears, how step 7.3 names a footswitch and
-step 7.4 names the expression pedal, and how an accidental Skip is
-retried from review. This file does not change Rust sources, gates, or
-the fourteen headless pictures. It is not owner approval.
+Design checkpoint for the owner. The common guided chrome cited here
+is the text on `dac532129971e18571bc2b4065ffcbbe76caf985`. That chrome
+is unchanged through `28534593902ab0c61e0d05a7d463f50369d57ce8`, the
+branch base, except the 6.1 cable sentences, which Lane 1 replaced on
+this base. It maps that wizard and terminal, and proposes four changes
+for a later implementation: when the act-now sentence appears, how
+step 7.3 names a footswitch and step 7.4 names the expression pedal,
+how an accidental Skip is retried from review, and how a continuation
+preview and the progress list separate the resume target, a
+prerequisite reread, and a kept expected firmware skip. This file does
+not change Rust sources, gates, resume selection, or the fourteen
+headless pictures. It is not owner approval.
 
 The screenshot checklist remains
 [rig-check-wizard-review.md](rig-check-wizard-review.md). Screen index:
@@ -19,7 +22,7 @@ The screenshot checklist remains
 
 | Issue | Owns in this round | Stays out of this file's proposal |
 | --- | --- | --- |
-| #248, this checkpoint | Common guided chrome: prepare, Get ready, and NOW. Footswitch and expression-pedal wording. Review-only Back, plus the explicit Skip recovery described for #276. | 6.1 detection, identity fallback, and cable-state sentences. Application code. |
+| #248, this checkpoint | Common guided chrome: prepare, Get ready, and NOW. Footswitch and expression-pedal wording. Review-only Back, plus the explicit Skip recovery described for #276. Continuation preview and progress lines that name the resume target, a prerequisite reread, and a kept expected firmware skip. | 6.1 detection, identity fallback, and cable-state sentences. How a continuation chooses its target, which steps it keeps, which it reads again, live identity revalidation, and the #255 checksum refusal. Application code. |
 | #260, Lane 1 | Offline 6.1 state machine: unplug, detected, reconnect, and restoration cues. Automatic advance on supported evidence. Bounded identity checks when the Mac relay gives no notice. No-response distinct from a failed transport. The same verified identity on return. Tests for notice and no-notice, no prompt during a read, timing, timeout, and Stop. | The common Ready / NOW chrome, footswitch and expression-pedal copy, and Skip recovery. Those stay here and with #276. |
 | #276 | After this design is marked, the implementation of Back, the explicit retry, dependency recomputation, and the Practice path Skip → Back → explicit retry → current card. | A second way for Back or Return to start a device action. |
 
@@ -54,6 +57,12 @@ outcomes used here:
   the action window. The catalogue has one such sweep.
 - The summary counts skipped-by-you as 0. This run does not contain an
   accidental Skip. The keyboard default that causes one is still present.
+- 3.2 passed. 3.3 failed the checksum check. 3.7 is the expected
+  firmware skip: the Variax reports firmware 3.10, the tested version.
+- The owner reported the continuation of that run through #297. Resume
+  looked as if it had stopped on 3.7. The continuation selected 3.3,
+  carried 3.7 forward as that expected skip, read 3.2 again, and failed
+  3.3 again. No second report is quoted here.
 
 7.3 and 7.4 ran as two separate pedalboard steps. 7.2 is the Variax
 volume and tone knobs. 7.5 is the six PODxt Live tone knobs. Those two
@@ -63,7 +72,8 @@ are not pedalboard steps.
 
 Source: `src/rig_check/gui/mod.rs`, `src/rig_check/cli.rs`,
 `src/rig_check/guided.rs`, `src/rig_check/catalogue.rs`,
-`src/rig_check/recover.rs`. The window and the terminal share the runner.
+`src/rig_check/recover/vdi.rs`, `src/rig_check/resume.rs`. The window
+and the terminal share the runner.
 
 A guided step has four spoken moments today.
 
@@ -84,11 +94,11 @@ A guided step has four spoken moments today.
    get-ready countdown" and completes the phase. That is what 7.3's
    return did.
 
-6.1 uses this same `begin_action` path. Its current SEE lines are
-"Unplug the VDI cable from the guitar after OK." and "The guitar is not
-answering. Plug the VDI cable back in, then press Continue if the screen
-is still waiting." Lane 1 replaces those cues. The chrome around them is
-the common sequence in the next section.
+6.1 uses this same `begin_action` path. On this base its act sentences,
+in `src/rig_check/recover/vdi.rs`, are "Unplug the VDI cable from the
+guitar. Leave the PODxt Live USB cable connected." and "Plug the VDI
+cable back into the guitar." Those sentences belong to Lane 1. The
+chrome around them is the common sequence in the next section.
 
 ### Window keys
 
@@ -268,6 +278,64 @@ person-skip alone does not set that failure. An automatic skip of a
 tested-firmware check still does not block saves. Those are the
 runner's rules on this head, in `precheck`.
 
+## Resume target, prerequisite, and kept skip
+
+[#297](https://github.com/guirossibrum/VariaxWorkbench/issues/297).
+Catalogue order is 3.1, then 3.7, then 3.2, then 3.3. On the saved run,
+3.7 is already complete: it is the expected firmware skip for Variax
+firmware 3.10, the tested version. The continuation's target is 3.3.
+3.2 is read again because that passed read is the input to 3.3's
+full-program cross-check. 3.7 is carried forward with the other kept
+results and is left as the expected skip.
+
+The window preview is the continuation card. Its strong line is
+"Continue at {id} {title}" for the plan target. The notes under it
+include "First failed or unfinished check: {target}." and, for this
+target, "The Variax settings will be read again for the full-program
+cross-check." "Passed checks eligible for reuse" lists only reused
+steps that passed, so 3.7 is absent from that line. The sidebar tag is
+40 by 18 points. A reused pass is REUSED. An expected firmware skip and
+a skip the person chose both use the tag SKIP. The terminal does not
+print this card. After Resume…, the window and the terminal both ask
+the existing continuation confirmation before any reused result is
+committed.
+
+The card and the progress list each show three role lines. The plan's
+target, rebuild set, and reused set stay as `resume.rs` builds them.
+
+**Resume retries.** "Resume retries {id} {title}." In this continuation
+that is 3.3, Variax full current program, and the line keeps the last
+result: the checksum did not match. A mismatch fails 3.3 again. That
+#255 refusal stays. The target's progress row says "Resume retries this
+step." When the first open applicable step is a skip the person chose,
+this line names that step, and the row adds "Skipped by you. Can need
+attention."
+
+**Read again first.** One line for each step the plan will run again
+before the target. "Read again first: {id} {title}." For 3.3 the body
+stays "The Variax settings will be read again for the full-program
+cross-check." and the step is 3.2, Variax current settings. Until 3.2
+is the running step, its progress row says "Read again before 3.3."
+
+**Expected skip, kept.** One line for each reused expected firmware
+skip. "Expected skip, kept: {id} {title}. Firmware {version} is the
+tested version, so this step is already complete." In this continuation
+that is 3.7, Compatibility check for other firmware versions, and the
+version is 3.10. The progress tag stays SKIP. A second line under the
+title repeats "Expected skip, kept." A skip the person chose keeps
+"Skipped by you. Can need attention." and stays off this heading. The
+#276 control "Run this skipped step" remains the review path for that
+skip.
+
+Passed steps that the continuation reuses stay on "Passed checks
+eligible for reuse," and their tag stays REUSED.
+
+The continuation starts only when Resume… is chosen. Start new stays
+the first button. The confirmation stays the one in `Plan::revalidate`:
+Rig Check checks the connected rig and the starting state, including
+live identity, before reusing results. A refusal ends the continuation
+during that read-only check. Selection, retain, and rebuild stay.
+
 ## Live and write authorization
 
 This checkpoint changes no constant in `src/hardware_gates.rs` and no
@@ -277,7 +345,10 @@ still require the typed confirmation, and still have no repeat. The
 proposed retry never calls a store and never repeats a live send. Audio
 steps 8.2–8.5 stay unavailable. #267 remains the owner's release for
 real guided steps. A mark on this file is design approval to implement
-the chrome and the retry. It is not a new device permission.
+the chrome, the retry, and the resume role lines. It is not a new
+device permission, and it leaves continuation selection, retain,
+rebuild, live identity revalidation, and the checksum refusal as they
+are.
 
 ## Owner marks
 
@@ -292,6 +363,7 @@ Write **Approve** or **Change** on each row.
 | 5 | 7.3 says channel footswitch. 7.4 says expression pedal. CC 4 and CC 7 read "expression pedal" on every PODxt listen. | |
 | 6 | Back and Return stay review-only. "Run this skipped step" is a separate, unfocused control, confirmed by "Keep it skipped" as the focused choice. | |
 | 7 | The retry keeps both attempts, recomputes only unexecuted dependents, and does not replay a live send or a store. | |
+| 8 | The continuation card and the progress list name three roles. Resume retries is 3.3 in this report. Read again first is 3.2. Expected skip, kept is 3.7, already complete for firmware 3.10. A skip the person chose can need attention. Resume… stays its own button. | |
 
 ## Later implementation
 
@@ -304,6 +376,9 @@ No code in this checkpoint. After the marks:
   path are #276, against rows 6 and 7.
 - The 6.1 state machine is #260, against row 4, using this chrome and
   Lane 1's own sentences.
+- The three continuation role lines, on the window card and the
+  progress rows, are a #248 implementation against row 8. They label
+  the plan that `resume.rs` already builds.
 
 `docs/rig-check/design.md`, the catalogue, and the fourteen pictures
 stay as they are until that implementation. The roadmap bullet for #248
