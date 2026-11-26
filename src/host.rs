@@ -2,6 +2,7 @@
 //! This module never opens a device or builds a transport session.
 use crate::{dsp::PACKED_BYTES, preset::PresetFile};
 use std::collections::BTreeMap;
+mod embedded_models;
 mod engine;
 pub use engine::{HostEngine, ModelLibrary};
 

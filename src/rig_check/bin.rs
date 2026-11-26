@@ -20,7 +20,7 @@ const USAGE: &str = "Usage: rig-check [--practice | --real] [--text] [--out DIR]
   --real      use the connected PODxt Live and Variax (device steps need the owner's approval)
   --out DIR   folder for the report (default: rig-check-output next to this program)
   --evidence  save raw evidence in practice (always saved for real runs)
-  --engine-folder DIR  your own reference models for step 0.3 (models.tsv, NAME.vwm, NAME.packed or NAME.sha256)";
+  --engine-folder DIR  use local Variax models and reference programs instead of the bundle (models.tsv, NAME.vwm, NAME.packed or NAME.sha256)";
 
 struct Options {
     /// `None`: the person chooses in the window.

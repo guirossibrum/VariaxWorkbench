@@ -47,6 +47,8 @@ jobs:
           cargo test --offline --locked --no-default-features --features gui,portable-math
           (cd crates/line6-devices && cargo test --offline --locked --no-default-features)
           python3 packaging/macos/test_package.py
+      - name: Record bundled Variax data and portable render checksums
+        run: cargo run --offline --locked --no-default-features --features portable-math --example verify_variax_models
       - name: Build and verify universal package
         run: packaging/macos/build.sh "$RUNNER_TEMP/macos-package"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

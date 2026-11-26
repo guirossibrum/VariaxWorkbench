@@ -135,9 +135,97 @@ fn sync_on<L: Link>(
     report
 }
 
+#[cfg(any(target_os = "linux", test))]
+mod rendering {
+    use line6_devices::family::variax::procedures::Image;
+    use sha2::{Digest, Sha256};
+    use std::{borrow::Cow, io::Read, path::Path};
+    use variax_workbench::host::ModelLibrary;
+
+    pub(super) struct Rendering {
+        pub(super) models: Cow<'static, ModelLibrary>,
+        reference: Option<String>,
+    }
+
+    impl Rendering {
+        pub(super) fn load(preferences: &Path) -> Result<Self, String> {
+            let directory = preferences.with_file_name("variax-live-reference");
+            match std::fs::symlink_metadata(&directory) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                    models: Cow::Borrowed(ModelLibrary::built_in()?),
+                    reference: None,
+                }),
+                Err(error) => Err(format!("{}: {error}", directory.display())),
+                Ok(_) => Ok(Self {
+                    models: Cow::Owned(ModelLibrary::load_manifest(&directory.join("models.tsv"))?),
+                    reference: Some(open_reference(&directory.join("workbench.sha256"))?),
+                }),
+            }
+        }
+
+        pub(super) fn verify(&self, image: &Image) -> Result<(), String> {
+            let Some(reference) = &self.reference else {
+                return Ok(());
+            };
+            let digest = format!("{:x}", Sha256::digest(image));
+            if reference
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+                .any(|expected| expected.eq_ignore_ascii_case(&digest))
+            {
+                Ok(())
+            } else {
+                Err("The rendered Variax program has no matching Mac Workbench reference.".into())
+            }
+        }
+    }
+
+    fn open_reference(path: &Path) -> Result<String, String> {
+        const LIMIT: u64 = 4 * 1024 * 1024;
+        let facts = variax_workbench::path_facts(path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if !facts.regular_file || facts.len > LIMIT {
+            return Err("Expected a bounded Workbench program reference file.".into());
+        }
+        let mut text = String::new();
+        variax_workbench::open_regular_file(path)
+            .and_then(|file| file.take(LIMIT + 1).read_to_string(&mut text))
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if text.len() as u64 > LIMIT {
+            return Err("The Workbench program reference file is too large.".into());
+        }
+        Ok(text)
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn bundled_default_and_strict_local_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let preferences = tmp.path().join("preferences.toml");
+        let source = Rendering::load(&preferences).unwrap();
+        assert_eq!(source.models.bodies.len(), 28);
+        source
+            .verify(&[0; line6_devices::family::variax::procedures::PROGRAM_BYTES])
+            .unwrap();
+
+        let directory = tmp.path().join("variax-live-reference");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(Rendering::load(&preferences).is_err());
+        std::fs::write(directory.join("models.tsv"), "").unwrap();
+        std::fs::write(directory.join("workbench.sha256"), "invalid").unwrap();
+        let source = Rendering::load(&preferences).unwrap();
+        assert!(source.models.bodies.is_empty());
+        assert!(
+            source
+                .verify(&[0; line6_devices::family::variax::procedures::PROGRAM_BYTES])
+                .is_err()
+        );
+    }
+}
+
 #[cfg(all(target_os = "linux", not(test)))]
 mod linux {
-    use super::*;
+    use super::{rendering::Rendering, *};
     use crate::editor::variax_panel::{
         PresetFile, device_sync::Action, live_attachment::Attachment, live_edit::EditBufferDevice,
     };
@@ -147,7 +235,6 @@ mod linux {
         session::Quiet,
         transport::usb::UsbInterfaceLink,
     };
-    use sha2::{Digest, Sha256};
     use std::{
         io::Read,
         path::{Path, PathBuf},
@@ -263,50 +350,17 @@ mod linux {
         Ok(parameters.finish(preset.name(), &settings, generated.packed()))
     }
 
-    fn open_reference(path: &Path) -> Result<String, String> {
-        const LIMIT: u64 = 4 * 1024 * 1024;
-        let facts = variax_workbench::path_facts(path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if !facts.regular_file || facts.len > LIMIT {
-            return Err("Expected a bounded Workbench program reference file.".into());
-        }
-        let mut text = String::new();
-        variax_workbench::open_regular_file(path)
-            .and_then(|file| file.take(LIMIT + 1).read_to_string(&mut text))
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if text.len() as u64 > LIMIT {
-            return Err("The Workbench program reference file is too large.".into());
-        }
-        Ok(text)
-    }
-
-    fn require_reference(reference: &str, image: &Image) -> Result<(), String> {
-        let digest = format!("{:x}", Sha256::digest(image));
-        if reference
-            .lines()
-            .filter_map(|line| line.split_whitespace().next())
-            .any(|expected| expected.eq_ignore_ascii_case(&digest))
-        {
-            Ok(())
-        } else {
-            Err("The rendered Variax program has no matching Mac Workbench reference.".into())
-        }
-    }
-
     fn require_backup(preferences: &Path) -> Result<CompletedVariaxBackup, String> {
         LibraryPreferences::new(preferences)
             .latest_variax_library()
             .ok_or("Variax writes require a verified library backup.".into())
     }
 
-    fn load_reference(preferences: &Path) -> Result<(ModelLibrary, String), String> {
+    fn rendering(preferences: &Path) -> Result<Rendering, String> {
         if variax_workbench::math::PROFILE != "host-std-v1" {
             return Err("Variax writes require the verified host-std-v1 math profile.".into());
         }
-        let directory = preferences.with_file_name("variax-live-reference");
-        let reference = open_reference(&directory.join("workbench.sha256"))?;
-        let models = ModelLibrary::load_manifest(&directory.join("models.tsv"))?;
-        Ok((models, reference))
+        Rendering::load(preferences)
     }
 
     fn prepare_stores(
@@ -326,7 +380,7 @@ mod linux {
             );
         }
         let entries = line6_devices::backup::verified_manifest_entries(backup.folder())?;
-        let (models, reference) = load_reference(preferences)?;
+        let source = rendering(preferences)?;
         targets
             .iter()
             .map(|target| {
@@ -353,8 +407,8 @@ mod linux {
                     .map_err(|error| format!("{}: {error}", path.display()))?;
                 let backup = Image::try_from(bytes)
                     .map_err(|_| format!("{} has an invalid program length.", path.display()))?;
-                let candidate = render(&target.model, &models, false)?;
-                require_reference(&reference, &candidate)?;
+                let candidate = render(&target.model, &source.models, false)?;
+                source.verify(&candidate)?;
                 Program::new(target.model.name(), &candidate)?;
                 Ok(StoreImages { candidate, backup })
             })
@@ -419,12 +473,12 @@ mod linux {
                 .as_deref()
                 .ok_or("Variax live sends require a local app data directory.")?;
             require_backup(preferences)?;
-            let (models, reference) = load_reference(preferences)?;
-            let image = render(model, &models, false)?;
-            require_reference(&reference, &image)?;
+            let source = rendering(preferences)?;
+            let image = render(model, &source.models, false)?;
+            source.verify(&image)?;
             let transition = if previous.is_some_and(|previous| previous.tuning_transition) {
-                let muted = render(model, &models, true)?;
-                require_reference(&reference, &muted)?;
+                let muted = render(model, &source.models, true)?;
+                source.verify(&muted)?;
                 Some(muted)
             } else {
                 None

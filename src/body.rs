@@ -38,15 +38,28 @@ pub struct LowCut {
     pub fourth_order: bool,
 }
 
-// Wire declarations follow the original serializer's field order. Integer
+// Variant fields have the same order in both encodings. Integer
 // discriminants remain raw until their DSP semantics are independently verified.
 trait Wire: Sized {
     fn decode(input: &mut Reader<'_>) -> Self;
-    fn encode(&self, output: &mut Vec<u8>);
+    fn encode(&self, output: &mut Writer);
 }
 struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
+    little_endian: bool,
+}
+struct Writer {
+    bytes: Vec<u8>,
+    little_endian: bool,
+}
+impl Writer {
+    fn new(little_endian: bool) -> Self {
+        Self {
+            bytes: Vec::with_capacity(BODY_DEFINITION_BYTES),
+            little_endian,
+        }
+    }
 }
 impl Reader<'_> {
     fn take<const N: usize>(&mut self) -> [u8; N] {
@@ -59,31 +72,39 @@ impl Wire for bool {
     fn decode(input: &mut Reader<'_>) -> Self {
         input.take::<1>()[0] != 0
     }
-    fn encode(&self, output: &mut Vec<u8>) {
-        output.push(u8::from(*self));
+    fn encode(&self, output: &mut Writer) {
+        output.bytes.push(u8::from(*self));
     }
 }
 impl Wire for u32 {
     fn decode(input: &mut Reader<'_>) -> Self {
-        Self::from_be_bytes(input.take())
+        if input.little_endian {
+            Self::from_le_bytes(input.take())
+        } else {
+            Self::from_be_bytes(input.take())
+        }
     }
-    fn encode(&self, output: &mut Vec<u8>) {
-        output.extend(self.to_be_bytes());
+    fn encode(&self, output: &mut Writer) {
+        output.bytes.extend(if output.little_endian {
+            self.to_le_bytes()
+        } else {
+            self.to_be_bytes()
+        });
     }
 }
 impl Wire for f32 {
     fn decode(input: &mut Reader<'_>) -> Self {
-        Self::from_be_bytes(input.take())
+        Self::from_bits(u32::decode(input))
     }
-    fn encode(&self, output: &mut Vec<u8>) {
-        output.extend(self.to_be_bytes());
+    fn encode(&self, output: &mut Writer) {
+        self.to_bits().encode(output);
     }
 }
 impl<T: Wire, const N: usize> Wire for [T; N] {
     fn decode(input: &mut Reader<'_>) -> Self {
         std::array::from_fn(|_| T::decode(input))
     }
-    fn encode(&self, output: &mut Vec<u8>) {
+    fn encode(&self, output: &mut Writer) {
         for value in self {
             value.encode(output);
         }
@@ -97,7 +118,7 @@ macro_rules! wire_struct {
             fn decode(input: &mut Reader<'_>) -> Self {
                 Self { $($field: <$kind>::decode(input)),* }
             }
-            fn encode(&self, output: &mut Vec<u8>) { $(self.$field.encode(output);)* }
+            fn encode(&self, output: &mut Writer) { $(self.$field.encode(output);)* }
         }
     };
 }
@@ -118,7 +139,7 @@ impl Wire for BodyResonance {
             treble_mix: f32::decode(input),
         }
     }
-    fn encode(&self, out: &mut Vec<u8>) {
+    fn encode(&self, out: &mut Writer) {
         self.enabled.encode(out);
         self.resonator_enabled.encode(out);
         self.frequencies.encode(out);
@@ -140,7 +161,7 @@ impl Wire for LowCut {
             fourth_order: bool::decode(input),
         }
     }
-    fn encode(&self, out: &mut Vec<u8>) {
+    fn encode(&self, out: &mut Writer) {
         self.enabled.encode(out);
         self.frequency.encode(out);
         self.fourth_order.encode(out);
@@ -285,12 +306,9 @@ pub struct BodyDefinition {
     pub variants: [BodyVariant; 6],
 }
 
+#[cfg(test)]
 fn float(bytes: &[u8], offset: usize) -> f32 {
     f32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
-}
-
-fn floats<const N: usize>(bytes: &[u8], offset: usize) -> [f32; N] {
-    std::array::from_fn(|i| float(bytes, offset + i * 4))
 }
 
 /// The exact nested interpolation operations selected by the native routing
@@ -383,35 +401,44 @@ impl BodyDefinition {
     /// Decode an exact legacy resource. Booleans follow the native != 0 rule;
     /// floating-point bit patterns are retained, including nonfinite values.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        Self::decode(bytes, false)
+    }
+
+    pub(crate) fn parse_model_record(bytes: &[u8]) -> Result<Self, String> {
+        Self::decode(bytes, true)
+    }
+
+    fn decode(bytes: &[u8], little_endian: bool) -> Result<Self, String> {
         if bytes.len() != BODY_DEFINITION_BYTES {
             return Err(format!(
                 "body definition must contain {BODY_DEFINITION_BYTES} bytes, got {}",
                 bytes.len()
             ));
         }
-        let pickup_defaults = std::array::from_fn(|i| {
-            let start = 1 + i * 32;
-            PickupDefaults {
-                position: float(bytes, start),
-                angle: float(bytes, start + 4),
-                pole_offsets: floats(bytes, start + 8),
-            }
+        let mut reader = Reader {
+            bytes,
+            offset: 0,
+            little_endian,
+        };
+        let mode_at_start = little_endian.then(|| u32::decode(&mut reader));
+        let has_middle = bool::decode(&mut reader);
+        let pickup_defaults = std::array::from_fn(|_| PickupDefaults {
+            position: f32::decode(&mut reader),
+            angle: f32::decode(&mut reader),
+            pole_offsets: <[f32; 6]>::decode(&mut reader),
         });
-        let variants = std::array::from_fn(|i| {
-            let b = &bytes[101 + i * BODY_VARIANT_BYTES..101 + (i + 1) * BODY_VARIANT_BYTES];
-            let mut input = Reader {
-                bytes: b,
-                offset: 0,
-            };
-            let result = BodyVariant::decode(&mut input);
-            assert_eq!(input.offset, BODY_VARIANT_BYTES);
-            result
-        });
+        let interpolation_mode = mode_at_start.unwrap_or_else(|| u32::decode(&mut reader));
+        let variants = <[BodyVariant; 6]>::decode(&mut reader);
+        assert_eq!(reader.offset, bytes.len());
         Ok(Self {
-            original: bytes.to_vec(),
-            has_middle: bytes[0] != 0,
+            original: if little_endian {
+                Vec::new()
+            } else {
+                bytes.to_vec()
+            },
+            has_middle,
             pickup_defaults,
-            interpolation_mode: u32::from_be_bytes(bytes[97..101].try_into().unwrap()),
+            interpolation_mode,
             variants,
         })
     }
@@ -419,16 +446,29 @@ impl BodyDefinition {
     /// Serialize the typed view for offline verification. True booleans become
     /// byte 1; use original_bytes() to preserve noncanonical boolean bytes.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(BODY_DEFINITION_BYTES);
-        self.has_middle.encode(&mut bytes);
-        for defaults in &self.pickup_defaults {
-            defaults.position.encode(&mut bytes);
-            defaults.angle.encode(&mut bytes);
-            defaults.pole_offsets.encode(&mut bytes);
+        self.encode(false)
+    }
+
+    pub(crate) fn model_record(&self) -> Vec<u8> {
+        self.encode(true)
+    }
+
+    fn encode(&self, little_endian: bool) -> Vec<u8> {
+        let mut output = Writer::new(little_endian);
+        if little_endian {
+            self.interpolation_mode.encode(&mut output);
         }
-        self.interpolation_mode.encode(&mut bytes);
-        self.variants.encode(&mut bytes);
-        bytes
+        self.has_middle.encode(&mut output);
+        for defaults in &self.pickup_defaults {
+            defaults.position.encode(&mut output);
+            defaults.angle.encode(&mut output);
+            defaults.pole_offsets.encode(&mut output);
+        }
+        if !little_endian {
+            self.interpolation_mode.encode(&mut output);
+        }
+        self.variants.encode(&mut output);
+        output.bytes
     }
 
     /// Native piecewise mapping from stored pickup-position units to 0..=1.
@@ -469,8 +509,8 @@ impl BodyDefinition {
         )
     }
 
-    /// Exact input, including every variant field. Editing the
-    /// decoded public values does not modify these bytes or create a device patch.
+    /// Exact input for a legacy resource. Bundled records carry no original bytes.
+    /// Editing the decoded values does not modify the input or create a device patch.
     pub fn original_bytes(&self) -> &[u8] {
         &self.original
     }
@@ -480,7 +520,7 @@ impl BodyDefinition {
             return None;
         }
         let start = 101 + index * BODY_VARIANT_BYTES;
-        Some(&self.original[start..start + BODY_VARIANT_BYTES])
+        self.original.get(start..start + BODY_VARIANT_BYTES)
     }
 }
 

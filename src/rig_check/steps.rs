@@ -246,6 +246,8 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 .rec
                 .note(format!("Your reference folder could not be read: {error}")),
         }
+    } else {
+        results.push(engine::bundled_audition());
     }
     let cases: Vec<&engine::ModelResult> = results
         .iter()

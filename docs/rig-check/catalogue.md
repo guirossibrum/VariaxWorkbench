@@ -206,12 +206,13 @@ so they can be read from where the guitar is.
   cases.
 - **Risk:** None.
 - **Evidence:** one line per model, full word/bit detail when different.
-- **Built-in references** are synthetic only (the repository's synthetic
-  body and pickup resources, 48 synthetic native cases with their original
-  outputs, and one synthetic preset with its original Java/native result).
-  No vendor model data, factory preset or owner file is built in.
-- **Your own references** (optional, `--engine-folder DIR`): a private
-  folder with `models.tsv` (your local model manifest, as for
+- **Built-in references** cover 48 synthetic native cases, a synthetic
+  preset, and a generated drop-D audition preset. The audition uses the
+  built-in model library and is offered if its rendered SHA-256 matches
+  the Workbench oracle. No factory preset or owner file is needed.
+- **Your own references** (optional, `--engine-folder DIR`) override the
+  bundled audition and the definitions used in the trim and tuning edits.
+  Supply a private folder with `models.tsv` (your local model manifest, as for
   `variax-workbench render-preset`) and `NAME.vwm` files, each with
   `NAME.packed` (expected program) or `NAME.sha256` (its hash only). This is
   how the owner's Stratocaster and test models A-D are checked without

@@ -6,11 +6,11 @@ after approval of the specific switch used for the test. Offline tests
 check the shared #245 procedures against scripted owner-tool wire bytes.
 
 Use the standard host math build and a verified recorded library backup.
-Place the private model manifest in `variax-live-reference/models.tsv`
-beside the editor preferences, and the approved Mac Workbench program
-digests in `variax-live-reference/workbench.sha256`. Use one SHA-256
-digest per line for each exact 3,276-byte candidate program, including
-the muted intermediate image for each tuning transition tested.
+The editor uses the bundled model library. To override it with local data,
+place `variax-live-reference/models.tsv` beside the editor preferences,
+along with `variax-live-reference/workbench.sha256`. The override requires
+one Workbench digest per exact 3,276-byte candidate, including the muted
+intermediate image for each tuning transition tested.
 
 1. Connect the supported Variax 600 through PODxt Live, let identity finish,
    and select a downloaded library position. Record the starting position
@@ -36,7 +36,7 @@ the muted intermediate image for each tuning transition tested.
 This path addresses the guitar working buffer. Stored-bank operations are
 covered separately by #205.
 
-## Prepare the private references offline
+## Prepare the optional local override offline
 
 Use the same Mac coefficient oracle and original Java mapping as
 `scripts/verify_factory_programs.py`. The artifact root holds the pinned

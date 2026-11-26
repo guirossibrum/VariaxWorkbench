@@ -457,10 +457,10 @@ impl<'a> Runner<'a> {
         if let Some(rig) = self.port.simulation() {
             return !rig.borrow().faults.missing_model_data;
         }
-        self.data
-            .engine_folder
-            .as_ref()
-            .is_some_and(|dir| dir.join("models.tsv").is_file())
+        self.data.engine_folder.as_ref().map_or_else(
+            || crate::host::ModelLibrary::built_in().is_ok(),
+            |dir| dir.join("models.tsv").is_file(),
+        )
     }
 
     /// Why a step cannot be offered, without asking.
@@ -508,10 +508,7 @@ impl<'a> Runner<'a> {
                 }
             }
         }
-        let windows_builtin_engine =
-            cfg!(target_os = "windows") && self.run.mode == Mode::Real && step.id == StepId(0, 3);
         if matches!(step.id, StepId(0, 3) | StepId(4, 3..=5) | StepId(5, 3))
-            && !windows_builtin_engine
             && !self.model_data_available()
         {
             return Some(Outcome::SkippedNotApplicable(
