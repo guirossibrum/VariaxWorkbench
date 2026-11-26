@@ -157,6 +157,8 @@ pub trait Operator {
     fn stop_requested(&self) -> bool;
     /// Display a reused result without pausing or offering Repeat.
     fn reused(&mut self, _record: &StepRecord) {}
+    /// Present a continuation that stopped before any reused result took effect.
+    fn blocked_resume(&mut self, _blocked: &super::resume::BlockedResume) {}
 }
 
 /// Called after every step with the whole run so far.

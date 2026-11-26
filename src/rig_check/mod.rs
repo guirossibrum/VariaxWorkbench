@@ -97,7 +97,11 @@ pub fn continue_on(
     let mut runner = Runner::new(port, op, sink, data);
     runner.state_file = Some(state_file);
     runner.legacy_report_dir = legacy_report_dir;
-    runner.run_from(Some(plan))
+    let result = runner.run_from(Some(plan));
+    if let Some(blocked) = &result.0.blocked_resume {
+        op.blocked_resume(blocked);
+    }
+    result
 }
 
 /// Run the whole catalogue on a caller-supplied port (the real rig).

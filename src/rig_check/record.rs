@@ -334,6 +334,7 @@ pub struct RunRecord {
     pub continuation: Vec<String>,
     pub pre_write_recovery: bool,
     pub continuation_pending: bool,
+    pub blocked_resume: Option<super::resume::BlockedResume>,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
     pub rig_description: String,
@@ -367,6 +368,7 @@ impl RunRecord {
             continuation: Vec::new(),
             pre_write_recovery: false,
             continuation_pending: false,
+            blocked_resume: None,
             rig_state: "Not checked yet.".into(),
             rig_description: "Rig not identified yet".into(),
             finished: false,

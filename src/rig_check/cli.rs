@@ -3,6 +3,7 @@
 use super::catalogue::{SaveNotice, Step, StepId, accepted_start_notice};
 use super::history::{self, Review};
 use super::record::{Mode, StepRecord, plain_result};
+use super::resume::BlockedResume;
 use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
 use std::cell::Cell;
 use std::io::{self, BufRead, Write};
@@ -310,6 +311,13 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
             self.say(&format!("{completed} of {total} {units} · {action}"));
         } else {
             self.say(&action);
+        }
+    }
+
+    fn blocked_resume(&mut self, blocked: &BlockedResume) {
+        self.say(BlockedResume::TITLE);
+        for line in blocked.lines() {
+            self.say(&line);
         }
     }
 

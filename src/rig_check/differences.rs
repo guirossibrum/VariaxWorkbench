@@ -270,6 +270,7 @@ fn tone_field(index: usize) -> String {
         0..=6 | 167 => "MIDI frame".into(),
         7..=22 => "tone name".into(),
         23..=38 => "tone header".into(),
+        159 => "linked Variax model (CC 120)".into(),
         _ => {
             let cc = (index - 39) as u8;
             let ordinary = Control::ALL.into_iter().find(|control| control.cc() == cc);

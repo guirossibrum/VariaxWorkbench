@@ -35,7 +35,9 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
     let _ = writeln!(out, "Mode: {}", run.mode.label());
     let _ = writeln!(out, "Started: {}", run.started);
     let _ = writeln!(out, "Last written: {written}");
-    let status = if run.finished {
+    let status = if run.blocked_resume.is_some() {
+        "resume blocked".to_string()
+    } else if run.finished {
         "finished".to_string()
     } else if let Some(current) = run.current {
         format!(
@@ -102,8 +104,20 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
     if let Some(source) = &run.continued_from {
         section(&mut out, "CONTINUATION");
         let _ = writeln!(out, "Source report: {source}");
+        if let Some(blocked) = &run.blocked_resume {
+            let _ = writeln!(out, "{}", super::resume::BlockedResume::TITLE);
+            for line in blocked.lines() {
+                let _ = writeln!(out, "{line}");
+            }
+        }
         for line in &run.continuation {
-            let _ = writeln!(out, "{line}");
+            if run
+                .blocked_resume
+                .as_ref()
+                .is_none_or(|blocked| line != &blocked.reason)
+            {
+                let _ = writeln!(out, "{line}");
+            }
         }
     }
 
@@ -252,7 +266,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
     let steps = run.steps.iter().map(json_step).collect::<Vec<_>>();
     let prior = run.prior_attempts.iter().map(json_step).collect::<Vec<_>>();
     format!(
-        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"continued_from\":{},\"continuation\":{},\"pre_write_recovery\":{},\"continuation_pending\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
+        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"continued_from\":{},\"continuation\":{},\"pre_write_recovery\":{},\"continuation_pending\":{},\"blocked_resume\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
         json_string(run.app_version),
         run.git_commit.map_or("null".into(), json_string),
         json_string(run.catalogue_version),
@@ -268,6 +282,17 @@ pub fn json(run: &RunRecord, written: &str) -> String {
         json_list(&run.continuation),
         run.pre_write_recovery,
         run.continuation_pending,
+        run.blocked_resume
+            .as_ref()
+            .map_or("null".into(), |blocked| {
+                format!(
+                    "{{\"target\":{},\"check\":{},\"reason\":{},\"details\":{}}}",
+                    json_string(&blocked.target.to_string()),
+                    json_string(&blocked.check.to_string()),
+                    json_string(&blocked.reason),
+                    json_list(&blocked.details)
+                )
+            }),
         json_string(&run.rig_state),
         json_string(&run.rig_description),
         json_pairs(&run.computer),

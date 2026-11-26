@@ -143,7 +143,7 @@ fn continue_in(
     legacy: Option<PathBuf>,
     plan: Plan,
     rig: &Rc<RefCell<SimRig>>,
-    person: &mut Script,
+    person: &mut dyn Operator,
 ) -> (RunRecord, ReportFile) {
     let mut sink = ReportFile::create(out, Redactor::default()).unwrap();
     let data = report_data(&sink);
@@ -429,6 +429,114 @@ fn same_root_interrupted_store_blocks_resume_before_revalidation() {
     assert_eq!(
         std::fs::read_to_string(&source.sink.path).unwrap(),
         source.sink.last
+    );
+}
+
+#[test]
+fn linked_model_byte_blocks_resume_at_22_until_the_saved_state_matches() {
+    const LINKED_MODEL_PAYLOAD_OFFSET: usize = 159 - 7;
+    let initial_rig = SimRig::shared(Faults::default());
+    {
+        let mut sim = initial_rig.borrow_mut();
+        let slot = usize::from(sim.podxt.channel.unwrap());
+        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+        sim.podxt.stored[slot][LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+    }
+    let mut source = Fixture::from_rig(&initial_rig);
+    source.stop_after(GUITAR_START, true);
+    source.run.step_mut(GUITAR_START).outcome =
+        Outcome::Failed("Synthetic comparison failure".into());
+    source.save(true);
+    let source_files = [
+        source.sink.path.clone(),
+        source.sink.path.with_extension("state"),
+        source
+            .data
+            .evidence_dir
+            .as_ref()
+            .unwrap()
+            .join("podxt-start/edit-buffer.bin"),
+    ];
+    let original = source_files
+        .each_ref()
+        .map(|path| std::fs::read(path).unwrap());
+    let initial_tone = &original[2];
+    assert_eq!(initial_tone.len(), 168);
+    assert_eq!(initial_tone[159], 20);
+
+    let plan = open(&source.sink.path).unwrap();
+    assert_eq!(plan.target, GUITAR_START);
+    assert!(plan.skips(POD_BACKUP));
+    let rig = SimRig::shared(Faults::default());
+    {
+        let mut sim = rig.borrow_mut();
+        let slot = usize::from(sim.podxt.channel.unwrap());
+        sim.podxt.stored[slot][LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 21;
+    }
+    let mut transcript = Vec::new();
+    let mut terminal = super::super::cli::Terminal::new(&b"accept\naccept\n"[..], &mut transcript);
+    let (run, sink) = continue_in(source.dir.path(), None, plan, &rig, &mut terminal);
+    let transcript = String::from_utf8(transcript).unwrap();
+    let blocked = run.blocked_resume.as_ref().unwrap();
+    assert_eq!((blocked.target, blocked.check), (GUITAR_START, POD_START));
+    assert_eq!(blocked.details.len(), 2);
+    for evidence in [
+        BlockedResume::TITLE,
+        "Selected target 3.3",
+        "Blocking check 2.2",
+        "expected 5B · observed 5B",
+        "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15",
+    ] {
+        assert!(sink.last.contains(evidence), "{evidence}");
+        assert!(transcript.contains(evidence), "{transcript}");
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(super::super::report::json_block(&sink.last).unwrap()).unwrap();
+    assert_eq!(json["blocked_resume"]["target"], "3.3");
+    assert_eq!(json["blocked_resume"]["check"], "2.2");
+    assert!(run.continuation_pending);
+    assert!(run.steps.iter().all(|step| step.started.is_none()));
+    assert_eq!(run.step(GUITAR_START).outcome, Outcome::NotReached);
+    assert!(matches!(
+        run.step(RIG_GUARD).outcome,
+        Outcome::NotAvailable(_)
+    ));
+    let rechecks = &run.prior_attempts[run.prior_attempts.len() - 2..];
+    assert_eq!([rechecks[0].id, rechecks[1].id], [POD_ID, POD_START]);
+    assert!(rechecks[0].outcome.passed());
+    assert!(matches!(rechecks[1].outcome, Outcome::Failed(_)));
+    assert_eq!(rechecks[1].comparisons.len(), 1);
+    assert!(!source.sink.path.with_extension("continuation").exists());
+    assert!(error(&sink.path).contains("Open its source report"));
+    assert_eq!(
+        source_files
+            .each_ref()
+            .map(|path| std::fs::read(path).unwrap()),
+        original
+    );
+    only_reads(&rig);
+
+    // The same source remains usable after the working tone is back in sync.
+    let plan = open(&source.sink.path).unwrap();
+    rig.borrow_mut().podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+    let mut person = Script::run_all();
+    person.overrides.push((GUITAR_BACKUP, Decision::Stop));
+    let (run, _) = source.continue_run(plan, &rig, &mut person);
+    assert!(run.blocked_resume.is_none(), "{}", run.rig_state);
+    assert!(!run.continuation_pending);
+    assert!(run.step(POD_BACKUP).reused);
+    assert!(run.step(GUITAR_START).outcome.passed(), "{}", run.rig_state);
+    assert_eq!(run.step(GUITAR_START).attempt, Some(2));
+    assert_eq!(
+        person.cards.first_chunk::<2>(),
+        Some(&[SETTINGS, GUITAR_START])
+    );
+    assert_eq!(
+        source_files
+            .each_ref()
+            .map(|path| std::fs::read(path).unwrap()),
+        original
     );
 }
 

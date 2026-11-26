@@ -174,6 +174,30 @@ fn mac_report_candidates(
     report_candidates(dir, true).chain(report_candidates(legacy, true))
 }
 
+/// A prerequisite failed before the selected continuation target could run.
+#[derive(Clone, Debug)]
+pub struct BlockedResume {
+    pub target: StepId,
+    pub check: StepId,
+    pub reason: String,
+    pub details: Vec<String>,
+}
+
+impl BlockedResume {
+    pub const TITLE: &str = "Resume blocked";
+
+    pub fn lines(&self) -> impl Iterator<Item = String> + '_ {
+        let name = |id| catalogue::step(id).map_or("", |step| step.title);
+        [
+            format!("Selected target {} · {}", self.target, name(self.target)),
+            format!("Blocking check {} · {}", self.check, name(self.check)),
+            self.reason.clone(),
+        ]
+        .into_iter()
+        .chain(self.details.iter().cloned())
+    }
+}
+
 pub struct Plan {
     pub source: PathBuf,
     pub mode: Mode,
@@ -367,7 +391,29 @@ impl Plan {
             };
             record.outcome = match &result {
                 Ok(()) => Outcome::Passed,
-                Err(error) => Outcome::Failed(error.clone()),
+                Err(error) => {
+                    let details = record
+                        .result
+                        .iter()
+                        .cloned()
+                        .chain(
+                            record
+                                .comparisons
+                                .iter()
+                                .filter(|comparison| {
+                                    comparison.severity == super::differences::Severity::Stop
+                                })
+                                .flat_map(|comparison| comparison.details.iter().cloned()),
+                        )
+                        .collect();
+                    run.blocked_resume = Some(BlockedResume {
+                        target: self.target,
+                        check: id,
+                        reason: error.clone(),
+                        details,
+                    });
+                    Outcome::Failed(error.clone())
+                }
             };
             run.prior_attempts.push(record);
             result
@@ -462,7 +508,32 @@ fn check_pod_start(ctx: &mut Ctx<'_>) -> Result<(), String> {
             .as_ref()
             .is_some_and(|start| ctx.data.same_starting_pod_tone(start, &current))
     {
-        return Err("The PODxt Live channel or tone differs from the saved starting state. Use the original report to return the channel and knob settings by hand, then reopen it. Leave the bank unchanged.".into());
+        let expected_channel = ctx
+            .data
+            .start_channel
+            .map_or_else(|| "unavailable".into(), |channel| channel.label());
+        ctx.rec.show(format!(
+            "PODxt Live channel · expected {expected_channel} · observed {}",
+            channel.label()
+        ));
+        if let Some(start) = &ctx.data.start_tone {
+            super::differences::tone(
+                ctx.rec,
+                "PODxt Live starting tone",
+                &start.raw,
+                &current.raw,
+                super::differences::Severity::Stop,
+                true,
+            );
+            if ctx.data.pre_write_recovery && start.cc(17) != current.cc(17) {
+                ctx.rec.show(format!(
+                    "Channel Volume (CC 17) · expected {} · observed {}",
+                    start.cc(17),
+                    current.cc(17)
+                ));
+            }
+        }
+        return Err("The PODxt Live channel or tone differs from the saved starting state. Use the original report to return the channel and current tone settings by hand, then reopen it. Leave the bank unchanged.".into());
     }
     ctx.rec
         .show("PODxt Live starting tone and channel verified.");
