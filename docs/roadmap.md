@@ -6,7 +6,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 - [ ] First-connection library cache receipt publication, offline startup, and editor and connection integration. Offline Variax snapshot validation is complete (#284). The consent-based offer awaits review. [Design and Lane 3 handoff](first-connection-cache.md).
 
-- [ ] #206 editor integration and owner verification of global string levels. All device approvals are closed. The 0x57 comparison shows RAM state. Flash persistence needs separate owner verification. [API and owner verification draft](variax-string-levels.md).
+- [ ] #206 owner verification of global string levels. All three approvals remain closed. The editor verifies RAM with `0x57`. Flash persistence needs a separate owner procedure, and piezo listening needs its own DSP bypass and recovery procedure. [Owner test card](../src/families/variax/editor/string-volume-test-card.md).
 - [ ] #274 owner-approved identity run on M1 following successful native USB linkage verification on arm64 and x86_64. The direct USB switch remains closed. [Mac owner test card](podxt-macos-usb-test-card.md).
 
 - [ ] [#278](https://github.com/guirossibrum/VariaxWorkbench/issues/278) native macOS and Windows CI runs of the bundled model and portable render checksum checks. Linux rendering and embedded asset bytes in the cross-built macOS and Windows libraries are verified.
