@@ -173,36 +173,151 @@ mod tests {
     }
 
     #[test]
-    fn a_mismatch_between_1a_and_the_full_backup_blocks_later_edits_and_saves() {
-        use crate::rig_check::{port::PracticePort, practice::SimRig, record::Outcome, run_on};
+    fn backup_reports_stop_details_and_benign_differences_without_changing_write_policy() {
+        use crate::rig_check::{
+            differences::Severity,
+            port::PracticePort,
+            practice::SimRig,
+            record::Outcome,
+            redact::Redactor,
+            report::{ReportFile, json_block},
+            run_on,
+        };
 
-        let rig = SimRig::shared(Faults::default());
-        let change = rig.clone();
-        let mut person = Script::run_all();
-        person.on_card = Some(Box::new(move |step| {
-            if step == StepId(2, 5) {
-                change.borrow_mut().podxt.stored[0][0] = b'X';
+        const MID: usize = 32 + 15;
+        const PRESENCE: usize = 32 + 21;
+        const PEDAL: usize = 32 + 4;
+        let backup_step = StepId(2, 5);
+        let failure = "The channel 1A read from step 2.3 differs from the backup.";
+        let refusal = "read-only from here: step 2.5 failed";
+        for mismatch in [true, false] {
+            let rig = SimRig::shared(Faults::default());
+            let mut person = Script::run_all();
+            if mismatch {
+                {
+                    let mut model = rig.borrow_mut();
+                    model.podxt.stored[0][MID] = 0x10;
+                    model.podxt.stored[0][PRESENCE] = 0x28;
+                }
+                let change = rig.clone();
+                person.on_card = Some(Box::new(move |step| {
+                    if step == backup_step {
+                        let mut model = change.borrow_mut();
+                        model.podxt.stored[0][MID] = 0x13;
+                        model.podxt.stored[0][PRESENCE] = 0x2c;
+                    }
+                }));
+            } else {
+                let mut model = rig.borrow_mut();
+                let start = usize::from(model.podxt.channel.unwrap());
+                model.podxt.stored[start][MID] = 0x10;
+                model.podxt.playing[MID] = 0x13;
+                model.podxt.stored[start][PEDAL] = 0x15;
+                model.podxt.playing[PEDAL] = 0x16;
             }
-        }));
-        let (run, _) = run_on(
-            &mut PracticePort::new(rig.clone()),
-            &mut person,
-            &mut NoReport,
-            RunData::default(),
-        );
-        assert!(run.step(StepId(2, 3)).outcome.passed());
-        assert!(matches!(
-            &run.step(StepId(2, 5)).outcome,
-            Outcome::Failed(reason) if reason.contains("channel 1A")
-        ));
-        for id in [StepId(4, 1), StepId(4, 6), StepId(5, 2)] {
-            assert_eq!(
-                run.step(id).outcome,
-                Outcome::SkippedNeeds("read-only from here: step 2.5 failed".into())
+
+            let folder = tempfile::tempdir().unwrap();
+            let mut report = ReportFile::create(folder.path(), Redactor::default()).unwrap();
+            let (run, _) = run_on(
+                &mut PracticePort::new(rig.clone()),
+                &mut person,
+                &mut report,
+                RunData::default(),
             );
+            assert!(run.finished);
+            assert!(run.step(StepId(2, 3)).outcome.passed());
+            assert!(run.step(StepId(6, 2)).outcome.passed());
+
+            let plain = std::fs::read_to_string(&report.path).unwrap();
+            assert_eq!(plain, report.last);
+            let document: serde_json::Value =
+                serde_json::from_str(json_block(&plain).unwrap()).unwrap();
+            assert_eq!(document["finished"], true);
+            let saved_steps = document["steps"].as_array().unwrap();
+            let saved = |id: StepId| {
+                saved_steps
+                    .iter()
+                    .find(|step| step["id"] == id.to_string())
+                    .unwrap()
+            };
+            let record = run.step(backup_step);
+            let persisted = saved(backup_step);
+            let technical = persisted["technical"].as_array().unwrap();
+            if mismatch {
+                assert_eq!(record.outcome, Outcome::Failed(failure.into()));
+                assert_eq!(persisted["outcome"], "failed");
+                assert_eq!(persisted["reason"], failure);
+                assert_eq!(record.comparisons.len(), 1);
+                let comparison = &record.comparisons[0];
+                assert_eq!(comparison.severity, Severity::Stop);
+                assert!(comparison.summary.contains("2 bytes differ"));
+                assert_eq!(
+                    comparison.details,
+                    [
+                        "byte 54 (mid (CC 15)) · expected 0x10 · actual 0x13 · XOR 0x03 · 2 bit(s)",
+                        "byte 60 (presence (CC 21)) · expected 0x28 · actual 0x2C · XOR 0x04 · 1 bit(s)",
+                    ]
+                );
+                for line in &comparison.details {
+                    assert!(plain.contains(line));
+                    assert!(technical.iter().any(|value| value == line));
+                }
+                assert!(plain.contains("STOP · Channel 1A stored reads"));
+                assert!(
+                    run.report_differences()
+                        .all(|line| !line.contains("1A stored reads"))
+                );
+                for id in (1..=8)
+                    .map(|n| StepId(4, n))
+                    .chain((1..=4).map(|n| StepId(5, n)))
+                {
+                    assert_eq!(
+                        run.step(id).outcome,
+                        Outcome::SkippedNeeds(refusal.into()),
+                        "{id}"
+                    );
+                    assert!(run.step(id).messages.is_empty(), "{id}");
+                    assert!(!person.cards.contains(&id), "{id}");
+                    assert_eq!(saved(id)["reason"], refusal, "{id}");
+                }
+                assert!(person.saves.is_empty());
+                let model = rig.borrow();
+                assert_eq!(model.podxt.stores, 0);
+                assert_eq!(model.variax.stores, 0);
+                assert_eq!(model.variax.working_uploads, 0);
+            } else {
+                assert!(record.outcome.passed());
+                assert_eq!(persisted["outcome"], "passed");
+                let classifications: Vec<_> = record
+                    .comparisons
+                    .iter()
+                    .map(|entry| entry.severity)
+                    .collect();
+                assert_eq!(classifications, [Severity::Info, Severity::Report]);
+                for comparison in &record.comparisons {
+                    let header = format!("{} · {}", comparison.severity.code(), comparison.summary);
+                    assert!(plain.contains(&header));
+                    assert!(technical.iter().any(|line| line == &header));
+                    assert_eq!(comparison.details.len(), 1);
+                    assert!(technical.iter().any(|line| line == &comparison.details[0]));
+                }
+                assert!(record.comparisons[0].details[0].contains("XOR 0x03 · 2 bit(s)"));
+                assert!(
+                    run.report_differences()
+                        .any(|line| line.contains("1 unsaved changes"))
+                );
+                assert!(
+                    run.report_differences()
+                        .all(|line| !line.contains("live controller position"))
+                );
+                for id in [StepId(4, 1), StepId(4, 2), StepId(5, 1), StepId(5, 2)] {
+                    assert!(run.step(id).outcome.passed(), "{id}");
+                }
+                let model = rig.borrow();
+                assert!(model.podxt.stores > 0);
+                assert!(model.variax.stores > 0);
+                assert_eq!(model.podxt.playing[MID], 0x13);
+            }
         }
-        assert!(person.saves.is_empty());
-        assert_eq!(rig.borrow().podxt.stores, 0);
-        assert_eq!(rig.borrow().variax.stores, 0);
     }
 }
