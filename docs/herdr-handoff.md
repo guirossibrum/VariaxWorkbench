@@ -6,6 +6,9 @@ agent session, and completion number. Reports are sent only to explicitly
 configured Gatekeepers for the same repository. A project that uses a
 different review system can use discovery alone.
 
+For a setup and operating overview to share with other repositories, see
+[the watcher guide](herdr-watcher-share.md).
+
 ## Set up a route
 
 Use Python 3.10 or newer on a Unix host with Git and Herdr. Store the JSON
@@ -70,10 +73,11 @@ submission is retained and is never sent twice automatically. Check the
 specific Gatekeeper pane for the printed handoff token. Stop the watcher
 before using `--resolve delivered` or `--resolve retry` for that queue. With
 multiple routes, also pass `--repository /absolute/path/to/project`.
-If a session changes or a route is added, stop the watcher, preserve and
-resolve outstanding reports, update the configuration, and initialize a new
-state file. Use `journalctl --user -u herdr-completion-handoff` for delivery
-status when running as a user service.
+If a lane binding or the set of repository routes changes, stop the watcher,
+preserve and resolve outstanding reports, update the configuration, and
+initialize a new state file. For a Gatekeeper-only replacement, use the
+rebinding procedure below. Use `journalctl --user -u herdr-completion-handoff`
+for delivery status when running as a user service.
 
 ## Stop at an owner decision
 
