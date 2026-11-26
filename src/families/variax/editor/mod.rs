@@ -36,6 +36,8 @@ mod value_format;
 use value_format::ValueFormat;
 
 #[cfg(test)]
+mod layout_tests;
+#[cfg(test)]
 mod tests;
 
 pub(super) const PICKUP1: u32 = 0x02010001;
@@ -187,6 +189,10 @@ pub(super) struct VariaxEditor {
     #[cfg(test)]
     workspace_cards: Option<(Rect, Rect)>,
     #[cfg(test)]
+    workspace_tuning: Option<Rect>,
+    #[cfg(test)]
+    body_art_rect: Option<Rect>,
+    #[cfg(test)]
     pickup_controls: HashMap<(u32, &'static str), Rect>,
     #[cfg(test)]
     name_notice: String,
@@ -277,6 +283,10 @@ impl VariaxEditor {
             tuning_toggle: None,
             #[cfg(test)]
             workspace_cards: None,
+            #[cfg(test)]
+            workspace_tuning: None,
+            #[cfg(test)]
+            body_art_rect: None,
             #[cfg(test)]
             pickup_controls: HashMap::new(),
             #[cfg(test)]
@@ -1115,6 +1125,7 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         ui: &mut egui::Ui,
     ) {
+        let viewport = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         if let Some(notice) = self.firmware_notice {
             ui.colored_label(variax_workbench::ui::theme::AMBER, notice.message());
         }
@@ -1179,39 +1190,63 @@ impl VariaxEditor {
             ui.label("Editing supports legacy electric Variax presets.");
         }
 
-        egui::TopBottomPanel::bottom("guitar-tuning")
-            .default_height(285.0)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(egui::Frame::NONE.outer_margin(egui::Margin {
-                top: 8,
-                ..egui::Margin::ZERO
-            }))
-            .show_inside(ui, |ui| self.fretboard(ui, can_edit));
-        let panel_height = (ui.available_height() - 22.0).max(64.0);
-        ui.columns(2, |columns| {
-            let _body = self.guitar(&mut columns[0], panel_height, can_edit);
-            let _inspector = egui::Frame::new()
-                .inner_margin(10)
-                .corner_radius(theme::RADIUS_PANEL)
-                .fill(theme::PANEL)
-                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                .show(&mut columns[1], |ui| {
-                    ui.set_min_height((panel_height - 20.0).max(0.0));
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(self.model_name(BODY));
-                        ui.add_enabled_ui(available, |ui| self.preference_button(ui));
-                    });
-                    ui.add_enabled_ui(can_edit, |ui| {
-                        self.controls(ui, (panel_height - 40.0).max(32.0), services)
-                    });
+        use variax_workbench::ui::editor_layout::editor_regions;
+
+        // The bank and model header can grow its UI past the viewport.
+        let workspace = ui.available_rect_before_wrap().intersect(viewport);
+        let regions = editor_regions(
+            workspace,
+            self.body_placement().art,
+            self.has_twelve_string(),
+        );
+        let mut body = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("guitar-body")
+                .max_rect(regions.body),
+        );
+        self.guitar(&mut body, regions.body.height(), can_edit);
+
+        let mut inspector = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("guitar-inspector")
+                .max_rect(regions.inspector),
+        );
+        inspector.set_clip_rect(ui.clip_rect().intersect(regions.inspector));
+        egui::Frame::new()
+            .inner_margin(10)
+            .corner_radius(theme::RADIUS_PANEL)
+            .fill(theme::PANEL)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .show(&mut inspector, |ui| {
+                ui.set_min_size(ui.available_size());
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(self.model_name(BODY));
+                    ui.add_enabled_ui(available, |ui| self.preference_button(ui));
                 });
-            #[cfg(test)]
-            {
-                self.workspace_cards = Some((_body, _inspector.response.rect));
-            }
-        });
+                ui.add_enabled_ui(can_edit, |ui| {
+                    self.controls(ui, ui.available_height(), services)
+                });
+            });
+
+        let mut tuning = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("guitar-tuning")
+                .max_rect(regions.tuning),
+        );
+        tuning.set_clip_rect(ui.clip_rect().intersect(regions.tuning));
+        // Short layouts keep the fixed-height string controls reachable within
+        // the band without moving the inspector or covering the shell footer.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(&mut tuning, |ui| {
+                self.fretboard(ui, can_edit, regions.twelve_string_width)
+            });
+        #[cfg(test)]
+        {
+            self.workspace_cards = Some((regions.body, regions.inspector));
+            self.workspace_tuning = Some(regions.tuning);
+        }
+        ui.advance_cursor_after_rect(workspace);
     }
 
     pub(super) fn variax_pending_dialog(

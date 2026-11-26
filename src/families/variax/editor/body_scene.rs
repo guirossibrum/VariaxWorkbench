@@ -2,7 +2,9 @@ use super::{BODY, PICKUP1, PICKUP2, Tab, VariaxEditor, egui};
 use std::sync::Arc;
 use variax_workbench::ui::{
     assets::UiImage,
-    body_canvas::{BodyCanvas, BodyEvent, DragKind, PickupSprite, placement_for_body},
+    body_canvas::{
+        BodyCanvas, BodyEvent, DragKind, PickupPlacement, PickupSprite, placement_for_body,
+    },
 };
 
 const SPANK_BODY: &[u8] = include_bytes!("../../../../assets/ui/variax/spank-body.png");
@@ -86,7 +88,13 @@ impl VariaxEditor {
             .insert(key.into(), ArtworkTexture::new(ctx, key, pixels, true));
     }
 
-    pub(super) fn guitar(&mut self, ui: &mut egui::Ui, height: f32, editable: bool) -> egui::Rect {
+    pub(super) fn body_placement(&self) -> PickupPlacement {
+        self.model_id(BODY)
+            .map(placement_for_body)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn guitar(&mut self, ui: &mut egui::Ui, height: f32, editable: bool) {
         let body = self
             .canvas_image(ui.ctx(), BODY)
             .map(|(image, _)| image)
@@ -120,10 +128,7 @@ impl VariaxEditor {
             .iter()
             .map(|(_, (_, rgba))| rgba.as_deref())
             .collect::<Vec<_>>();
-        let placement = self
-            .model_id(BODY)
-            .map(placement_for_body)
-            .unwrap_or_default();
+        let placement = self.body_placement();
         let canvas = ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), height),
             egui::Layout::top_down(egui::Align::Min),
@@ -138,6 +143,7 @@ impl VariaxEditor {
         let output = canvas.inner;
         #[cfg(test)]
         {
+            self.body_art_rect = Some(output.art_rect);
             self.pickup_centers.clear();
             for ((slot, _), sprite) in images.iter().zip(&sprites) {
                 self.pickup_centers.insert(
@@ -184,7 +190,6 @@ impl VariaxEditor {
         if !ui.input(|input| input.pointer.primary_down()) {
             self.finish_body_drag();
         }
-        canvas.response.rect
     }
 
     fn apply_body_drag(&mut self, slot: u32, parameter: u32, value: f32) {
@@ -206,7 +211,7 @@ impl VariaxEditor {
 mod tests {
     use super::*;
     use crate::editor::{PathBuf, Workbench};
-    use variax_workbench::ui::body_canvas::{PickupPlacement, rotate_degrees};
+    use variax_workbench::ui::body_canvas::rotate_degrees;
 
     #[test]
     fn catalog_bodies_use_their_pickup_placement_for_rendering_and_dragging() {

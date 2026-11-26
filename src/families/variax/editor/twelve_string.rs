@@ -5,9 +5,7 @@ use super::{
     tuning_presets::{DETUNE, MIX, set_tuning_values},
     value_format::ValueFormat,
 };
-use variax_workbench::ui::tuning_panel::TuningOutput;
-
-pub(super) const WIDTH: f32 = 204.0;
+use variax_workbench::ui::{editor_layout::TWELVE_STRING_COLUMN, tuning_panel::TuningOutput};
 
 #[derive(Clone, Copy)]
 enum Control {
@@ -45,14 +43,13 @@ impl VariaxEditor {
         ui: &mut egui::Ui,
         left: f32,
         tuning: &TuningOutput,
-        available: bool,
         editable: bool,
         complete_mix: bool,
     ) {
         let panel = Rect::from_min_max(
             egui::pos2(left, tuning.enable.top() - 8.0),
             egui::pos2(
-                left + WIDTH,
+                left + TWELVE_STRING_COLUMN,
                 tuning.lock.bottom().max(tuning.reset.bottom()) + 8.0,
             ),
         );
@@ -64,17 +61,6 @@ impl VariaxEditor {
             egui::Stroke::new(1.0_f32, theme::LINE),
             egui::StrokeKind::Inside,
         );
-        if !available {
-            painter.text(
-                panel.center(),
-                egui::Align2::CENTER_CENTER,
-                "No 12-String available",
-                egui::FontId::proportional(theme::COMPACT),
-                theme::MUTED,
-            );
-            return;
-        }
-
         let columns = [
             (Control::Mix, MIX, left + 10.0, 80.0),
             (Control::Detune, DETUNE, left + 98.0, 96.0),
@@ -113,7 +99,7 @@ impl VariaxEditor {
                     ui.put(
                         Rect::from_center_size(
                             egui::pos2(panel.center().x, tuning.reset.center().y),
-                            egui::vec2(WIDTH - 16.0, 22.0),
+                            egui::vec2(TWELVE_STRING_COLUMN - 16.0, 22.0),
                         ),
                         egui::Button::new("Zero detune").small(),
                     )
