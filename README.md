@@ -24,7 +24,8 @@ Earlier captures from floating windows using test presets with device discovery 
   collections, undo changes, and save files offline. New tabs start with your
   latest complete download, factory presets from a selected firmware archive,
   or an empty editor. The editor and Rig Check include a
-  [model library](assets/variax-models/SOURCES.md) for rendering programs.
+  [model library](assets/variax-models/SOURCES.md) for rendering programs. The
+  editor also uses it to offer standard pickup positions offline.
 - **PODxt editor.** Verified connections open on the playing tone, with saved
   channels beside the stage. Offline, the editor opens a remembered library
   backup or a labelled default. Edit amp, cab, and effect settings and save copies.

@@ -945,7 +945,7 @@ impl VariaxEditor {
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui, height: f32, services: &mut EditorServices<'_>) {
+    fn controls(&mut self, ui: &mut egui::Ui, height: f32) {
         let slider_width = (ui.available_width() * 0.45).min(190.0);
         let compact = ui.ctx().content_rect().height() < 720.0;
         let style = ui.style_mut();
@@ -973,7 +973,7 @@ impl VariaxEditor {
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .id_salt(self.tab)
-                    .show(ui, |ui| self.tab_controls(ui, services));
+                    .show(ui, |ui| self.tab_controls(ui));
             },
         );
     }
@@ -983,7 +983,7 @@ impl VariaxEditor {
             .is_some_and(variax_workbench::edit::is_acoustic)
     }
 
-    fn tab_controls(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+    fn tab_controls(&mut self, ui: &mut egui::Ui) {
         #[cfg(test)]
         {
             self.pickup_controls.clear();
@@ -1022,8 +1022,8 @@ impl VariaxEditor {
                 }
                 Tab::Pickups => {
                     ui.columns(2, |columns| {
-                        self.pickup_column(&mut columns[0], PICKUP1, "Pickup 1", services);
-                        self.pickup_column(&mut columns[1], PICKUP2, "Pickup 2", services);
+                        self.pickup_column(&mut columns[0], PICKUP1, "Pickup 1");
+                        self.pickup_column(&mut columns[1], PICKUP2, "Pickup 2");
                     });
                     ui.horizontal_wrapped(|ui| {
                         self.boolean_control(ui, PICKUP2, 0x200002, "Reverse pickup 2 phase");
@@ -1035,13 +1035,7 @@ impl VariaxEditor {
         });
     }
 
-    fn pickup_column(
-        &mut self,
-        ui: &mut egui::Ui,
-        slot: u32,
-        title: &str,
-        services: &mut EditorServices<'_>,
-    ) {
+    fn pickup_column(&mut self, ui: &mut egui::Ui, slot: u32, title: &str) {
         ui.horizontal_wrapped(|ui| {
             ui.strong(title);
             self.enabled_control(ui, slot, "Enabled");
@@ -1050,7 +1044,7 @@ impl VariaxEditor {
             }
         });
         self.model_control(ui, slot, "pickup");
-        self.standard_pickup_positions(ui, slot, services);
+        self.standard_pickup_positions(ui, slot);
         if ui.available_width() >= 130.0 {
             ui.spacing_mut().slider_width = (ui.available_width() - 100.0).clamp(30.0, 190.0);
         } else {
@@ -1169,9 +1163,7 @@ impl VariaxEditor {
                     ui.strong(self.model_name(BODY));
                     ui.add_enabled_ui(available, |ui| self.preference_button(ui));
                 });
-                ui.add_enabled_ui(can_edit, |ui| {
-                    self.controls(ui, ui.available_height(), services)
-                });
+                ui.add_enabled_ui(can_edit, |ui| self.controls(ui, ui.available_height()));
             });
 
         let mut tuning = ui.new_child(
