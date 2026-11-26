@@ -14,7 +14,7 @@ use super::practice::{Program, flash_index, packed, preset_label, program_name};
 use super::procedures::{
     program_bytes, program_progress, variax_read_preset, with_variax_progress,
 };
-use super::runner::{Ctx, Progress, SKIPPED};
+use super::runner::{Ctx, NOT_APPLICABLE, Progress, SKIPPED};
 use line6_devices::family::variax::{
     Preset,
     procedures::{self as shared_variax, SILENT_STORE_WAIT, StoreWait, VerifiedStoreError},
@@ -39,7 +39,7 @@ pub fn confirmation(preset: Preset) -> String {
 pub fn slot(start: Preset) -> Result<Preset, String> {
     if (40..60).contains(&flash_index(start)) {
         return Err(format!(
-            "The starting preset {} is flash slot {}. {SPARE_WARNING} Start on a preset in another bank to run this step.",
+            "{NOT_APPLICABLE}The starting preset {} is flash slot {}. {SPARE_WARNING}",
             preset_label(start),
             flash_index(start)
         ));
@@ -75,6 +75,13 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .find(|(p, _)| *p == preset)
         .map(|(_, w)| *w)
         .ok_or("The slot is not in the 3.4 backup.")?;
+    let bytes = packed(&backup);
+    if shared_variax::expected_stored_image(&bytes) != bytes {
+        return Err(format!(
+            "{NOT_APPLICABLE}{} would change when stamped by the firmware. Its original bytes cannot be preserved by this save test.",
+            preset_label(preset)
+        ));
+    }
     let backup_hash = super::record::sha256_hex(&program_bytes(&backup));
     // Pre-check: the slot still holds what the backup says.
     let before = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
@@ -138,7 +145,6 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
         None => return Err(format!("{SKIPPED}You skipped the save. Nothing was saved.")),
     }
-    let bytes = packed(&backup);
     let name = program_name(&backup);
     let mut unknown = false;
     let acknowledged = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
@@ -242,7 +248,7 @@ pub fn edit_and_restore(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let name = program_name(&backup);
     save_image(ctx, start, &name, &edited, true)?;
     ctx.rec.show(format!(
-        "Saved and verified the quieter {}.",
+        "Saved and verified the changed output trim for {}.",
         preset_label(start)
     ));
     // Once the temporary store is verified, finish the approved restoration
@@ -357,7 +363,7 @@ fn saved_program(ctx: &Ctx<'_>, preset: Preset) -> Result<Program, String> {
     let bytes = packed(&words);
     if shared_variax::expected_stored_image(&bytes) != bytes {
         return Err(format!(
-            "The backup for {} would change when stamped by the firmware. Nothing was saved.",
+            "{NOT_APPLICABLE}The backup for {} would change when stamped by the firmware. Nothing was saved.",
             preset_label(preset)
         ));
     }

@@ -22,6 +22,7 @@ pub struct Script {
     pub on_missed: Option<Box<dyn FnMut(StepId)>>,
     pub answer: Answer,
     pub cards: Vec<StepId>,
+    pub card_notes: Vec<(StepId, String)>,
     pub notices: Vec<String>,
     pub progress: Vec<(StepId, Progress)>,
     pub accept_evidence: bool,
@@ -59,6 +60,7 @@ impl Script {
             on_missed: None,
             answer: Answer::Yes,
             cards: Vec::new(),
+            card_notes: Vec::new(),
             notices: Vec::new(),
             progress: Vec::new(),
             accept_evidence: true,
@@ -98,7 +100,10 @@ impl Operator for Script {
         }
     }
 
-    fn confirm(&mut self, step: &Step, _: Mode) -> Decision {
+    fn confirm(&mut self, step: &Step, _: Mode, note: Option<String>) -> Decision {
+        if let Some(note) = note {
+            self.card_notes.push((step.id, note));
+        }
         self.cards.push(step.id);
         if let Some(callback) = &mut self.on_card {
             callback(step.id);
@@ -788,10 +793,7 @@ mod tests {
                 step.id
             );
         }
-        assert_eq!(
-            person.cards,
-            [StepId(0, 1), StepId(0, 2), StepId(0, 3), StepId(8, 1)]
-        );
+        assert_eq!(person.cards, [StepId(0, 1), StepId(0, 2), StepId(8, 1)]);
         assert!(person.cards.iter().all(|id| run.step(*id).outcome.passed()));
     }
 

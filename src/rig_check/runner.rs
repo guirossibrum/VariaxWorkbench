@@ -128,7 +128,7 @@ pub trait Operator {
     /// The start notice. `false` (the default) quits before any step.
     fn accept_start(&mut self, notice: &str) -> bool;
     /// Show the step card and wait for Run, Skip or Stop.
-    fn confirm(&mut self, step: &Step, mode: Mode) -> Decision;
+    fn confirm(&mut self, step: &Step, mode: Mode, note: Option<String>) -> Decision;
     /// The second notice before a save. Returns the typed confirmation, or
     /// `None` to skip.
     fn confirm_save(&mut self, notice: &SaveNotice) -> Option<String>;
@@ -345,7 +345,14 @@ impl<'a> Runner<'a> {
         }
         let mut attempt_number = 1;
         loop {
-            match self.op.confirm(step, self.run.mode) {
+            let note = if matches!(id, StepId(4, 4) | StepId(5, 3)) {
+                self.data
+                    .exercise_program()
+                    .and_then(|program| super::variax_live::trim_note(&program).ok())
+            } else {
+                None
+            };
+            match self.op.confirm(step, self.run.mode, note) {
                 Decision::Skip => {
                     self.finish(id, Outcome::SkippedByPerson, None, None);
                     return false;
@@ -440,6 +447,16 @@ impl<'a> Runner<'a> {
         }
     }
 
+    fn model_data_available(&self) -> bool {
+        if let Some(rig) = self.port.simulation() {
+            return !rig.borrow().faults.missing_model_data;
+        }
+        self.data
+            .engine_folder
+            .as_ref()
+            .is_some_and(|dir| dir.join("models.tsv").is_file())
+    }
+
     /// Why a step cannot be offered, without asking.
     fn precheck(&self, step: &Step) -> Option<Outcome> {
         if cfg!(target_os = "macos") && self.run.mode == Mode::Real && step.needs_device_approval()
@@ -484,6 +501,31 @@ impl<'a> Runner<'a> {
                     )));
                 }
             }
+        }
+        if matches!(step.id, StepId(0, 3) | StepId(4, 3..=5) | StepId(5, 3))
+            && !self.model_data_available()
+        {
+            return Some(Outcome::SkippedNotApplicable(
+                super::variax_live::MODEL_DATA_NEEDED.into(),
+            ));
+        }
+        if matches!(step.id, StepId(5, 1 | 3 | 4))
+            && let Some(preset) = self.data.start_preset
+            && let Err(reason) = super::variax_save::slot(preset)
+        {
+            return Some(Outcome::SkippedNotApplicable(
+                reason.trim_start_matches(NOT_APPLICABLE).into(),
+            ));
+        }
+        if step.id == StepId(5, 3)
+            && matches!(
+                self.run.step(StepId(4, 4)).outcome,
+                Outcome::SkippedNotApplicable(_)
+            )
+        {
+            return Some(Outcome::SkippedNotApplicable(
+                "The temporary output trim change was unavailable in 4.4.".into(),
+            ));
         }
         let earlier = || {
             RUN_ORDER

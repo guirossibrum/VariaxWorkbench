@@ -59,7 +59,7 @@ fn wired(prompt: Prompt) -> (Wizard, std::sync::mpsc::Receiver<Reply>) {
 fn the_step_card_shows_its_sections_and_enter_skips() {
     let ctx = egui::Context::default();
     apply_theme(&ctx);
-    let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice));
+    let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice, None));
     let texts = frame(&ctx, &mut wizard, Vec::new());
     for expected in [
         "What it does",
@@ -84,12 +84,12 @@ fn the_step_card_shows_its_sections_and_enter_skips() {
 #[test]
 fn keyboard_shortcuts_run_and_stop() {
     let ctx = egui::Context::default();
-    let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice));
+    let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice, None));
     frame(&ctx, &mut wizard, Vec::new());
     frame(&ctx, &mut wizard, vec![key(Key::R)]);
     assert!(matches!(rx.try_recv(), Ok(Reply::Decision(Decision::Run))));
     assert_eq!(wizard.running, Some(StepId(2, 1)));
-    let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice));
+    let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice, None));
     frame(&ctx, &mut wizard, Vec::new());
     frame(&ctx, &mut wizard, vec![key(Key::Q)]);
     assert!(matches!(rx.try_recv(), Ok(Reply::Decision(Decision::Stop))));
@@ -218,7 +218,10 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     StepId(4, 8) => &["The tuner is off"],
                     StepId(5, 1) => &["Saved and verified Spank 1"],
                     StepId(5, 2) => &["Saved and verified channel 5B"],
-                    StepId(5, 3) => &["Saved and verified the quieter", "original backup verified"],
+                    StepId(5, 3) => &[
+                        "Saved and verified the changed output trim",
+                        "original backup verified",
+                    ],
                     StepId(5, 4) => &[
                         "Synced and verified Spank 1",
                         "Synced and verified Spank 2",
@@ -477,12 +480,12 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
     };
     assert!(matches!(next(), Prompt::Start(_)));
     to_runner.send(Reply::Accept(true)).unwrap();
-    assert!(matches!(next(), Prompt::Card(StepId(0, 1), _)));
+    assert!(matches!(next(), Prompt::Card(StepId(0, 1), ..)));
     to_runner.send(Reply::Decision(Decision::Run)).unwrap();
     assert!(matches!(next(), Prompt::Progress(progress) if !progress.action.is_empty()));
     assert!(matches!(next(), Prompt::Finished(record) if record.id == StepId(0, 1)));
     to_runner.send(Reply::Continue(false)).unwrap();
-    assert!(matches!(next(), Prompt::Card(catalogue::RIG_GUARD, _)));
+    assert!(matches!(next(), Prompt::Card(catalogue::RIG_GUARD, ..)));
     to_runner.send(Reply::Decision(Decision::Skip)).unwrap();
     let run = worker.join().unwrap();
     assert_eq!(run.stopped_at, Some(StepId(0, 1)));
@@ -493,7 +496,7 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
 fn backspace_reviews_previous_results_and_c_resumes_the_same_card() {
     let ctx = egui::Context::default();
     let pending = StepId(2, 2);
-    let (mut wizard, replies) = wired(Prompt::Card(pending, Mode::Practice));
+    let (mut wizard, replies) = wired(Prompt::Card(pending, Mode::Practice, None));
     wizard.start_accepted = Some(catalogue::START_NOTICE);
     for id in [StepId(1, 2), StepId(2, 1)] {
         let mut record = StepRecord::new(id);
@@ -513,7 +516,7 @@ fn backspace_reviews_previous_results_and_c_resumes_the_same_card() {
     frame(&ctx, &mut wizard, vec![key(Key::C)]);
     let lines = frame(&ctx, &mut wizard, Vec::new());
     assert!(lines.iter().any(|line| line == "Step 2.2"));
-    assert!(matches!(wizard.prompt, Some(Prompt::Card(id, _)) if id == pending));
+    assert!(matches!(wizard.prompt, Some(Prompt::Card(id, ..)) if id == pending));
     assert_eq!(wizard.progress.len(), 2);
     assert!(wizard.progress.iter().all(|record| record.outcome.passed()));
     assert!(replies.try_recv().is_err());
@@ -525,7 +528,7 @@ fn first_card_back_shows_the_already_accepted_start_notice() {
     let (mut wizard, replies) = wired(Prompt::Start(catalogue::START_NOTICE.into()));
     wizard.reply(Reply::Accept(true));
     assert!(matches!(replies.try_recv(), Ok(Reply::Accept(true))));
-    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Practice));
+    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Practice, None));
     frame(&ctx, &mut wizard, Vec::new());
     let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
     assert!(lines.iter().any(|line| line == "Start notice (accepted)"));
@@ -542,7 +545,7 @@ fn review_shows_the_start_notice_accepted_for_this_mac() {
     let ctx = egui::Context::default();
     let (mut wizard, _) = wired(Prompt::Start(catalogue::MAC_START_NOTICE.into()));
     wizard.reply(Reply::Accept(true));
-    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Real));
+    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Real, None));
     wizard.go_back();
     assert_eq!(wizard.reviewing, Some(Review::Start));
     let texts = frame(&ctx, &mut wizard, Vec::new());
