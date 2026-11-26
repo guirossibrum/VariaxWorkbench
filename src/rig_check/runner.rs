@@ -19,6 +19,8 @@ use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
 use super::steps::{self, RunData};
 use std::time::Instant;
 
+use super::resume::ResumeCleanup;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
     Run,
@@ -158,7 +160,12 @@ pub trait Operator {
     /// Display a reused result without pausing or offering Repeat.
     fn reused(&mut self, _record: &StepRecord) {}
     /// Present a continuation that stopped before any reused result took effect.
-    fn blocked_resume(&mut self, _blocked: &super::resume::BlockedResume) {}
+    fn blocked_resume(
+        &mut self,
+        _blocked: &super::resume::BlockedResume,
+        _cleanup_error: Option<&str>,
+    ) {
+    }
 }
 
 /// Called after every step with the whole run so far.
@@ -300,17 +307,21 @@ impl<'a> Runner<'a> {
                 Err("The continuation checkpoint could not be saved.".into())
             } else {
                 plan.lock_source().and_then(|lock| {
-                    if let Some(legacy_dir) = &self.legacy_report_dir
-                        && let Some(output_dir) =
-                            self.state_file.as_deref().and_then(std::path::Path::parent)
+                    if let Some(output_dir) =
+                        self.state_file.as_deref().and_then(std::path::Path::parent)
                     {
                         super::recover::before_continuation(
                             self.op,
                             self.run.mode,
                             plan,
                             output_dir,
-                            legacy_dir,
+                            self.legacy_report_dir.as_deref(),
                         )?;
+                    }
+                    self.run.resume_cleanup = Some(ResumeCleanup::Pending);
+                    self.write_report();
+                    if self.persistence_failed {
+                        return Err("Could not save the checkpoint before revalidation.".into());
                     }
                     plan.revalidate(self.port, self.op, &mut self.run, &mut self.data)?;
                     Ok(lock)
@@ -323,6 +334,7 @@ impl<'a> Runner<'a> {
                 }
                 plan.reserve_successor(self.state_file.as_deref().expect("checkpoint path"))?;
                 plan.commit_reuse(&mut self.run);
+                self.run.resume_cleanup = None;
                 self.write_report();
                 if self.persistence_failed {
                     return Err("Could not record the validated continuation. Verify the rig by hand before choosing Start new.".into());
@@ -332,6 +344,7 @@ impl<'a> Runner<'a> {
             if let Err(error) = result {
                 self.run.continuation.push(error.clone());
                 self.run.rig_state = error;
+                self.run.resume_cleanup = Some(ResumeCleanup::Pending);
                 self.release_without_midi("Continuation ended during read-only revalidation.");
                 self.run.finished = true;
                 self.write_report();
@@ -453,17 +466,20 @@ impl<'a> Runner<'a> {
     }
 
     fn release_without_midi(&mut self, reason: &str) {
-        if self.port.direct_usb() {
-            let result = self.port.finish_direct_usb();
-            self.note_direct_usb_release(result);
+        let result = if self.port.direct_usb() {
+            self.port.finish_direct_usb()
         } else if self.port.variax_claimed() {
-            let result = self.port.release_variax();
-            self.note_direct_usb_release(result);
+            self.port.release_variax()
         } else {
-            self.note_direct_usb_release(Ok(vec![
-                "The guitar interface was already released.".into(),
-            ]));
+            Ok(vec!["The guitar interface was already released.".into()])
+        };
+        if matches!(self.run.resume_cleanup, Some(ResumeCleanup::Pending)) {
+            self.run.resume_cleanup = Some(match &result {
+                Ok(_) => ResumeCleanup::Released,
+                Err(error) => ResumeCleanup::Failed(error.clone()),
+            });
         }
+        self.note_direct_usb_release(result);
         self.finish(RIG_GUARD, Outcome::NotAvailable(reason.into()), None, None);
     }
 

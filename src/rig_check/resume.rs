@@ -174,6 +174,16 @@ fn mac_report_candidates(
     report_candidates(dir, true).chain(report_candidates(legacy, true))
 }
 
+#[derive(Clone, Debug)]
+pub enum ResumeCleanup {
+    Pending,
+    Released,
+    Failed(String),
+}
+
+pub(super) const VERIFY_USB_CLEANUP: &str =
+    "Verify the PODxt Live USB interface was released and check the rig by hand before continuing.";
+
 /// A prerequisite failed before the selected continuation target could run.
 #[derive(Clone, Debug)]
 pub struct BlockedResume {

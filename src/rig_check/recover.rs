@@ -7,7 +7,8 @@
 //! finds an unfinished state file, it offers (default No) to switch the rig
 //! back to that channel and preset and to check the hashes. That restore is a
 //! device action: in real mode it needs the 6.2 owner approval like the rig
-//! guard.
+//! guard. If continuation revalidation left USB cleanup unverified, startup
+//! requires manual verification before any automatic recovery.
 
 use super::catalogue::{self, RIG_GUARD};
 use super::practice::{Program, preset_label};
@@ -15,6 +16,7 @@ use super::procedures::{
     CHECKSUM_WORD, firmware_checksum, neutral_program, variax_read_preset, with_variax_progress,
 };
 use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
+use super::resume::{ResumeCleanup, VERIFY_USB_CLEANUP};
 use super::runner::{Ctx, Decision, Operator, Progress, ReportSink};
 use super::steps::RunData;
 use line6_devices::family::podxt::{self, BankKind, Location};
@@ -50,6 +52,8 @@ pub struct RigState {
     pub variax_preset: Option<(u8, u8)>,
     pub variax_match_sha256: Option<String>,
     pub finished: bool,
+    /// Revalidation started without a verified release or a committed continuation.
+    pub resume_cleanup_unverified: bool,
     /// A separate restore completed. The source report still records its original interruption.
     pub recovery_completed: bool,
 }
@@ -65,6 +69,10 @@ impl RigState {
             variax_preset: data.start_preset.map(|p| (p.bank(), p.slot())),
             variax_match_sha256: data.start_program.as_ref().and_then(match_hash),
             finished: run.finished,
+            resume_cleanup_unverified: matches!(
+                run.resume_cleanup,
+                Some(ResumeCleanup::Pending | ResumeCleanup::Failed(_))
+            ),
             recovery_completed: false,
         }
     }
@@ -72,7 +80,7 @@ impl RigState {
     pub fn text(&self) -> String {
         let opt = |v: &Option<String>| v.clone().unwrap_or_default();
         format!(
-            "rig-check-state 1\nreport={}\nstarted={}\npodxt_channel={}\npodxt_tone_sha256={}\nvariax_preset={}\nvariax_match_sha256={}\nfinished={}\nreport_sha256={}\nrecovery_completed={}\n",
+            "rig-check-state 1\nreport={}\nstarted={}\npodxt_channel={}\npodxt_tone_sha256={}\nvariax_preset={}\nvariax_match_sha256={}\nfinished={}\nreport_sha256={}\nrecovery_completed={}\nresume_cleanup_unverified={}\n",
             self.report,
             self.started,
             self.podxt_channel.map_or(String::new(), |c| c.to_string()),
@@ -82,7 +90,8 @@ impl RigState {
             opt(&self.variax_match_sha256),
             self.finished,
             opt(&self.report_sha256),
-            self.recovery_completed
+            self.recovery_completed,
+            self.resume_cleanup_unverified
         )
     }
 
@@ -108,6 +117,7 @@ impl RigState {
                 "variax_match_sha256" => state.variax_match_sha256 = some(value),
                 "report_sha256" => state.report_sha256 = some(value),
                 "recovery_completed" => state.recovery_completed = value == "true",
+                "resume_cleanup_unverified" => state.resume_cleanup_unverified = value == "true",
                 "finished" => state.finished = value == "true",
                 _ => {}
             }
@@ -173,7 +183,7 @@ pub fn write_state(path: &Path, state: &RigState) -> Result<(), String> {
     Ok(())
 }
 
-/// Unfinished runs in a report folder, newest first.
+/// Runs with pending recovery or unverified USB cleanup, newest first.
 pub fn pending(dir: &Path) -> Vec<(PathBuf, RigState)> {
     let mut found: Vec<(PathBuf, RigState)> = std::fs::read_dir(dir)
         .map(|entries| {
@@ -183,9 +193,10 @@ pub fn pending(dir: &Path) -> Vec<(PathBuf, RigState)> {
                 .filter(|p| p.extension().is_some_and(|x| x == "state"))
                 .filter_map(|p| {
                     let state = RigState::parse(&std::fs::read_to_string(&p).ok()?)?;
-                    (!state.finished
-                        && !state.recovery_completed
-                        && (state.channel().is_some() || state.preset().is_some()))
+                    (state.resume_cleanup_unverified
+                        || (!state.finished
+                            && !state.recovery_completed
+                            && (state.channel().is_some() || state.preset().is_some())))
                     .then_some((p, state))
                 })
                 .collect()
@@ -201,7 +212,7 @@ fn confirm_manual_recovery(
     reason: &str,
 ) -> Result<(), String> {
     let notice = format!(
-        "An unfinished Rig Check needs attention. {reason} Review {} and verify the channel, tone and guitar preset by hand. If any store was interrupted, verify the affected slot before proceeding. Continue only after that manual verification, or choose Quit.",
+        "A previous Rig Check needs attention. {reason} Review {} and verify the channel, tone and guitar preset by hand. If any store was interrupted, verify the affected slot before proceeding. Continue only after that manual verification, or choose Quit.",
         report.display()
     );
     if op.accept_start(&notice) {
@@ -226,49 +237,56 @@ pub(super) fn before_new_run(
     {
         confirm_pending(op, legacy_dir, port.mode(), None)?;
     }
-    for (path, state) in pending(dir) {
-        let report = path.with_extension("txt");
-        if super::report::saved_mode(&report).is_some_and(|mode| mode != port.mode()) {
-            continue;
-        }
-        let plan = match super::resume::open(&report).and_then(|plan| {
-            plan.restore_ready(&state)?;
-            Ok(plan)
-        }) {
-            Ok(plan) => plan,
-            Err(reason) => return confirm_manual_recovery(op, &report, &reason),
-        };
-        let _lock = plan.lock_source()?;
-        verify_pending_state(&path, &state)?;
-        let mut sink =
-            super::report::ReportFile::create(dir, super::redact::Redactor::from_environment())?;
-        let run = offer_restore_checked(port, op, &mut sink, &path, &state, Some(plan));
-        let outcome = &run.step(RIG_GUARD).outcome;
-        if outcome.passed() {
-            return Ok(());
-        }
-        if matches!(outcome, Outcome::SkippedByPerson) {
-            return confirm_manual_recovery(op, &report, "You skipped automatic recovery.");
-        }
-        return Err(outcome
-            .reason()
-            .unwrap_or("Start new ended before the pending rig recovery was confirmed.")
-            .into());
+    let (cleanup, interrupted): (Vec<_>, Vec<_>) = pending(dir)
+        .into_iter()
+        .filter(|(path, _)| {
+            super::report::saved_mode(&path.with_extension("txt"))
+                .is_none_or(|mode| mode == port.mode())
+        })
+        .partition(|(_, state)| state.resume_cleanup_unverified);
+    for (path, state) in cleanup {
+        confirm_pending_cleanup(op, &path, &state)?;
     }
-    Ok(())
+    let Some((path, state)) = interrupted.into_iter().next() else {
+        return Ok(());
+    };
+    let report = path.with_extension("txt");
+    let plan = match super::resume::open(&report).and_then(|plan| {
+        plan.restore_ready(&state)?;
+        Ok(plan)
+    }) {
+        Ok(plan) => plan,
+        Err(reason) => return confirm_manual_recovery(op, &report, &reason),
+    };
+    let _lock = plan.lock_source()?;
+    verify_pending_state(&path, &state)?;
+    let mut sink =
+        super::report::ReportFile::create(dir, super::redact::Redactor::from_environment())?;
+    let run = offer_restore_checked(port, op, &mut sink, &path, &state, Some(plan));
+    let outcome = &run.step(RIG_GUARD).outcome;
+    if outcome.passed() {
+        return Ok(());
+    }
+    if matches!(outcome, Outcome::SkippedByPerson) {
+        return confirm_manual_recovery(op, &report, "You skipped automatic recovery.");
+    }
+    Err(outcome
+        .reason()
+        .unwrap_or("Start new ended before the pending rig recovery was confirmed.")
+        .into())
 }
 
-/// Check both Mac locations for interrupted runs. The selected checkpoint
+/// Check the configured report locations for interrupted runs. The selected checkpoint
 /// is already locked and validated by the resume plan.
 pub(super) fn before_continuation(
     op: &mut dyn Operator,
     mode: Mode,
     plan: &super::resume::Plan,
     output_dir: &Path,
-    legacy_dir: &Path,
+    legacy_dir: Option<&Path>,
 ) -> Result<(), String> {
     let output = output_dir.canonicalize().ok();
-    let legacy = legacy_dir.canonicalize().ok();
+    let legacy = legacy_dir.and_then(|dir| dir.canonicalize().ok());
     for dir in [
         output.as_deref(),
         legacy
@@ -294,6 +312,10 @@ fn confirm_pending(
         if super::report::saved_mode(&report).is_some_and(|saved| saved != mode) {
             continue;
         }
+        if state.resume_cleanup_unverified {
+            confirm_pending_cleanup(op, &path, &state)?;
+            continue;
+        }
         if let Some(plan) = selected
             && plan.is_selected_checkpoint(&path)?
         {
@@ -304,6 +326,16 @@ fn confirm_pending(
         confirm_manual_recovery(op, &report, "Another Rig Check was interrupted.")?;
     }
     Ok(())
+}
+
+fn confirm_pending_cleanup(
+    op: &mut dyn Operator,
+    path: &Path,
+    state: &RigState,
+) -> Result<(), String> {
+    let _lock = lock_checkpoint(path)?;
+    verify_pending_state(path, state)?;
+    confirm_manual_recovery(op, &path.with_extension("txt"), VERIFY_USB_CLEANUP)
 }
 
 fn verify_pending_state(path: &Path, state: &RigState) -> Result<(), String> {
@@ -649,6 +681,7 @@ mod tests {
             variax_preset: Some((2, 0)),
             variax_match_sha256: Some("bb".into()),
             finished: false,
+            resume_cleanup_unverified: false,
             recovery_completed: false,
         };
         assert_eq!(RigState::parse(&state.text()), Some(state.clone()));

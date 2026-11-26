@@ -99,7 +99,7 @@ pub fn continue_on(
     runner.legacy_report_dir = legacy_report_dir;
     let result = runner.run_from(Some(plan));
     if let Some(blocked) = &result.0.blocked_resume {
-        op.blocked_resume(blocked);
+        op.blocked_resume(blocked, result.0.resume_cleanup_error());
     }
     result
 }

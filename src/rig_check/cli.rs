@@ -314,10 +314,14 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         }
     }
 
-    fn blocked_resume(&mut self, blocked: &BlockedResume) {
+    fn blocked_resume(&mut self, blocked: &BlockedResume, cleanup_error: Option<&str>) {
         self.say(BlockedResume::TITLE);
         for line in blocked.lines() {
             self.say(&line);
+        }
+        if let Some(error) = cleanup_error {
+            self.say(&format!("USB cleanup failed: {error}"));
+            self.say(super::resume::VERIFY_USB_CLEANUP);
         }
     }
 

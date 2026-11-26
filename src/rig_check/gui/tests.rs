@@ -733,6 +733,7 @@ fn blocked_resume_offers_safe_report_focus_and_a_fresh_start_without_a_plan() {
     let blocked_attempt = || {
         let mut run = RunRecord::new(Mode::Practice, "synthetic".into());
         run.finished = true;
+        run.resume_cleanup = Some(ResumeCleanup::Released);
         run.blocked_resume = Some(BlockedResume {
             target: StepId(3, 3),
             check: StepId(2, 2),
@@ -799,4 +800,65 @@ fn blocked_resume_offers_safe_report_focus_and_a_fresh_start_without_a_plan() {
         starts.recv_timeout(Duration::from_secs(1)).unwrap(),
         (Mode::Practice, true)
     );
+}
+
+#[test]
+fn failed_release_opens_only_the_attempt_report_and_never_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (starts, started) = channel();
+    let mut app = App::new(dir.path().to_owned(), None, None, move |_, _, _| {
+        starts.send(()).unwrap();
+    });
+    let ctx = egui::Context::default();
+    let mut run = RunRecord::new(Mode::Practice, "synthetic".into());
+    run.finished = true;
+    run.blocked_resume = Some(BlockedResume {
+        target: StepId(3, 3),
+        check: StepId(2, 2),
+        reason: "The working tone differs.".into(),
+        details: Vec::new(),
+    });
+    let error = "PODxt Live interface 0 release failed: simulated USB release error";
+    run.resume_cleanup = Some(ResumeCleanup::Failed(error.into()));
+    let (to_runner, replies) = channel();
+    let (to_ui, from_runner) = channel();
+    app.wizard.mode = Some(Mode::Practice);
+    app.wizard.to_runner = Some(to_runner);
+    app.wizard.from_runner = Some(from_runner);
+    app.wizard.focus_armed = false;
+    to_ui
+        .send(Prompt::Done {
+            run: Box::new(run),
+            report: "Synthetic failed attempt report".into(),
+            path: "synthetic-attempt.txt".into(),
+        })
+        .unwrap();
+
+    let labels = frame(&ctx, &mut app.wizard, Vec::new());
+    for expected in [error, VERIFY_USB_CLEANUP, "Open report"] {
+        assert!(
+            labels.iter().any(|text| text.contains(expected)),
+            "{labels:?}"
+        );
+    }
+    assert!(!labels.iter().any(|text| text.contains("Start fresh")));
+    frame(&ctx, &mut app.wizard, vec![key(Key::Enter)]);
+    let labels = frame(&ctx, &mut app.wizard, Vec::new());
+    assert!(
+        labels
+            .iter()
+            .any(|text| text == "Synthetic failed attempt report")
+    );
+    assert!(!labels.iter().any(|text| text.contains("Start fresh")));
+    assert!(!labels.iter().any(|text| text.contains("Resume…")));
+    assert!(matches!(app.wizard.prompt, Some(Prompt::Done { .. })));
+    app.start_if_ready(&ctx);
+    assert!(matches!(
+        started.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        replies.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
 }

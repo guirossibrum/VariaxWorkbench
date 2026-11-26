@@ -14,7 +14,7 @@ pub mod raster;
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
-use super::resume::{self, BlockedResume, Plan};
+use super::resume::{self, BlockedResume, Plan, ResumeCleanup, VERIFY_USB_CLEANUP};
 use super::runner::{
     Answer, CONTROLS_NOTICE, Decision, Operator, Progress, Question, ResultDecision, Retry,
 };
@@ -738,7 +738,7 @@ impl Wizard {
             Some(Prompt::Finished(record)) => self.result(ui, &record, true),
             Some(Prompt::Done { run, report, path }) => {
                 if let Some(blocked) = &run.blocked_resume {
-                    self.blocked_resume(ui, blocked, &run.rig_state, &path);
+                    self.blocked_resume(ui, &run, blocked, &report, &path);
                 } else {
                     self.summary(ui, &run, &report, &path);
                 }
@@ -750,8 +750,9 @@ impl Wizard {
     fn blocked_resume(
         &mut self,
         ui: &mut egui::Ui,
+        run: &RunRecord,
         blocked: &BlockedResume,
-        rig_state: &str,
+        report: &str,
         path: &str,
     ) {
         ui.label(
@@ -763,7 +764,34 @@ impl Wizard {
         for line in blocked.lines() {
             ui.label(RichText::new(line).size(BODY));
         }
-        if let Some(cleanup) = rig_state.strip_prefix(&blocked.reason)
+        if !matches!(run.resume_cleanup, Some(ResumeCleanup::Released)) {
+            let status = run.resume_cleanup_error().map_or_else(
+                || "USB release could not be verified.".into(),
+                |error| format!("USB cleanup failed: {error}"),
+            );
+            ui.label(RichText::new(status).color(DANGER));
+            ui.label(VERIFY_USB_CLEANUP);
+            ui.label(format!("Working report: {path}"));
+            ui.add_space(SPACE_16);
+            let open = button(
+                ui,
+                if self.preview {
+                    "Hide report"
+                } else {
+                    "Open report"
+                },
+                true,
+            );
+            self.focus_once(&open);
+            if open.clicked() {
+                self.preview = !self.preview;
+            }
+            if self.preview {
+                ui.monospace(report.split("\nSTEPS\n").next().unwrap_or(report));
+            }
+            return;
+        }
+        if let Some(cleanup) = run.rig_state.strip_prefix(&blocked.reason)
             && !cleanup.trim().is_empty()
         {
             ui.label(cleanup.trim());

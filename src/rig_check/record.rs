@@ -335,6 +335,7 @@ pub struct RunRecord {
     pub pre_write_recovery: bool,
     pub continuation_pending: bool,
     pub blocked_resume: Option<super::resume::BlockedResume>,
+    pub resume_cleanup: Option<super::resume::ResumeCleanup>,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
     pub rig_description: String,
@@ -369,11 +370,19 @@ impl RunRecord {
             pre_write_recovery: false,
             continuation_pending: false,
             blocked_resume: None,
+            resume_cleanup: None,
             rig_state: "Not checked yet.".into(),
             rig_description: "Rig not identified yet".into(),
             finished: false,
             stopped_at: None,
             current: None,
+        }
+    }
+
+    pub(super) fn resume_cleanup_error(&self) -> Option<&str> {
+        match &self.resume_cleanup {
+            Some(super::resume::ResumeCleanup::Failed(error)) => Some(error),
+            _ => None,
         }
     }
 
