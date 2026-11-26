@@ -675,6 +675,18 @@ fn show_body(
     interactive: bool,
     outline: Option<&UiImage>,
 ) -> super::body_canvas::BodyOutput {
+    show_body_alphas(ui, body, pickup, views, interactive, outline, &[])
+}
+
+fn show_body_alphas(
+    ui: &mut egui::Ui,
+    body: &UiImage,
+    pickup: &UiImage,
+    views: &[PickupView],
+    interactive: bool,
+    outline: Option<&UiImage>,
+    alphas: &[Option<&[u8]>],
+) -> super::body_canvas::BodyOutput {
     let sprites: Vec<PickupSprite<'_>> = views
         .iter()
         .map(|view| PickupSprite {
@@ -685,7 +697,9 @@ fn show_body(
             image: pickup,
         })
         .collect();
-    let mut canvas = BodyCanvas::new(body, &sprites).interactive(interactive);
+    let mut canvas = BodyCanvas::new(body, &sprites)
+        .alphas(alphas)
+        .interactive(interactive);
     if let Some(outline) = outline {
         canvas = canvas.outline(Some(outline));
     }
@@ -996,12 +1010,13 @@ fn body_canvas_clicks_select_toggle_and_can_be_inert() {
         vec![egui::Event::PointerMoved(center), pointer(center, true)],
         Default::default(),
         |_, ui| {
-            let _ = show_body(ui, &body, &pickup, &overlapping, true, None);
+            let events = show_body(ui, &body, &pickup, &overlapping, true, None).events;
+            assert_eq!(events, vec![BodyEvent::PickupClicked { index: 1 }]);
         },
     );
     harness.run(vec![pointer(center, false)], Default::default(), |_, ui| {
         let events = show_body(ui, &body, &pickup, &overlapping, true, None).events;
-        assert_eq!(events, vec![BodyEvent::PickupClicked { index: 1 }]);
+        assert!(events.is_empty());
     });
 
     let away = art.left_top() + egui::vec2(2.0, 2.0);
@@ -1009,12 +1024,13 @@ fn body_canvas_clicks_select_toggle_and_can_be_inert() {
         vec![egui::Event::PointerMoved(away), pointer(away, true)],
         Default::default(),
         |_, ui| {
-            let _ = show_body(ui, &body, &pickup, &overlapping, true, None);
+            let events = show_body(ui, &body, &pickup, &overlapping, true, None).events;
+            assert_eq!(events, vec![BodyEvent::BodyClicked]);
         },
     );
     harness.run(vec![pointer(away, false)], Default::default(), |_, ui| {
         let events = show_body(ui, &body, &pickup, &overlapping, true, None).events;
-        assert_eq!(events, vec![BodyEvent::BodyClicked]);
+        assert!(events.is_empty());
     });
 
     let one = [PickupView {
@@ -1029,23 +1045,27 @@ fn body_canvas_clicks_select_toggle_and_can_be_inert() {
         art = show_body(ui, &body, &pickup, &one, true, None).art_rect;
     });
     let center = placement.screen_point(art, 3.0);
-    let mut first = Vec::new();
     harness.run(
         vec![egui::Event::PointerMoved(center), pointer(center, true)],
         Default::default(),
         |_, ui| {
-            let _ = show_body(ui, &body, &pickup, &one, true, None);
+            let events = show_body(ui, &body, &pickup, &one, true, None).events;
+            assert_eq!(events, vec![BodyEvent::PickupClicked { index: 0 }]);
         },
     );
     harness.run(vec![pointer(center, false)], Default::default(), |_, ui| {
-        first = show_body(ui, &body, &pickup, &one, true, None).events;
+        assert!(
+            show_body(ui, &body, &pickup, &one, true, None)
+                .events
+                .is_empty()
+        );
     });
-    assert_eq!(first, vec![BodyEvent::PickupClicked { index: 0 }]);
     harness.run(
         vec![egui::Event::PointerMoved(center), pointer(center, true)],
         Default::default(),
         |_, ui| {
-            let _ = show_body(ui, &body, &pickup, &one, true, None);
+            let events = show_body(ui, &body, &pickup, &one, true, None).events;
+            assert_eq!(events, vec![BodyEvent::PickupClicked { index: 0 }]);
         },
     );
     harness.run(vec![pointer(center, false)], Default::default(), |_, ui| {
@@ -1117,6 +1137,302 @@ fn body_canvas_clicks_select_toggle_and_can_be_inert() {
             }]
         );
     });
+}
+
+fn solid_bytes(alpha: u8) -> Vec<u8> {
+    [255, 255, 255, alpha].repeat(40 * 40)
+}
+
+#[test]
+fn pickup_hit_uses_alpha_above_204_and_the_padded_move_circle() {
+    let sprite = egui::vec2(120.0, 120.0);
+    // Padded side is (int)(120 * 1.15) = 138. Radius is (138 / 2) * 0.5 = 34.5.
+    assert_eq!(
+        body_canvas::zone_at(egui::vec2(32.0, 0.0), sprite),
+        Some(PickupZone::Move)
+    );
+    assert_eq!(
+        body_canvas::zone_at(egui::vec2(36.0, 0.0), sprite),
+        Some(PickupZone::Rotate)
+    );
+
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("alpha-pickup", [40, 40]);
+    let views = [PickupView {
+        inches: 3.0,
+        degrees: 0.0,
+        enabled: true,
+        selected: true,
+    }];
+    let press_center = |bytes: &[u8]| -> Vec<BodyEvent> {
+        let alphas = [Some(bytes)];
+        let mut harness = Harness::new();
+        let mut art = Rect::NOTHING;
+        harness.run(vec![], Default::default(), |_, ui| {
+            art = show_body_alphas(ui, &body, &pickup, &views, true, None, &alphas).art_rect;
+        });
+        let center = PickupPlacement::default().screen_point(art, 3.0);
+        let mut events = Vec::new();
+        harness.run(
+            vec![egui::Event::PointerMoved(center), pointer(center, true)],
+            Default::default(),
+            |_, ui| {
+                events = show_body_alphas(ui, &body, &pickup, &views, true, None, &alphas).events;
+            },
+        );
+        events
+    };
+    let miss = solid_bytes(204);
+    let hit = solid_bytes(205);
+    assert_eq!(press_center(&miss), vec![BodyEvent::BodyClicked]);
+    assert_eq!(
+        press_center(&hit),
+        vec![BodyEvent::PickupClicked { index: 0 }]
+    );
+
+    let mut split = vec![0; 40 * 40 * 4];
+    for y in 16..24 {
+        for x in 16..24 {
+            let index = (y * 40 + x) * 4;
+            split[index..index + 4].copy_from_slice(&[255, 255, 255, 255]);
+        }
+    }
+    let alphas = [Some(split.as_slice())];
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body_alphas(ui, &body, &pickup, &views, true, None, &alphas).art_rect;
+    });
+    let placement = PickupPlacement::default();
+    let center = placement.screen_point(art, 3.0);
+    let scale = placement.screen_scale(art);
+    // 14 image pixels is inside the 40px rectangle and outside the opaque block.
+    let outside = center + egui::vec2(14.0 * scale, 0.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(outside), pointer(outside, true)],
+        Default::default(),
+        |_, ui| {
+            assert_eq!(
+                show_body_alphas(ui, &body, &pickup, &views, true, None, &alphas).events,
+                vec![BodyEvent::BodyClicked]
+            );
+        },
+    );
+    harness.run(
+        vec![pointer(outside, false)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body_alphas(ui, &body, &pickup, &views, true, None, &alphas);
+        },
+    );
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            assert_eq!(
+                show_body_alphas(ui, &body, &pickup, &views, true, None, &alphas).events,
+                vec![BodyEvent::PickupClicked { index: 0 }]
+            );
+        },
+    );
+}
+
+#[test]
+fn body_canvas_drag_tracks_the_press_point_and_rebases_rotation() {
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let views = [PickupView {
+        inches: 1.8,
+        degrees: 0.0,
+        enabled: true,
+        selected: true,
+    }];
+    let placement = PickupPlacement::default();
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &views, true, None).art_rect;
+    });
+    let scale = placement.screen_scale(art);
+    let center = placement.screen_point(art, 1.8);
+    let show = |harness: &mut Harness, events, modifiers: Modifiers| -> Vec<BodyEvent> {
+        let mut reported = Vec::new();
+        harness.run(events, modifiers, |_, ui| {
+            reported = show_body(ui, &body, &pickup, &views, true, None).events;
+        });
+        reported
+    };
+    let press = show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+    );
+    assert_eq!(press, vec![BodyEvent::PickupClicked { index: 0 }]);
+
+    let far = center + egui::vec2(800.0, 0.0);
+    let capped = show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(far)],
+        Default::default(),
+    );
+    assert!(capped.iter().any(|event| matches!(
+        event,
+        BodyEvent::DragStarted {
+            index: 0,
+            kind: DragKind::Move
+        }
+    )));
+    assert!(capped.iter().all(|event| {
+        !matches!(
+            event,
+            BodyEvent::PickupClicked { .. } | BodyEvent::Rotated { .. }
+        )
+    }));
+    let capped_inches = capped.iter().find_map(|event| match event {
+        BodyEvent::Moved { index: 0, inches } => Some(*inches),
+        _ => None,
+    });
+    assert_eq!(capped_inches, Some(9.5));
+
+    let mid = center + egui::vec2(200.0, 0.0);
+    let returned_part = show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(mid)],
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
+    let mid_inches = returned_part.iter().find_map(|event| match event {
+        BodyEvent::Moved { index: 0, inches } => Some(*inches),
+        _ => None,
+    });
+    let expected_mid = body_canvas::move_inches(1.8, 200.0 / scale, placement);
+    let mid_inches = mid_inches.expect("mid move");
+    assert!(
+        (mid_inches - expected_mid).abs() < 1.0e-3,
+        "{mid_inches} vs {expected_mid}"
+    );
+    assert!(returned_part.iter().all(|event| !matches!(
+        event,
+        BodyEvent::Rotated { .. } | BodyEvent::PickupClicked { .. }
+    )));
+
+    let home = show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(center)],
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
+    let home_inches = home.iter().find_map(|event| match event {
+        BodyEvent::Moved { index: 0, inches } => Some(*inches),
+        _ => None,
+    });
+    assert_eq!(home_inches, Some(1.8));
+
+    let sprite = body_canvas::sprite_art_size(pickup.pixels, placement.art) * scale;
+    let rotate_at = center + egui::vec2(0.0, sprite.y * 0.4);
+    let mut harness = Harness::new();
+    harness.run(vec![], Default::default(), |_, ui| {
+        let _ = show_body(ui, &body, &pickup, &views, true, None);
+    });
+    let rotate = |harness: &mut Harness, events, modifiers: Modifiers| -> Vec<BodyEvent> {
+        let mut reported = Vec::new();
+        harness.run(events, modifiers, |_, ui| {
+            reported = show_body(ui, &body, &pickup, &views, true, None).events;
+        });
+        reported
+    };
+    rotate(
+        &mut harness,
+        vec![
+            egui::Event::PointerMoved(rotate_at),
+            pointer(rotate_at, true),
+        ],
+        Default::default(),
+    );
+    let up = rotate_at + egui::vec2(0.0, -80.0);
+    let clamped = rotate(
+        &mut harness,
+        vec![egui::Event::PointerMoved(up)],
+        Default::default(),
+    );
+    let clamped_degrees = clamped.iter().find_map(|event| match event {
+        BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+        _ => None,
+    });
+    assert_eq!(clamped_degrees, Some(45.0));
+    assert!(
+        clamped
+            .iter()
+            .all(|event| !matches!(event, BodyEvent::Moved { .. }))
+    );
+
+    let held = rotate(
+        &mut harness,
+        vec![egui::Event::PointerMoved(up)],
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        held.iter()
+            .all(|event| !matches!(event, BodyEvent::Rotated { .. } | BodyEvent::Moved { .. }))
+    );
+
+    let eased = rotate_at + egui::vec2(0.0, -60.0);
+    let rebased = rotate(
+        &mut harness,
+        vec![egui::Event::PointerMoved(eased)],
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
+    let degrees = rebased
+        .iter()
+        .find_map(|event| match event {
+            BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+            _ => None,
+        })
+        .expect("rebased rotation");
+    assert!((degrees - 43.2).abs() < 0.05, "{degrees}");
+    assert!(
+        rebased
+            .iter()
+            .all(|event| !matches!(event, BodyEvent::Moved { .. }))
+    );
+
+    let mut harness = Harness::new();
+    harness.run(vec![], Default::default(), |_, ui| {
+        let _ = show_body(ui, &body, &pickup, &views, true, None);
+    });
+    rotate(
+        &mut harness,
+        vec![
+            egui::Event::PointerMoved(rotate_at),
+            pointer(rotate_at, true),
+        ],
+        Default::default(),
+    );
+    rotate(
+        &mut harness,
+        vec![egui::Event::PointerMoved(up)],
+        Default::default(),
+    );
+    let back = rotate(
+        &mut harness,
+        vec![egui::Event::PointerMoved(rotate_at)],
+        Default::default(),
+    );
+    let back_degrees = back.iter().find_map(|event| match event {
+        BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+        _ => None,
+    });
+    assert_eq!(back_degrees, Some(0.0));
 }
 
 #[test]
