@@ -1078,7 +1078,7 @@ fn body_and_inspector_cards_stay_put_when_alternate_tuning_is_toggled() {
 }
 
 #[test]
-fn acoustic_body_hides_pickup_sprites_and_disables_electrics_with_workbench_labels() {
+fn acoustic_body_hides_pickup_sprites_and_describes_the_knobs() {
     fn has_text(shape: &egui::Shape, expected: &str) -> bool {
         match shape {
             egui::Shape::Text(text) => text.galley.text() == expected,
@@ -1119,7 +1119,12 @@ fn acoustic_body_hides_pickup_sprites_and_disables_electrics_with_workbench_labe
     );
     assert!(app.variax().pickup_centers.is_empty());
     app.variax_mut().tab = Tab::Controls;
-    expect(render(&mut app), "Param not available");
+    expect(render(&mut app), "Controls output level.");
+    expect(render(&mut app), "Changes the modeled microphone position.");
+    expect(
+        render(&mut app),
+        "Electrical controls are unavailable for this body.",
+    );
     assert!(!app.variax().tuning_widgets.contains_key("Low E mix"));
     assert!(!app.variax().can_edit(WIRING, None));
 }
