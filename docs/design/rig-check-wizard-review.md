@@ -8,6 +8,10 @@ Rust sources. It records the redraw. It is not owner approval.
 Screen index and the three open layout questions:
 [docs/rig-check/design.md](../rig-check/design.md).
 Headless pictures: [docs/rig-check/mockups](../rig-check/mockups/).
+A later checkpoint, [guided prompts](rig-check-guided-prompts.md), maps
+the current Get ready wording, the footswitch and expression-pedal
+prompts, and a proposed recovery from an accidental Skip. It does not
+replace this checklist, and it is not owner approval.
 
 ## Approval on record
 

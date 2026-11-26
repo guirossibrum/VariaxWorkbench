@@ -1,0 +1,310 @@
+# Rig Check guided prompts
+
+[#248](https://github.com/guirossibrum/VariaxWorkbench/issues/248).
+Design checkpoint for the owner. The wizard and terminal text cited
+here is the text on `dac532129971e18571bc2b4065ffcbbe76caf985`. Those
+files are unchanged through `cfd31f47cd51a3e56febd0a09e621bd17fdaf73c`,
+the branch base. It maps that wizard and terminal, and proposes three
+changes for a later implementation:
+when the act-now sentence appears, how step 7.3 names a footswitch and
+step 7.4 names the expression pedal, and how an accidental Skip is
+retried from review. This file does not change Rust sources, gates, or
+the fourteen headless pictures. It is not owner approval.
+
+The screenshot checklist remains
+[rig-check-wizard-review.md](rig-check-wizard-review.md). Screen index:
+[docs/rig-check/design.md](../rig-check/design.md).
+
+## Lane split
+
+| Issue | Owns in this round | Stays out of this file's proposal |
+| --- | --- | --- |
+| #248, this checkpoint | Common guided chrome: prepare, Get ready, and NOW. Footswitch and expression-pedal wording. Review-only Back, plus the explicit Skip recovery described for #276. | 6.1 detection, identity fallback, and cable-state sentences. Application code. |
+| #260, Lane 1 | Offline 6.1 state machine: unplug, detected, reconnect, and restoration cues. Automatic advance on supported evidence. Bounded identity checks when the Mac relay gives no notice. No-response distinct from a failed transport. The same verified identity on return. Tests for notice and no-notice, no prompt during a read, timing, timeout, and Stop. | The common Ready / NOW chrome, footswitch and expression-pedal copy, and Skip recovery. Those stay here and with #276. |
+| #276 | After this design is marked, the implementation of Back, the explicit retry, dependency recomputation, and the Practice path Skip → Back → explicit retry → current card. | A second way for Back or Return to start a device action. |
+
+#260's acceptance still holds for every guided step: never ask for a
+physical action while a read is running, and let detection advance so
+the player does not walk back to the computer. This proposal keeps
+Continue as an optional check. It does not add a prompt during a read.
+
+#248's acceptance is unchanged. Mockups are not approved by this file.
+The new screens below need a mark before any picture or code. Keyboard
+access stays: Tab moves between buttons, and Enter or Space presses the
+focused button.
+
+## Evidence
+
+Private report, not committed:
+
+`backups/verification/298-owner-runtime.9AEclz63/rig-check-20261126T164933Z.txt`
+
+Rig Check 0.9.0 at `dac5321`, catalogue 1.6, real devices, finished
+2026-11-26. The protocol trace inside that file stays private. Plain
+outcomes used here:
+
+- 6.1 passed on attempt 1. The result lines say the guitar stopped
+  answering and later answered with its starting identity, and that no
+  connection notice was decoded. Those cues belong to Lane 1 on #260.
+- 7.3 passed on attempt 2. Attempt 1 failed with "No 168-byte
+  edit-buffer dump arrived." The passing attempt records the change to
+  the named channel as already in the expected state, and records the
+  return to the starting channel during the get-ready countdown.
+- 7.4 passed on attempt 1. It records an expression-pedal sweep during
+  the action window. The catalogue has one such sweep.
+- The summary counts skipped-by-you as 0. This run does not contain an
+  accidental Skip. The keyboard default that causes one is still present.
+
+7.3 and 7.4 ran as two separate pedalboard steps. 7.2 is the Variax
+volume and tone knobs. 7.5 is the six PODxt Live tone knobs. Those two
+are not pedalboard steps.
+
+## Prompts and keys on this head
+
+Source: `src/rig_check/gui/mod.rs`, `src/rig_check/cli.rs`,
+`src/rig_check/guided.rs`, `src/rig_check/catalogue.rs`,
+`src/rig_check/recover.rs`. The window and the terminal share the runner.
+
+A guided step has four spoken moments today.
+
+1. **Step card**, before Start. Focus is **Skip (S)**. The card shows
+   What it does, "You do", and SEE / HEAR at 34 points. The muted line
+   is "Nothing runs until you choose Run. Skip is the default."
+2. **Prepare**, after Start. `prepare_action` shows "Step {id}: get
+   ready", the same SEE and HEAR at 34 points, and "Press OK when you're
+   ready. A short countdown tells you when to start." Focus is **OK**.
+3. **Countdown.** `begin_action` calls `instruct` immediately after OK,
+   so the 34-point SEE and HEAR stay on screen. The large line is
+   "GET READY {n} s" for 10 seconds (`READY_DELAY`), with **+10 seconds**.
+   The terminal prints "Get ready. Start in 10 s. Watching for {what}."
+4. **Action window.** After 10 seconds the large line becomes
+   "NOW {see}" and a 60-second bar (`ACTION_WINDOW`). A detected change
+   can end the window early. The same listener is already open during
+   the countdown. A match then is stored as "Seen: {what} during the
+   get-ready countdown" and completes the phase. That is what 7.3's
+   return did.
+
+6.1 uses this same `begin_action` path. Its current SEE lines are
+"Unplug the VDI cable from the guitar after OK." and "The guitar is not
+answering. Plug the VDI cable back in, then press Continue if the screen
+is still waiting." Lane 1 replaces those cues. The chrome around them is
+the common sequence in the next section.
+
+### Window keys
+
+| Screen | Focus | Enter or Space | Other keys |
+| --- | --- | --- | --- |
+| Choose mode | Practice | Practice | The other button is Real rig, This Mac, or This computer, from the compile-time title |
+| Start notice | Quit | Quit | Accept and continue is the other button |
+| Step card | Skip (S) | Skip | R starts or runs, S skips, Q stops. Backspace reviews when a prior result exists. Back is a button. |
+| Save notice | Skip | Skip | Save stays disabled until the confirmation matches |
+| Prepare | OK | OK, which starts the countdown | Skip and Stop are buttons |
+| Get ready and NOW | The screen does not move focus | A click on Continue ends the wait during the countdown and during NOW. Tab can reach that button. | +10 seconds during Get ready. Stop asks the step to finish. |
+| Didn't see it | Skip | Skip | Try again and Stop are buttons |
+| Listen | Not sure | Not sure | Yes and No are buttons |
+| Current result | Continue | Continue | Different…, Repeat this step when `can_repeat`, Stop, Back. Backspace reviews. |
+| Review | Return to current step | Return | C returns. Back and Backspace move only through recorded screens. |
+
+Closed window on a card skips. Closed window on prepare or "didn't see
+it" stops.
+
+### Terminal keys
+
+| Screen | Enter | Other input |
+| --- | --- | --- |
+| Start | Quits | `accept` or `a` starts |
+| Step card | Skip | `[r]` starts or runs, `[s]` skips, `[q]` stops, `[b]` reviews. Any other line also skips. |
+| Prepare | OK | `[s]` skips. `[q]`, Stop, or a closed input stops. Any other line skips. |
+| Countdown | Continue, which ends the wait | `[+10]` adds ten seconds. `[q]` stops. The line already names what is being watched. |
+| Didn't see it | Skip | `[t]` tries again. `[q]` or a closed input stops. |
+| Listen | Not sure | `[y]`, `[n]`, `[?]` |
+| Current result | Continue | `[b]` reviews, `[c]` continues, `[d]` records a display difference when offered, `[r]` repeats when `can_repeat`, `[q]` stops. |
+
+### What Back does now
+
+Back, Backspace, sidebar selection, and terminal `[b]` open a recorded
+result or the accepted start notice. Return and C leave that view.
+`history::back` does not call the runner. Review renders the result with
+`awaiting` false, so the only controls are Return and Back. A card Skip
+is stored as skipped-by-you with no start time, the run moves to the
+next card, and Back from that card can show the skipped result. That
+view cannot start the step. Repeat this step is only on the current
+result, and `can_repeat` requires a start time, so a card Skip never
+offers it.
+
+## Proposed sequence: Get ready, then NOW
+
+Use one sequence for every physical action in 6.1 and 7.1–7.5, in the
+window and the terminal, with the same words.
+
+**Prepare**, at the computer or once the player has chosen Start. Large
+line: "Get in place." Name where to stand and which family of control
+the next NOW will use, without the act itself. Example for 7.3: "Go to
+the PODxt Live. This step uses a channel footswitch. Leave every
+footswitch and the expression pedal as they are." Then: "Press OK when
+you are there. A countdown will tell you when to act." Focus stays
+**OK**, because Start was already a deliberate choice on a card whose
+focus was Skip. Skip and Stop remain on the screen. Enter means OK.
+
+**Get ready.** Large line: "GET READY" and the seconds left, default
+10, with +10 seconds. One body line: "Do not act yet. The instruction
+appears at zero." No 34-point SEE or HEAR. The terminal does not name
+the action in this line: "Get ready. 10 s. Do not act yet. [+10] More
+time   [q] Stop". Enter does nothing. Continue is not shown. Stop still
+stops the run.
+
+**NOW.** Large line: "NOW" plus the one act sentence for this phase.
+The 60-second bar and the live "Seen" line stay. Continue checks what
+was seen. Stop stops the run. The next phase, including the return half
+of 7.3, starts again at Prepare.
+
+Already-there is checked before Prepare, as it is now. If the device is
+already in the requested state, say so and do not open a countdown.
+
+For 7.1–7.5, a matching change during Get ready is shown as "Seen during
+Get ready. It does not count." and does not complete the phase. At NOW,
+check the current state again. If the request is already satisfied,
+say so and move on. If it is not, show the act sentence and wait. This
+is the rule that would have kept 7.3's return from completing during
+the countdown.
+
+For 6.1, Lane 1 keeps automatic advance on supported cable evidence,
+including evidence that arrives during Get ready. The player must not
+be sent around the room twice for a cable that already moved. Lane 1
+writes the unplug, detected, reconnect, and restoration sentences that
+appear on the NOW line, and the already-there sentences. This checkpoint
+does not change 6.1's listener, identity fallback, gates, or traffic.
+Lane 1's tests cover notice and no-notice, no prompt during a read,
+timing, timeout, and Stop. They should show the act sentence at NOW
+and keep "Do not act yet" as the only body line during Get ready.
+
+## Footswitch and expression pedal
+
+The PODxt Live pedalboard has channel footswitches and a separate
+expression pedal. On this head the two steps are easy to hear as the
+same request.
+
+| | 7.3 today | 7.4 today |
+| --- | --- | --- |
+| Card title | Switch the PODxt Live to a named channel | Move the PODxt Live pedal |
+| You do | Press the footswitch for the named channel, then switch back. | Rock the pedal from heel to toe and back, then leave it where it was. |
+| Act sentence, each phase | "On the PODxt Live, press the footswitch for channel {label}." then "press the footswitch for channel {label} again." | "Rock the PODxt Live pedal from heel to toe and back, then leave it where it was." |
+| Watched event | channel change to {label}, then channel change back | pedal sweep (CC 7 or CC 4) |
+| Live label for CC 4 and CC 7 | "pedal", on every PODxt listen, including 7.3 | "pedal" |
+
+Proposed card titles, for a later catalogue edit:
+
+- 7.3: "PODxt Live footswitches: change channel and return"
+- 7.4: "PODxt Live expression pedal: heel to toe"
+
+Proposed NOW sentences:
+
+- 7.3 go: "NOW: press the channel footswitch for {label}. Leave the expression pedal still."
+- 7.3 return: "NOW: press the channel footswitch for {start} to come back. Leave the expression pedal still."
+- 7.4: "NOW: rock the expression pedal from heel to toe and back, then leave it where it was. Do not press a channel footswitch."
+
+Prepare names the same control in one sentence and does not include
+"press" or "rock". The card may still preview both halves of 7.3 under
+You do, because that card is read before Start.
+
+Seen lines use the control name. A channel change is "channel {label}".
+CC 4 or CC 7 is "expression pedal {value}" on every PODxt listen. On
+7.3 that line is information. It is not progress toward the channel
+change. On 7.4 it is the watched event. 7.2 keeps "guitar volume" and
+"guitar tone". 7.5 keeps the six knob names.
+
+7.3 stays two phases. Each phase has its own Prepare, Get ready, and
+NOW. The return is not printed during the first countdown.
+
+## Accidental Skip, for #276
+
+Enter on a step card skips, in the window and the terminal. Any other
+terminal line on that card also skips. That is the safe default and it
+stays. A person who presses Enter while reaching for R loses the step
+and cannot start it from Back.
+
+Add one control on the review of a step whose outcome is skipped-by-you.
+The label is **Run this skipped step**. It is absent for an automatic
+firmware skip, a needs-skip, not applicable, a failed step, a stopped
+step, a save, a live edit or store that already sent, and any attempt
+whose record contains an uncertain write. Listening that only received
+is eligible. A live step skipped from its card before any send is
+eligible. Gates and the catalogue's traffic for that step are unchanged.
+
+The control is not focused. Focus on review stays **Return to current
+step**. Back, Backspace, Enter, C, and terminal `[b]` and `[c]` do not
+activate it.
+
+Choosing it opens a confirm. Large line: "Run the skipped step {id}?"
+Body: "Later steps that were waiting only on this skip will be offered
+again. A step that already ran is left as it is. Nothing already saved
+is written again." Focus is **Keep it skipped**. **Run it** is the other
+button. Terminal: the review lines stay as they are, and the confirm
+asks for the words `run skipped` or `keep`. Enter means keep.
+
+**Run it** does not send. It shows that step's normal card, which still
+focuses Skip. Start or R is required. The attempt already stored stays
+in the report. The new attempt is appended. The latest outcome counts.
+
+After that result, Continue offers, in catalogue order, each later step
+that has not executed and was held only by this skip. That includes a
+step whose Needs list was waiting on it, and a save that was held
+because an earlier step had not passed, once every earlier applicable
+step passes. Each of those cards focuses Skip. Steps that already
+executed stay recorded. A save or live edit that already sent is left
+recorded. The card that was current when Back was pressed is then shown
+again. If the retry is skipped or it fails, those dependents stay
+blocked and the current card returns.
+
+Practice covers Skip, Back, the confirm left on Keep it skipped, and the
+same pending card, with the simulated message count unchanged. A second
+case presses Run it, then Start, records both attempts, and returns to
+that same card. Back during either case sends nothing.
+
+A person-skip still blocks later saves, because a save requires every
+earlier applicable step to pass. It also blocks any later step that
+lists it in Needs. A live step is held back by an earlier failure. A
+person-skip alone does not set that failure. An automatic skip of a
+tested-firmware check still does not block saves. Those are the
+runner's rules on this head, in `precheck`.
+
+## Live and write authorization
+
+This checkpoint changes no constant in `src/hardware_gates.rs` and no
+approval switch. Read, live, and save risk on each catalogue step stay
+as they are. Saves still need every earlier applicable step to pass,
+still require the typed confirmation, and still have no repeat. The
+proposed retry never calls a store and never repeats a live send. Audio
+steps 8.2–8.5 stay unavailable. #267 remains the owner's release for
+real guided steps. A mark on this file is design approval to implement
+the chrome and the retry. It is not a new device permission.
+
+## Owner marks
+
+Write **Approve** or **Change** on each row.
+
+| # | Proposal | Mark |
+| --- | --- | --- |
+| 1 | Get ready shows only the countdown and "Do not act yet." The act sentence appears at NOW, at 34 points. | |
+| 2 | Enter during Get ready does nothing. Continue is absent until NOW. OK stays the focused prepare button. | |
+| 3 | For 7.1–7.5, a match during Get ready does not complete the phase. At NOW the current state is checked again. | |
+| 4 | 6.1 may still advance on cable evidence that arrives during Get ready. Lane 1 writes the cable sentences. | |
+| 5 | 7.3 says channel footswitch. 7.4 says expression pedal. CC 4 and CC 7 read "expression pedal" on every PODxt listen. | |
+| 6 | Back and Return stay review-only. "Run this skipped step" is a separate, unfocused control, confirmed by "Keep it skipped" as the focused choice. | |
+| 7 | The retry keeps both attempts, recomputes only unexecuted dependents, and does not replay a live send or a store. | |
+
+## Later implementation
+
+No code in this checkpoint. After the marks:
+
+- The common chrome and the 7.3 / 7.4 sentences are a #248 implementation.
+  They include the window, the terminal, and Practice coverage of an
+  early footswitch change and an expression-pedal sweep.
+- The Skip control, confirm, dependency recomputation, and the Practice
+  path are #276, against rows 6 and 7.
+- The 6.1 state machine is #260, against row 4, using this chrome and
+  Lane 1's own sentences.
+
+`docs/rig-check/design.md`, the catalogue, and the fourteen pictures
+stay as they are until that implementation. The roadmap bullet for #248
+still points at the screenshot checklist.
