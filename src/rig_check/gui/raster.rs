@@ -69,25 +69,42 @@ fn apply(textures: &mut HashMap<TextureId, Texture>, delta: &egui::TexturesDelta
 
 /// Draw `ui` for a few frames (so layout settles) and return the last frame
 /// as RGBA pixels, `width` x `height` at one pixel per point.
-pub fn render(width: u32, height: u32, mut ui: impl FnMut(&egui::Context)) -> image::RgbaImage {
+pub fn render(width: u32, height: u32, ui: impl FnMut(&egui::Context)) -> image::RgbaImage {
+    render_scaled(width, height, 1, ui)
+}
+
+/// Draw at a native scale while keeping width and height in logical points.
+pub(super) fn render_scaled(
+    width: u32,
+    height: u32,
+    scale: u32,
+    mut ui: impl FnMut(&egui::Context),
+) -> image::RgbaImage {
     let ctx = egui::Context::default();
     super::apply_theme(&ctx);
+    let pixels_per_point = scale as f32;
     let mut textures = HashMap::new();
     let mut last = None;
     for _ in 0..4 {
-        let input = egui::RawInput {
+        let mut input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 Pos2::ZERO,
                 egui::vec2(width as f32, height as f32),
             )),
             ..Default::default()
         };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root viewport")
+            .native_pixels_per_point = Some(pixels_per_point);
         let output = ctx.run(input, &mut ui);
         apply(&mut textures, &output.textures_delta);
         last = Some(output);
     }
     let output = last.expect("ran at least once");
-    let primitives = ctx.tessellate(output.shapes, 1.0);
+    let primitives = ctx.tessellate(output.shapes, pixels_per_point);
+    let (width, height) = (width * scale, height * scale);
     let mut canvas = vec![[0.0f32; 4]; (width * height) as usize];
     for primitive in primitives {
         let epaint::Primitive::Mesh(mesh) = primitive.primitive else {
@@ -96,13 +113,17 @@ pub fn render(width: u32, height: u32, mut ui: impl FnMut(&egui::Context)) -> im
         let Some(texture) = textures.get(&mesh.texture_id) else {
             continue;
         };
-        let clip = primitive.clip_rect;
+        let to_pixels = |pos: Pos2| pos * pixels_per_point;
+        let clip = Rect::from_min_max(
+            to_pixels(primitive.clip_rect.min),
+            to_pixels(primitive.clip_rect.max),
+        );
         for tri in mesh.indices.as_chunks::<3>().0 {
-            let v = [
-                mesh.vertices[tri[0] as usize],
-                mesh.vertices[tri[1] as usize],
-                mesh.vertices[tri[2] as usize],
-            ];
+            let v = tri.map(|index| {
+                let mut vertex = mesh.vertices[index as usize];
+                vertex.pos = to_pixels(vertex.pos);
+                vertex
+            });
             fill(&mut canvas, width, height, clip, &v, texture);
         }
     }

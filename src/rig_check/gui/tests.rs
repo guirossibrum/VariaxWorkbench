@@ -466,6 +466,51 @@ fn mockups_render_headless() {
 }
 
 #[test]
+fn laptop_mockups_show_run_position_and_catalogue_id_at_both_scales() {
+    let (width, height) = LAPTOP_MOCKUP_SIZE;
+    let screen = Rect::from_min_size(Pos2::ZERO, vec2(width as f32, height as f32));
+    for (_, scale) in LAPTOP_MOCKUP_SCALES {
+        for ((name, mut wizard), (ordinal, id, control)) in
+            laptop_mockup_states().into_iter().zip([
+                ("Step 16 of 35", "Catalogue ID 6.1", "Start  (R)"),
+                ("Step 16 of 35", "Catalogue ID 6.1", "OK"),
+                ("Step 21 of 35", "Catalogue ID 7.4", "Start  (R)"),
+                ("Step 29 of 35", "Catalogue ID 4.7", "Run  (R)"),
+            ])
+        {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            let mut input = RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale as f32);
+            let output = ctx.run(input, |ctx| wizard.show(ctx));
+            assert_eq!(output.pixels_per_point, scale as f32);
+            let labels = labels(&output);
+            for expected in [ordinal, id, control] {
+                assert!(
+                    labels
+                        .iter()
+                        .any(|(text, position)| text == expected && screen.contains(*position)),
+                    "{name} at {scale}× should show {expected:?}"
+                );
+            }
+        }
+    }
+    let (_, mut wizard) = laptop_mockup_states().into_iter().next().unwrap();
+    let retina = raster::render_scaled(width, height, 2, |ctx| {
+        assert_eq!(ctx.pixels_per_point(), 2.0);
+        wizard.show(ctx);
+    });
+    assert_eq!(retina.dimensions(), (width * 2, height * 2));
+}
+
+#[test]
 fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
     let ctx = egui::Context::default();
     let screen = Rect::from_min_size(Pos2::ZERO, vec2(1180.0, 800.0));
