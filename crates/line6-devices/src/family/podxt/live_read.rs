@@ -109,6 +109,109 @@ pub fn follow_window<L: Link>(
     )
 }
 
+/// Listen for a physical recall on the caller's verified, locked PODxt Live
+/// link. Start with no outstanding requests. The latest channel notice must
+/// match `expected` for the normal Follow settle interval within `window`.
+/// Observations are reported during that passive interval.
+///
+/// A settled match allows one edit-buffer request with the normal reply
+/// timeout. Any program change during the reply wait invalidates the read,
+/// even in the same packet as the dump. There is no retry. The dump carries
+/// no channel address, so the caller still compares it with the expected tone.
+///
+/// Returns `Ok(None)` if no matching notice settles in time. A missing dump,
+/// a program change during readback, or cancellation returns an error.
+/// After interruption, an outstanding dump may still arrive on the link.
+pub fn listen_channel_recall<L: Link>(
+    session: &mut Session<L>,
+    expected: Location,
+    window: Duration,
+    cancelled: impl Fn() -> bool,
+    mut observe_channel: impl FnMut(Location),
+) -> Result<Option<EditBuffer>, String> {
+    if expected.kind() != BankKind::Tones {
+        return Err("Only PODxt tone channels can be observed for recall.".into());
+    }
+    if session.link.path() != crate::session::Path::PodxtMidi
+        || !session.allows(Operation::PodxtIdentity)
+        || !session.allows(Operation::PodxtRead)
+    {
+        return Err(
+            "PODxt recall listening requires a PODxt MIDI link and identity and read permissions."
+                .into(),
+        );
+    }
+
+    let end = session.link.elapsed().saturating_add(window);
+    let mut due = None;
+    loop {
+        check_cancel(&cancelled)?;
+        let now = session.link.elapsed();
+        if now >= end {
+            return Ok(None);
+        }
+        if due.is_some_and(|due| due <= now) {
+            break;
+        }
+        let wait = due.unwrap_or(end).min(end) - now;
+        let events = session.poll(wait.min(POLL))?;
+        check_cancel(&cancelled)?;
+        for event in events.into_iter().flatten() {
+            if let Some(Notice::Channel(location)) = notice(&event) {
+                due = (location == expected).then(|| session.link.elapsed() + CURRENT_SETTLE);
+                observe_channel(location);
+            }
+        }
+    }
+
+    let tone = request_tone(None, |request, window| {
+        check_cancel(&cancelled)?;
+        session.send(request)?;
+        let end = session.link.elapsed() + window;
+        while let Some(left) = remaining(session, end) {
+            check_cancel(&cancelled)?;
+            let events = session.poll(left.min(POLL))?;
+            check_cancel(&cancelled)?;
+            let mut reply = None;
+            for event in events.into_iter().flatten() {
+                if let Some(Notice::Channel(location)) = notice(&event) {
+                    return Err(format!(
+                        "PODxt channel notification ({}) interrupted the edit-buffer readback for {}.",
+                        location.label(),
+                        expected.label(),
+                    ));
+                }
+                if let Event::Sysex(frame) = event
+                    && is_edit_buffer(&frame)
+                    && reply.replace(frame).is_some()
+                {
+                    return Err("More than one PODxt edit-buffer dump arrived in a packet.".into());
+                }
+            }
+            if reply.is_some() {
+                return Ok(reply);
+            }
+        }
+        check_cancel(&cancelled)?;
+        Ok(None)
+    })?
+    .ok_or("No 168-byte edit-buffer dump arrived.")?;
+    Ok(Some(tone))
+}
+
+fn check_cancel(cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    if cancelled() {
+        Err("PODxt read cancelled.".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn remaining<L: Link>(session: &Session<L>, end: Duration) -> Option<Duration> {
+    end.checked_sub(session.link.elapsed())
+        .filter(|duration| !duration.is_zero())
+}
+
 /// Run the editor tuner with a shorter diagnostic window, including cleanup.
 pub fn tuner_window<L: Link>(
     session: &mut Session<L>,
@@ -193,11 +296,7 @@ struct Reader<'a, 's, L: Link> {
 
 impl<L: Link> Reader<'_, '_, L> {
     fn check_cancel(&self) -> Result<(), String> {
-        if (self.cancelled)() {
-            Err("PODxt read cancelled.".into())
-        } else {
-            Ok(())
-        }
+        check_cancel(self.cancelled)
     }
 
     fn identify(&mut self, tuner: bool) -> Result<(), String> {
@@ -247,8 +346,7 @@ impl<L: Link> Reader<'_, '_, L> {
     }
 
     fn remaining(&self, end: Duration) -> Option<Duration> {
-        end.checked_sub(self.session.link.elapsed())
-            .filter(|duration| !duration.is_zero())
+        remaining(self.session, end)
     }
 
     fn request(
@@ -476,6 +574,8 @@ mod tests {
         testing::{Fake, packets},
     };
     use std::cell::Cell;
+
+    mod passive_recall;
 
     struct ReadsOnly {
         stored: bool,

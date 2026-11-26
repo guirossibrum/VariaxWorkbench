@@ -26,8 +26,8 @@ pub use live_edit::{
     recall_editor_channel,
 };
 pub use live_read::{
-    ReadCommand, ReadUpdate, controller_notification, follow_action, follow_window, read_live,
-    tuner_window,
+    ReadCommand, ReadUpdate, controller_notification, follow_action, follow_window,
+    listen_channel_recall, read_live, tuner_window,
 };
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
 pub use procedures::{check_live_identity, identify_podxt_live, read_stored_tone, restore_channel};
