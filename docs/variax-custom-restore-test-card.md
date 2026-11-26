@@ -157,14 +157,18 @@ and the status ledger after an owner run.
   historical input assumptions and closed approval switches remain.
   There is no approved end-to-end Custom runner in this checkpoint.
 
-## Focused rehearsal required before owner review
+## Focused synthetic rehearsal
 
-Existing fake transports exercise the shared store and read procedures.
-The focused #178 rehearsal is still pending. Use synthetic inputs with the
-same shape as the fresh backup and log which checks admitted each phase.
-Use distinct program bytes across presets so a wrong load, swapped slot,
-or missing slot is visible. Compare by preset or bank key and require the
-complete key sets before comparing bytes.
+The [test-only rehearsal](../crates/line6-devices/src/family/variax/backup/tests/custom_restore.rs)
+runs the shared store, full backup and reselect procedures through a
+scripted fake link. It uses distinct synthetic bytes for each preset and
+validates the written snapshot files before comparing by preset or bank
+key. The success case confirms the edit and restore separately, consumes
+two `0x71` replies for exactly two slot-4 stores, and checks **60 programs,
+60 settings pairs and 12 bank names** at each of the three checkpoints.
+The fault cases include a checksum-valid recovery image that would change
+under stamping, and independent changes to an untouched program, settings
+pair and bank-name reply.
 
 | Phase | Required result |
 | --- | --- |

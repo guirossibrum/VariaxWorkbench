@@ -2,10 +2,10 @@ use super::*;
 use crate::identity::Identity;
 use std::{fs, path::PathBuf};
 
-struct TestRoot(PathBuf);
+pub(super) struct TestRoot(pub(super) PathBuf);
 
 impl TestRoot {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let path =
             std::env::temp_dir().join(format!("variax-snapshot-{label}-{}", std::process::id()));
         fs::create_dir(&path).unwrap();
@@ -44,7 +44,7 @@ fn identity() -> Identity {
     Identity::parse(&identity_reply()).unwrap()
 }
 
-fn fixture(
+pub(super) fn fixture(
     root: &TestRoot,
     label: &str,
     coverage: SnapshotCoverage,
