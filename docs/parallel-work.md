@@ -103,10 +103,20 @@ to lane 2's `assets/ui/` only.
 
 ## Builds and scratch space
 
-Build in your own issue worktree or use a stable shared `CARGO_TARGET_DIR`
-under the main checkout's `target/shared-builds/`. Never point a new task's
-build output into another issue worktree. Report any legacy dependency in the
-final handoff so it can be moved after its users have stopped. Do not build full copies of the project under `/tmp`. It is a
+Use one stable `CARGO_TARGET_DIR` per build lane under the main checkout's
+`target/shared-builds/`, for example `target/shared-builds/lane3`. Reuse it
+across that lane's issues. Research lanes can omit a cache until they need
+Cargo. Never copy a cache between worktrees or build into another issue
+worktree. Report legacy cache dependencies so they can be moved after their
+users have stopped.
+
+Gatekeeper merge checks use `target/shared-builds/gatekeeper` with
+`CARGO_INCREMENTAL=0`. Lane builds may keep incremental compilation for
+repeated local work. Keep owner-run executables and required reports in an
+ignored release or evidence folder under `backups/`. Check for active Cargo
+jobs before clearing any cache.
+
+Do not build full copies of the project under `/tmp`. It is a
 30 GB RAM disk shared by every agent, and a full link there crashed `rust-lld`
 with SIGBUS on 2026-11-24 when it filled up. Delete your own scratch copies when
 you finish.
