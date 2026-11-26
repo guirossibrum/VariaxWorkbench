@@ -66,20 +66,31 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 
 ## Worktree cleanup after merge
 
-The Gatekeeper confirms that the reported worktree and its current commit match
-the delivery and that the commit is an ancestor of the verified
-`origin/master`. Check that the lane has left, no shell, build, watcher or other
-process is using the worktree, and no tracked changes, untracked files or ignored
-artifacts need to be kept. Keep the checkout if verification is incomplete, the
-delivery needs more work, or the worktree holds owner tools, private inputs,
-or test evidence.
+Aim for about five implementation worktrees, one per active lane. A temporary
+owner test or review can require an additional checkout. Review existing
+checkouts against their GitHub issues and current assignments. For each, check
+whether the delivered commit is on verified `origin/master`. For a branch that
+has not merged, compare its unique changes and source conflicts with current
+work. Keep meaningful work for review. Retire a clean, superseded experiment
+only after confirming it has no remaining purpose and preserving its branch.
+An open issue awaiting feedback or an owner test does not by itself need an
+implementation checkout.
+
+Confirm the lane has left and no shell, build, watcher or other process is
+using the worktree or its build path. Review tracked, untracked, and ignored
+files. Keep active, dirty, genuinely unfinished and protected owner-test
+checkouts. Otherwise move required private evidence and owner-requested
+outputs to a stable, ignored directory under `backups/` in the main checkout.
+Verify the files and report their new paths. Discard rebuildable output,
+obsolete test binaries and checkout-only scratch files. Shared build caches
+belong under the main checkout's ignored `target/shared-builds/` directory.
+For an old borrowed cache, stop its users, move only the cache they still
+need, and tell them the new path before retiring the old checkout.
 
 From outside the worktree, remove one verified worktree at a time with
 `git worktree remove <validated-worktree-path>`, without force. If Git refuses,
-investigate the reason. Retry only after resolving it, such as by clearing
-explicitly verified disposable build output. Keep the branch and confirm the
-worktree is gone from `git worktree list`. Preserve the main checkout and leave
-shared build directories alone.
+investigate the reason and retry only after resolving it. Keep the branch and
+confirm the worktree is gone from `git worktree list`.
 
 ## Boundaries
 
@@ -92,10 +103,10 @@ to lane 2's `assets/ui/` only.
 
 ## Builds and scratch space
 
-Build in your worktree under `.worktrees/` or use a stable shared
-`CARGO_TARGET_DIR` under `/home` outside issue worktrees. Report any existing
-worktree that still supplies a shared build path so it can be kept until its
-users have moved. Do not build full copies of the project under `/tmp`. It is a
+Build in your own issue worktree or use a stable shared `CARGO_TARGET_DIR`
+under the main checkout's `target/shared-builds/`. Never point a new task's
+build output into another issue worktree. Report any legacy dependency in the
+final handoff so it can be moved after its users have stopped. Do not build full copies of the project under `/tmp`. It is a
 30 GB RAM disk shared by every agent, and a full link there crashed `rust-lld`
 with SIGBUS on 2026-11-24 when it filled up. Delete your own scratch copies when
 you finish.

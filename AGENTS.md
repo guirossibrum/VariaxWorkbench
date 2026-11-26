@@ -194,9 +194,11 @@ GitHub issues and the VariaxWorkbench project are the work-tracking source of
 truth. Do not recreate or use TODO.md. The README summarizes user-visible
 capabilities. The linked documentation records verification and pending work.
 Respect native dependencies and keep at most one implementation issue In Progress
-per agent. The user explicitly authorized parallel agents on separate issues:
-use a disposable implementation worktree/branch per issue, preserve the main
-checkout, and merge each completed issue only after review and offline checks.
+per lane. Aim for one disposable checkout per active lane, about five for this
+project. Add a checkout only while there is a specific task or an owner-run
+procedure that needs it. Once reviewed and tested, integrate durable source
+changes into `origin/master`. An open issue does not reserve an old checkout
+whose implementation has already merged.
 Read `docs/parallel-work.md` for current issue ownership and the delivery and
 cleanup procedure. Do not duplicate another agent's reserved issues.
 
@@ -254,11 +256,19 @@ it reports the reason and the worktree stays in place.
 
 If review needs changes, the Gatekeeper sends the agent back to the same
 worktree. After verifying the delivery is on `origin/master`, the Gatekeeper
-may remove that individual worktree with `git worktree remove` without force,
-once the lane has left, no process is using it, and its local files are verified
-disposable. Preserve active, unmerged, dirty, and owner-test worktrees, and any
-worktree with local evidence or other files to keep. Follow the checks in
-`docs/parallel-work.md`.
+removes that individual worktree with `git worktree remove` without force,
+once the lane has left and no process is using it. Move evidence and other
+durable local files into the main checkout's ignored `backups/` area and report
+their new paths. Discard verified disposable build output and checkout-only
+scratch work. Shared build caches belong under the main checkout's ignored
+`target/shared-builds/` directory. Move an older borrowed cache only after its
+users have stopped and can switch to the new path.
+
+Keep active, dirty, genuinely unfinished, and protected owner-test worktrees.
+For a historical checkout, check the associated GitHub issue, merge ancestry,
+unique changes, and conflicts with current work. A clean, obsolete experiment
+may be retired after confirming it has no remaining purpose and retaining its
+branch. Follow the checks in `docs/parallel-work.md`.
 
 Do not merge from, reset or switch the main checkout. Gatekeepers make no device
 runs; the owner runs every hardware check.
