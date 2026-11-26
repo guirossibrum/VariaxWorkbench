@@ -72,6 +72,7 @@ struct Snapshot {
     packs: Option<Packs>,
     globals: Option<GlobalValues>,
     tuner: Option<TunerReading>,
+    tuner_mode: bool,
     channel: Option<Location>,
     clip: Option<Instant>,
     tap: Option<Instant>,
@@ -95,6 +96,7 @@ impl Snapshot {
             ReadUpdate::Packs(packs) => self.packs = Some(packs),
             ReadUpdate::Globals(values) => self.globals = Some(values),
             ReadUpdate::Tuner(reading) => self.tuner = Some(reading),
+            ReadUpdate::TunerMode(active) => self.tuner_mode = active,
             ReadUpdate::Controller { number, value } => {
                 let number = if number == 11 { 12 } else { number };
                 if number < 128
@@ -344,6 +346,7 @@ impl LivePanel {
         previous.clip = None;
         previous.tap = None;
         previous.tuner = None;
+        previous.tuner_mode = false;
         if requires_library(command) {
             previous.library_count = None;
         }
@@ -476,6 +479,7 @@ impl LivePanel {
             Err(error) => error,
         });
         if command == ReadCommand::Follow {
+            self.snapshot.tuner_mode = false;
             self.refresh_current(ctx);
         }
     }
@@ -672,6 +676,8 @@ impl LivePanel {
                 || format!("Tuner {note}"),
                 |cents| format!("Tuner {note} · {cents:+.0} cents"),
             ));
+        } else if self.snapshot.tuner_mode {
+            ui.weak("Tuner active on POD");
         }
         if let Some(worker) = &self.worker
             && requires_library(worker.command)
