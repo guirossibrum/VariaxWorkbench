@@ -31,6 +31,15 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 
 ## Worktrees and delivery
 
+- Before starting a requested feature, fix, or behavior change, create a
+  GitHub issue or update the existing issue with the agreed scope and
+  acceptance criteria. The Gatekeeper records the issue before assigning
+  work and gives its number to the lane.
+- Reference the issue in the branch, delivery, and relevant commits. The
+  Gatekeeper records the merged revision, verification evidence, and any
+  outstanding deliverables on the issue. Close it only after every
+  applicable deliverable is complete and verified. Keep it open after a
+  partial merge or while required owner testing is pending.
 - On a lane's first assignment, ask it to read `AGENTS.md` and
   `docs/parallel-work.md` from current `origin/master`. After that, request a
   reread when a relevant rule changes and name the changed file and commit.
