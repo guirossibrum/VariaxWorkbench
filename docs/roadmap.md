@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] #206 editor integration and owner verification of global string levels. All device approvals are closed. The 0x57 comparison shows RAM state. Flash persistence needs separate owner verification. [API and owner verification draft](variax-string-levels.md).
+
 - [ ] [#278](https://github.com/guirossibrum/VariaxWorkbench/issues/278) native macOS and Windows CI runs of the bundled model and portable render checksum checks. Linux rendering and embedded asset bytes in the cross-built macOS and Windows libraries are verified.
 
 - [ ] #271 owner verification for the Variax 300/600 evidence branch remains pending with its approvals open. The separate PODxt 299-entry diagnostic remains closed pending owner approval. Rig Check step 2.7 compares the identity captured in 2.1 offline.
