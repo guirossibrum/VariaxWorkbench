@@ -788,6 +788,79 @@ mod tests {
     }
 
     #[test]
+    fn guided_follow_times_out_when_a_channel_notice_arrives_without_the_startup_dump() {
+        let target = Location::new(BankKind::Tones, 41).unwrap();
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![(
+                PodxtRequest::EditBuffer,
+                vec![vec![0xc0, 41], vec![0xb0, 7, 50]],
+            )],
+        );
+        let mut log = Quiet;
+        let mut session = Session::new(&mut fake, &ReadsOnly { stored: false }, &mut log);
+        let mut updates = Vec::new();
+        let error =
+            follow_action(&mut session, || false, |update| updates.push(update)).unwrap_err();
+
+        assert_eq!(error, "No 168-byte edit-buffer dump arrived.");
+        assert_eq!(session.link.elapsed(), WINDOW);
+        assert!(matches!(
+            updates.as_slice(),
+            [ReadUpdate::Channel(channel), ReadUpdate::Controller { number: 7, value: 50 }]
+                if *channel == target
+        ));
+        assert_eq!(session.link.writes, [PodxtRequest::EditBuffer.bytes()]);
+        session.link.assert_finished();
+    }
+
+    #[test]
+    fn guided_follow_reads_the_new_tone_when_the_channel_notice_follows_startup() {
+        let target = Location::new(BankKind::Tones, 41).unwrap();
+        let starting_tone = tone(b"Starting tone");
+        let target_tone = tone(b"Target tone");
+        let mut startup_packets = packets(&starting_tone);
+        startup_packets.extend([vec![0xc0, 41], vec![0xb0, 7, 50]]);
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::EditBuffer, startup_packets),
+                (PodxtRequest::EditBuffer, packets(&target_tone)),
+            ],
+        );
+        let mut log = Quiet;
+        let mut session = Session::new(&mut fake, &ReadsOnly { stored: false }, &mut log);
+        let stop = Cell::new(false);
+        let mut updates = Vec::new();
+        let result = follow_action(
+            &mut session,
+            || stop.get(),
+            |update| {
+                if matches!(&update, ReadUpdate::Current(tone) if tone.raw == target_tone) {
+                    stop.set(true);
+                }
+                updates.push(update);
+            },
+        );
+
+        assert_eq!(result, Err("PODxt read cancelled.".into()));
+        assert!(matches!(
+            updates.as_slice(),
+            [ReadUpdate::Current(first), ReadUpdate::Channel(channel),
+             ReadUpdate::Controller { number: 7, value: 50 }, ReadUpdate::Current(last)]
+                if first.raw == starting_tone && *channel == target && last.raw == target_tone
+        ));
+        assert_eq!(
+            session.link.writes,
+            [
+                PodxtRequest::EditBuffer.bytes(),
+                PodxtRequest::EditBuffer.bytes()
+            ]
+        );
+        session.link.assert_finished();
+    }
+
+    #[test]
     fn follow_delivers_controller_clip_tap_and_rereads_saved_slot_without_writing_tones() {
         let slot = Location::new(BankKind::Tones, 80).unwrap();
         let mut current = tone(b"Current");
