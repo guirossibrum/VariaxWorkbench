@@ -57,12 +57,14 @@ outcomes used here:
   the action window. The catalogue has one such sweep.
 - The summary counts skipped-by-you as 0. This run does not contain an
   accidental Skip. The keyboard default that causes one is still present.
-- 3.2 passed. 3.3 failed the checksum check. 3.7 is the expected
-  firmware skip: the Variax reports firmware 3.10, the tested version.
+- 3.2 passed. 3.3 failed the checksum check. The summary counts two
+  expected firmware skips. 2.7: the PODxt Live reports firmware 3.01,
+  the tested version. 3.7: the Variax reports firmware 3.10, the tested
+  version.
 - The owner reported the continuation of that run through #297. Resume
   looked as if it had stopped on 3.7. The continuation selected 3.3,
-  carried 3.7 forward as that expected skip, read 3.2 again, and failed
-  3.3 again. No second report is quoted here.
+  carried 2.7 and 3.7 forward as those expected skips, read 3.2 again,
+  and failed 3.3 again. No second report is quoted here.
 
 7.3 and 7.4 ran as two separate pedalboard steps. 7.2 is the Variax
 volume and tone knobs. 7.5 is the six PODxt Live tone knobs. Those two
@@ -88,17 +90,25 @@ A guided step has four spoken moments today.
    "GET READY {n} s" for 10 seconds (`READY_DELAY`), with **+10 seconds**.
    The terminal prints "Get ready. Start in 10 s. Watching for {what}."
 4. **Action window.** After 10 seconds the large line becomes
-   "NOW {see}" and a 60-second bar (`ACTION_WINDOW`). A detected change
-   can end the window early. The same listener is already open during
-   the countdown. A match then is stored as "Seen: {what} during the
+   "NOW {see}" and a 60-second bar (`ACTION_WINDOW`). On the `guided()`
+   path used by 7.1–7.5, the listener is already open during the
+   countdown. A match then is stored as "Seen: {what} during the
    get-ready countdown" and completes the phase. That is what 7.3's
-   return did.
+   return did, and what a pedal sweep at 2 seconds does in
+   `a_pedal_sweep_during_ready_or_late_in_the_action_window_is_detected`.
 
-6.1 uses this same `begin_action` path. On this base its act sentences,
-in `src/rig_check/recover/vdi.rs`, are "Unplug the VDI cable from the
-guitar. Leave the PODxt Live USB cable connected." and "Plug the VDI
-cable back into the guitar." Those sentences belong to Lane 1. The
-chrome around them is the common sequence in the next section.
+6.1 uses `begin_action`, then its own wait. The countdown body is the
+wait sentence, not the cable cue. Unplug waits on "Wait for the
+countdown before unplugging the VDI cable from the guitar." Reconnect
+waits on "Disconnect detected. Wait for the countdown before plugging
+the VDI cable back into the guitar." `wait_until_ready` holds through
+that countdown and does not follow the cable. When the countdown ends,
+`instruct` shows the cable cue, and listening starts. The cues are
+"Unplug the VDI cable from the guitar. Leave the PODxt Live USB cable
+connected." and "Plug the VDI cable back into the guitar." They live in
+`src/rig_check/recover/vdi.rs`. An identity check can finish the phase
+before the countdown: already unplugged, or already answering with the
+starting identity. This checkpoint does not change that order.
 
 ### Window keys
 
@@ -144,8 +154,8 @@ offers it.
 
 ## Proposed sequence: Get ready, then NOW
 
-Use one sequence for every physical action in 6.1 and 7.1–7.5, in the
-window and the terminal, with the same words.
+Use one countdown chrome for 7.1–7.5, in the window and the terminal.
+6.1 keeps the countdown order in `recover/vdi.rs`, described below.
 
 **Prepare**, at the computer or once the player has chosen Start. Large
 line: "Get in place." Name where to stand and which family of control
@@ -156,37 +166,62 @@ you are there. A countdown will tell you when to act." Focus stays
 **OK**, because Start was already a deliberate choice on a card whose
 focus was Skip. Skip and Stop remain on the screen. Enter means OK.
 
-**Get ready.** Large line: "GET READY" and the seconds left, default
-10, with +10 seconds. One body line: "Do not act yet. The instruction
-appears at zero." No 34-point SEE or HEAR. The terminal does not name
-the action in this line: "Get ready. 10 s. Do not act yet. [+10] More
-time   [q] Stop". Enter does nothing. Continue is not shown. Stop still
-stops the run.
+**Get ready.** For 7.1–7.5. Large line: "GET READY" and the seconds
+left, default 10, with +10 seconds. One body line: "Do not act yet.
+The instruction appears at zero." No 34-point SEE or HEAR. The terminal
+does not name the action in this line: "Get ready. 10 s. Do not act
+yet. [+10] More time   [q] Stop". Enter does nothing. Continue is not
+shown. Stop still stops the run. 6.1's countdown body stays the wait
+sentence in `recover/vdi.rs`.
 
 **NOW.** Large line: "NOW" plus the one act sentence for this phase.
 The 60-second bar and the live "Seen" line stay. Continue checks what
 was seen. Stop stops the run. The next phase, including the return half
 of 7.3, starts again at Prepare.
 
-Already-there is checked before Prepare, as it is now. If the device is
-already in the requested state, say so and do not open a countdown.
+Already-there uses the state preflight a step already has. It runs
+before Prepare. It is not added at NOW, and it is not given to a step
+that returns no state.
 
-For 7.1–7.5, a matching change during Get ready is shown as "Seen during
-Get ready. It does not count." and does not complete the phase. At NOW,
-check the current state again. If the request is already satisfied,
-say so and move on. If it is not, show the act sentence and wait. This
-is the rule that would have kept 7.3's return from completing during
+- 7.1 compares the current program with the requested backup
+  (`already_on_variax`), including the firmware checksum. A checksum
+  mismatch still fails that step.
+- 7.3 compares the playing channel and tone with the stored tone
+  (`already_on_podxt`).
+- 6.1's identity preflight stays where Lane 1 put it, before the
+  countdown.
+
+7.2 calls identify and 7.4 reads the current tone, and both closures
+then return no state, so neither call is a state preflight. 7.5 asks
+for nothing before its window (`|_| Ok(None)`). Those three stay
+passive sweeps. The proposal does not turn them into state checks.
+
+For 7.2, 7.4, and 7.5, motion during Get ready is shown as "Seen during
+Get ready. It does not count." The one listening window opens at NOW
+and needs new motion after that. 7.2 is one window for volume and tone.
+7.4 is one expression-pedal sweep. 7.5 is one passive poll of the six
+tone knobs and sends nothing, as
+`the_six_knob_window_records_exact_and_near_end_sweeps_without_sends`
+already requires. No readback and no second request is added.
+
+For 7.1 and 7.3, a match during Get ready does not complete the phase.
+At NOW the listener the step already uses opens
+(`variax_program_window`, `channel_window`). The state preflight is
+not run again at the start of NOW. 7.1's existing full-program compare
+stays after a detected turn. It is not copied onto 7.2, 7.4, or 7.5.
+An early selector turn or footswitch has to happen again after NOW.
+That is the rule for 7.3's return, which on `dac5321` completed during
 the countdown.
 
-For 6.1, Lane 1 keeps automatic advance on supported cable evidence,
-including evidence that arrives during Get ready. The player must not
-be sent around the room twice for a cable that already moved. Lane 1
-writes the unplug, detected, reconnect, and restoration sentences that
-appear on the NOW line, and the already-there sentences. This checkpoint
-does not change 6.1's listener, identity fallback, gates, or traffic.
-Lane 1's tests cover notice and no-notice, no prompt during a read,
-timing, timeout, and Stop. They should show the act sentence at NOW
-and keep "Do not act yet" as the only body line during Get ready.
+6.1 does not listen during its countdown. The countdown body stays
+Lane 1's wait sentence. When the countdown ends, the cable cue is
+shown and listening starts. A cable change during the countdown is not
+the completion path. The identity preflight before the countdown still
+finishes a phase that is already unplugged, or already back with the
+starting identity, and then no countdown opens. This checkpoint does
+not change 6.1's listener, identity checks, sentences, gates, or
+traffic. Lane 1's tests cover notice and no-notice, no prompt during
+a read, timing, timeout, and Stop.
 
 ## Footswitch and expression pedal
 
@@ -237,24 +272,50 @@ Add one control on the review of a step whose outcome is skipped-by-you.
 The label is **Run this skipped step**. It is absent for an automatic
 firmware skip, a needs-skip, not applicable, a failed step, a stopped
 step, a save, a live edit or store that already sent, and any attempt
-whose record contains an uncertain write. Listening that only received
-is eligible. A live step skipped from its card before any send is
-eligible. Gates and the catalogue's traffic for that step are unchanged.
+whose record contains an uncertain write. Those no-replay protections
+stay. Listening that only received, and a live step skipped from its
+card before any send, are the only candidates. Gates and the
+catalogue's traffic for that step are unchanged.
 
 The control is not focused. Focus on review stays **Return to current
 step**. Back, Backspace, Enter, C, and terminal `[b]` and `[c]` do not
 activate it.
 
-Choosing it opens a confirm. Large line: "Run the skipped step {id}?"
-Body: "Later steps that were waiting only on this skip will be offered
-again. A step that already ran is left as it is. Nothing already saved
-is written again." Focus is **Keep it skipped**. **Run it** is the other
-button. Terminal: the review lines stay as they are, and the confirm
-asks for the words `run skipped` or `keep`. Enter means keep.
+Choosing it revalidates the step against the current run before any
+card is shown. The checks are the ones the runner already has:
+
+- **Rig.** `precheck` still accepts the step for the connected rig in
+  this run. A missing device, a different verification result, or an
+  offline-device refusal leaves the skip in place.
+- **Gate.** `real_device_check` for that step still passes. A closed
+  gate leaves the skip in place. No gate constant changes.
+- **Order.** Catalogue order still allows the step. A Needs entry that
+  did not pass, an earlier failure that makes the step read-only, or a
+  save whose earlier applicable steps did not pass, leaves the skip in
+  place.
+- **Step prerequisites.** The data that step already requires is still
+  present. 7.3 still needs its starting channel and backup. 7.1 still
+  needs its starting preset and program. If that data cannot be
+  established, the skip stays.
+
+Any check that cannot be established leaves the recorded skip as it
+is. The review names the first reason. The card stays closed.
+
+When every check passes, a confirm opens. Large line: "Run the skipped
+step {id}?" Body: "The current rig, this step's gate, catalogue order,
+and this step's prerequisites were rechecked. Later steps that were
+waiting only on this skip will be offered again. A step that already
+ran is left as it is. Nothing already saved is written again." Focus
+is **Keep it skipped**. **Run it** is the other button. Terminal: the
+review lines stay as they are, and the confirm asks for the words
+`run skipped` or `keep`. Enter means keep.
 
 **Run it** does not send. It shows that step's normal card, which still
 focuses Skip. Start or R is required. The attempt already stored stays
 in the report. The new attempt is appended. The latest outcome counts.
+Showing that card is allowed only after the revalidation above. An
+older skip, after later steps have run, is not offered on the strength
+of the old card alone.
 
 After that result, Continue offers, in catalogue order, each later step
 that has not executed and was held only by this skip. That includes a
@@ -268,8 +329,11 @@ blocked and the current card returns.
 
 Practice covers Skip, Back, the confirm left on Keep it skipped, and the
 same pending card, with the simulated message count unchanged. A second
-case presses Run it, then Start, records both attempts, and returns to
-that same card. Back during either case sends nothing.
+case revalidates a skipped step whose rig, gate, order, and
+prerequisites still hold, presses Run it, then Start, records both
+attempts, and returns to that same card. A third case leaves the skip
+in place when a prerequisite can no longer be established. Back during
+any case sends nothing.
 
 A person-skip still blocks later saves, because a save requires every
 earlier applicable step to pass. It also blocks any later step that
@@ -281,19 +345,20 @@ runner's rules on this head, in `precheck`.
 ## Resume target, prerequisite, and kept skip
 
 [#297](https://github.com/guirossibrum/VariaxWorkbench/issues/297).
-Catalogue order is 3.1, then 3.7, then 3.2, then 3.3. On the saved run,
-3.7 is already complete: it is the expected firmware skip for Variax
-firmware 3.10, the tested version. The continuation's target is 3.3.
-3.2 is read again because that passed read is the input to 3.3's
-full-program cross-check. 3.7 is carried forward with the other kept
-results and is left as the expected skip.
+Catalogue order places 2.7 after 2.1, and 3.1, then 3.7, then 3.2,
+then 3.3. On the saved run both firmware checks are already complete.
+2.7 is the expected skip for PODxt Live firmware 3.01, the tested
+version. 3.7 is the expected skip for Variax firmware 3.10, the tested
+version. The continuation's target is 3.3. 3.2 is read again because
+that passed read is the input to 3.3's full-program cross-check. 2.7
+and 3.7 are carried forward with the other kept results.
 
 The window preview is the continuation card. Its strong line is
 "Continue at {id} {title}" for the plan target. The notes under it
 include "First failed or unfinished check: {target}." and, for this
 target, "The Variax settings will be read again for the full-program
 cross-check." "Passed checks eligible for reuse" lists only reused
-steps that passed, so 3.7 is absent from that line. The sidebar tag is
+steps that passed, so 2.7 and 3.7 are absent from that line. The sidebar tag is
 40 by 18 points. A reused pass is REUSED. An expected firmware skip and
 a skip the person chose both use the tag SKIP. The terminal does not
 print this card. After Resume…, the window and the terminal both ask
@@ -320,12 +385,18 @@ is the running step, its progress row says "Read again before 3.3."
 **Expected skip, kept.** One line for each reused expected firmware
 skip. "Expected skip, kept: {id} {title}. Firmware {version} is the
 tested version, so this step is already complete." In this continuation
-that is 3.7, Compatibility check for other firmware versions, and the
-version is 3.10. The progress tag stays SKIP. A second line under the
-title repeats "Expected skip, kept." A skip the person chose keeps
-"Skipped by you. Can need attention." and stays off this heading. The
-#276 control "Run this skipped step" remains the review path for that
-skip.
+the lines are:
+
+- 2.7, Compatibility check for other firmware versions. PODxt Live
+  firmware 3.01 is the tested version.
+- 3.7, Compatibility check for other firmware versions. Variax
+  firmware 3.10 is the tested version.
+
+The progress tag stays SKIP. A second line under the title repeats
+"Expected skip, kept." A skip the person chose keeps "Skipped by you.
+Can need attention." and stays off this heading. The #276 control
+"Run this skipped step" remains the review path for that skip, and
+only after the revalidation in the Skip section.
 
 Passed steps that the continuation reuses stay on "Passed checks
 eligible for reuse," and their tag stays REUSED.
@@ -356,26 +427,28 @@ Write **Approve** or **Change** on each row.
 
 | # | Proposal | Mark |
 | --- | --- | --- |
-| 1 | Get ready shows only the countdown and "Do not act yet." The act sentence appears at NOW, at 34 points. | |
-| 2 | Enter during Get ready does nothing. Continue is absent until NOW. OK stays the focused prepare button. | |
-| 3 | For 7.1–7.5, a match during Get ready does not complete the phase. At NOW the current state is checked again. | |
-| 4 | 6.1 may still advance on cable evidence that arrives during Get ready. Lane 1 writes the cable sentences. | |
+| 1 | For 7.1–7.5, Get ready shows the countdown and "Do not act yet." The act sentence appears at NOW, at 34 points. | |
+| 2 | For 7.1–7.5, Enter during Get ready does nothing. Continue is absent until NOW. OK stays the focused prepare button. 6.1's countdown keys stay as Lane 1 wrote them. | |
+| 3 | Passive sweeps 7.2, 7.4, and 7.5 count only new motion after NOW, in the one listening window they already use. No readback or second request is added. 7.5 sends nothing. 7.1 and 7.3 keep the state preflight they already run before Prepare. That preflight is not repeated at NOW and is not copied onto the sweeps. | |
+| 4 | 6.1 shows Lane 1's wait sentence during the countdown. The unplug or replug cue is shown after the countdown, and listening starts then. A cable change during the countdown is not the completion path. The identity preflight stays before the countdown. | |
 | 5 | 7.3 says channel footswitch. 7.4 says expression pedal. CC 4 and CC 7 read "expression pedal" on every PODxt listen. | |
 | 6 | Back and Return stay review-only. "Run this skipped step" is a separate, unfocused control, confirmed by "Keep it skipped" as the focused choice. | |
-| 7 | The retry keeps both attempts, recomputes only unexecuted dependents, and does not replay a live send or a store. | |
-| 8 | The continuation card and the progress list name three roles. Resume retries is 3.3 in this report. Read again first is 3.2. Expected skip, kept is 3.7, already complete for firmware 3.10. A skip the person chose can need attention. Resume… stays its own button. | |
+| 7 | The retry keeps both attempts, recomputes only unexecuted dependents, and does not replay a live send or a store. An earlier skipped step is offered only after the current rig, its gate, catalogue order, and its prerequisites are revalidated. Otherwise it stays skipped. | |
+| 8 | The continuation card and the progress list name three roles. Resume retries is 3.3 in this report. Read again first is 3.2. Expected skip, kept is both 2.7 (PODxt Live firmware 3.01) and 3.7 (Variax firmware 3.10). A skip the person chose can need attention. Resume… stays its own button. | |
 
 ## Later implementation
 
 No code in this checkpoint. After the marks:
 
 - The common chrome and the 7.3 / 7.4 sentences are a #248 implementation.
-  They include the window, the terminal, and Practice coverage of an
-  early footswitch change and an expression-pedal sweep.
-- The Skip control, confirm, dependency recomputation, and the Practice
-  path are #276, against rows 6 and 7.
-- The 6.1 state machine is #260, against row 4, using this chrome and
-  Lane 1's own sentences.
+  Practice covers a sweep during Get ready that does not count, the same
+  sweep after NOW in the one window, and 7.5 still sending nothing.
+  7.1 and 7.3 still use only the preflight they already have.
+- The Skip control, confirm, revalidation, dependency recomputation, and
+  the Practice path are #276, against rows 6 and 7.
+- The 6.1 state machine stays #260, against row 4. This checkpoint
+  records Lane 1's countdown, then the cable cue, then listening. It
+  does not change that order.
 - The three continuation role lines, on the window card and the
   progress rows, are a #248 implementation against row 8. They label
   the plan that `resume.rs` already builds.
