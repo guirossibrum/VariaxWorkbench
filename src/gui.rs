@@ -431,7 +431,10 @@ impl Workbench {
             static FIXTURE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
             LinuxSysfs::with_root(FIXTURE.get_or_init(|| tempfile::tempdir().unwrap()).path())
         };
-        ProbeSession::new(RigBackend::ThisComputer(HostRig::new(reader)))
+        let rig = HostRig::new(reader);
+        #[cfg(all(target_os = "linux", feature = "usb", not(test)))]
+        let rig = rig.with_recognition_lock();
+        ProbeSession::new(RigBackend::ThisComputer(rig))
     }
 
     fn restart_device_check(&mut self) {

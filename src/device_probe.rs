@@ -783,6 +783,9 @@ pub trait ProbeBackend {
     /// is never offered for consent.
     fn can_run(&self, stage: Stage) -> bool;
     fn os_metadata(&mut self) -> &dyn OsMetadataSource;
+    fn recognise_usb(&mut self) -> Result<Recognition, String> {
+        Ok(recognise(self.os_metadata()))
+    }
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError>;
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String>;
     /// Extra words for a live settings read. Simulation leaves this empty.
@@ -990,6 +993,7 @@ impl ProbeBackend for SimulatedRig {
 /// families outside tests. Step 4 stays refused.
 pub struct HostRig<S: OsMetadataSource> {
     reader: S,
+    lock_recognition: bool,
     calls: BackendCalls,
     /// Plain text from the last live settings read, when one finished.
     settings_note: Option<String>,
@@ -1000,10 +1004,18 @@ impl<S: OsMetadataSource> HostRig<S> {
     pub fn new(reader: S) -> Self {
         Self {
             reader,
+            lock_recognition: false,
             calls: BackendCalls::default(),
             settings_note: None,
             firmware_notice: None,
         }
+    }
+
+    /// Coordinate GUI recognition with the Follow worker, which may have
+    /// detached the driver whose binding the first step inspects.
+    pub fn with_recognition_lock(mut self) -> Self {
+        self.lock_recognition = true;
+        self
     }
 
     pub fn reader(&self) -> &S {
@@ -1034,6 +1046,15 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
     fn os_metadata(&mut self) -> &dyn OsMetadataSource {
         self.calls.os_reads += 1;
         &self.reader
+    }
+
+    fn recognise_usb(&mut self) -> Result<Recognition, String> {
+        // Follow has to give interface 1 back before checking its binding.
+        let _rig = (cfg!(target_os = "linux") && self.lock_recognition)
+            .then(line6_devices::device_lock::DeviceLock::acquire)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        Ok(recognise(self.os_metadata()))
     }
 
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
@@ -1114,6 +1135,13 @@ impl ProbeBackend for RigBackend {
         match self {
             Self::Simulated(rig) => rig.os_metadata(),
             Self::ThisComputer(rig) => rig.os_metadata(),
+        }
+    }
+
+    fn recognise_usb(&mut self) -> Result<Recognition, String> {
+        match self {
+            Self::Simulated(rig) => rig.recognise_usb(),
+            Self::ThisComputer(rig) => rig.recognise_usb(),
         }
     }
 
@@ -1364,7 +1392,7 @@ impl<B: ProbeBackend> ProbeSession<B> {
     fn run(&mut self, stage: Stage) -> Result<String, String> {
         match stage {
             Stage::UsbRecognition => {
-                let recognition = recognise(self.backend.os_metadata());
+                let recognition = self.backend.recognise_usb()?;
                 let summary = recognition.summary();
                 let binding = match &recognition {
                     Recognition::Recognised { device, .. } => expected_driver_binding(device),

@@ -14,6 +14,7 @@ const CONTROLLER_SETTLE: Duration = Duration::from_millis(250);
 const SLOT_SETTLE: Duration = Duration::from_millis(300);
 const EDITED_SLOT_SETTLE: Duration = Duration::from_secs(1);
 const CLIP_PULSE: Duration = Duration::from_millis(200);
+const RESUME_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConnectionNotice {
@@ -59,14 +60,24 @@ impl Snapshot {
     }
 }
 
-type Source =
-    fn(&Attachment, &AtomicBool, &mut dyn FnMut(FollowUpdate, Instant)) -> Result<(), String>;
+#[derive(Debug, PartialEq, Eq)]
+enum ListenEnd {
+    Stopped,
+    Yielded,
+}
+
+type Source = fn(
+    &Attachment,
+    &AtomicBool,
+    &mut dyn FnMut(FollowUpdate, Instant),
+) -> Result<ListenEnd, String>;
 
 struct Worker {
     attachment: Attachment,
     stop: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Snapshot>>,
-    thread: JoinHandle<Result<(), String>>,
+    source: Source,
+    thread: JoinHandle<Result<ListenEnd, String>>,
 }
 
 #[derive(Default)]
@@ -74,6 +85,7 @@ pub(super) struct Follow {
     device_tab: bool,
     attachment: Option<Attachment>,
     worker: Option<Worker>,
+    resume: Option<(Source, Instant)>,
     snapshot: Snapshot,
     consumed_program: Option<(Preset, Instant)>,
     device_event: Option<DeviceEvent>,
@@ -127,6 +139,7 @@ impl Follow {
         if let Some(worker) = &self.worker {
             worker.stop.store(true, Ordering::Relaxed);
         }
+        self.resume = None;
         self.snapshot = Snapshot::default();
         self.consumed_program = None;
     }
@@ -167,6 +180,7 @@ impl Follow {
             attachment,
             stop,
             snapshot,
+            source,
             thread,
         });
         ctx.request_repaint();
@@ -206,16 +220,38 @@ impl Follow {
 
         if finished {
             let worker = self.worker.take().expect("finished Follow worker");
-            self.error = worker
+            let result = worker
                 .thread
                 .join()
-                .unwrap_or_else(|_| Err("The Variax Follow worker stopped unexpectedly.".into()))
-                .err();
+                .unwrap_or_else(|_| Err("The Variax Follow worker stopped unexpectedly.".into()));
+            let cancelled = worker.stop.load(Ordering::Relaxed);
             self.stop();
+            match result {
+                Ok(ListenEnd::Yielded) if !cancelled => {
+                    self.resume = Some((worker.source, Instant::now() + RESUME_DELAY));
+                    ctx.request_repaint_after(RESUME_DELAY);
+                }
+                Ok(_) => {}
+                Err(error) => self.error = Some(error),
+            }
         } else {
             // Also repaint on reap if the last worker repaint arrived just
             // before the thread's result became joinable.
             ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn resume_if_ready(&mut self, ctx: &egui::Context, now: Instant) {
+        let Some((source, after)) = self.resume else {
+            return;
+        };
+        if now < after {
+            ctx.request_repaint_after(after - now);
+            return;
+        }
+        self.resume = None;
+        if let Err(error) = self.start(source, ctx) {
+            self.error = Some(error);
         }
     }
 
@@ -262,7 +298,7 @@ impl Follow {
             .worker
             .as_ref()
             .is_some_and(|worker| worker.stop.load(Ordering::Relaxed));
-        let mut following = self.active();
+        let mut following = self.active() || self.resume.is_some();
         ui.horizontal_wrapped(|ui| {
             let enabled = following
                 || (!stopping
@@ -284,6 +320,8 @@ impl Follow {
             }
             if stopping {
                 ui.weak("Stopping Follow…");
+            } else if self.resume.is_some() {
+                ui.weak("Follow paused while the rig is in use.");
             } else if following {
                 let snapshot = self.snapshot;
                 match snapshot.program {
@@ -349,14 +387,23 @@ impl VariaxEditor {
         let available = !self.device_sync.stopped_after_store()
             && !self.is_reading()
             && !self.blocking_prompt()
-            && !self.live_edit.busy()
-            && !self.live_edit.enabled();
+            && !self.live_edit.busy();
         self.follow.show(ui, available);
     }
 
     pub(super) fn poll_follow(&mut self, ctx: &egui::Context) {
+        if self.device_sync.stopped_after_store() {
+            self.follow.stop();
+        }
         self.follow.listen(ctx);
+        if !self.device_sync.stopped_after_store() && !self.is_reading() && !self.live_edit.busy() {
+            self.follow.resume_if_ready(ctx, Instant::now());
+        }
         if self.is_reading()
+            // A guitar-side program change must not trigger an automatic
+            // edit-buffer send through the local selection.
+            || self.live_edit.enabled()
+            || self.live_edit.busy()
             || self.blocking_prompt()
             || self.name_draft.is_some()
             || self.author_draft.is_some()
@@ -382,13 +429,14 @@ fn read_updates(
     attachment: &Attachment,
     stop: &AtomicBool,
     publish: &mut dyn FnMut(FollowUpdate, Instant),
-) -> Result<(), String> {
+) -> Result<ListenEnd, String> {
     use line6_devices::{
-        device_lock::DeviceLock,
+        device_lock::{FollowDeviceLock, LockError},
         family::variax::follow,
         gate::{GatePolicy, Operation},
         session::{Quiet, Session},
     };
+    use std::cell::Cell;
     use variax_workbench::hardware_gates::{Gate, is_locked, run_if_unlocked};
 
     struct Policy;
@@ -402,32 +450,57 @@ fn read_updates(
         }
     }
 
-    let cancelled = || stop.load(Ordering::Relaxed);
     run_if_unlocked(Gate::OsDiscovery, || Ok(()))?;
     run_if_unlocked(Gate::IdentityRequest, || Ok(()))?;
     run_if_unlocked(Gate::CurrentSettingsRead, || {
-        if cancelled() {
-            return Ok(());
+        if stop.load(Ordering::Relaxed) {
+            return Ok(ListenEnd::Stopped);
         }
-        let rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
+        let lease = match FollowDeviceLock::acquire() {
+            Ok(lease) => lease,
+            Err(LockError::Busy | LockError::BusyHere) => return Ok(ListenEnd::Yielded),
+            Err(error) => return Err(error.to_string()),
+        };
+        let yielded = Cell::new(false);
+        let cancelled = || {
+            if !yielded.get() && lease.yield_requested() {
+                yielded.set(true);
+            }
+            yielded.get() || stop.load(Ordering::Relaxed)
+        };
         if cancelled() {
-            return Ok(());
+            return Ok(if yielded.get() {
+                ListenEnd::Yielded
+            } else {
+                ListenEnd::Stopped
+            });
         }
-        let link = variax_workbench::usb::open_variax_bridge_borrowed(
-            &rig,
-            (&attachment.path, attachment.address),
-        )?;
-        let mut log = Quiet;
-        let mut session = Session::new(link, &Policy, &mut log);
-        session.log_packets = false;
-        let result = follow(&rig, &mut session, cancelled, |update| {
-            publish(update, Instant::now())
-        });
-        let release = session.link.finish();
-        match (result, release) {
-            (Err(error), Err(release)) => Err(format!("{error} {release}")),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
+        let result = (|| {
+            let link = variax_workbench::usb::open_variax_bridge_borrowed(
+                lease.rig(),
+                (&attachment.path, attachment.address),
+            )?;
+            let mut log = Quiet;
+            let mut session = Session::new(link, &Policy, &mut log);
+            session.log_packets = false;
+            let result = follow(lease.rig(), &mut session, cancelled, |update| {
+                publish(update, Instant::now())
+            });
+            match (result, session.link.finish()) {
+                (Err(error), Err(release)) => Err(format!("{error} {release}")),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Ok(()), Ok(())) => Ok(()),
+            }
+        })();
+        match result {
+            Ok(()) if yielded.get() => Ok(ListenEnd::Yielded),
+            Ok(()) => Ok(ListenEnd::Stopped),
+            Err(error) => {
+                if yielded.get() || lease.yield_requested() {
+                    lease.cleanup_failed();
+                }
+                Err(error)
+            }
         }
     })
 }
@@ -437,7 +510,7 @@ fn read_updates(
     _: &Attachment,
     _: &AtomicBool,
     _: &mut dyn FnMut(FollowUpdate, Instant),
-) -> Result<(), String> {
+) -> Result<ListenEnd, String> {
     Err("This build cannot open a USB device for Variax Follow.".into())
 }
 
@@ -451,7 +524,7 @@ mod tests {
         attachment: &Attachment,
         stop: &AtomicBool,
         publish: &mut dyn FnMut(FollowUpdate, Instant),
-    ) -> Result<(), String> {
+    ) -> Result<ListenEnd, String> {
         assert_eq!(
             (attachment.path.as_str(), attachment.address),
             ("8-2.1", 10)
@@ -477,7 +550,7 @@ mod tests {
         while !stop.load(Ordering::Relaxed) && now.elapsed() < Duration::from_secs(2) {
             std::thread::yield_now();
         }
-        Ok(())
+        Ok(ListenEnd::Stopped)
     }
 
     fn poll_until(
@@ -548,6 +621,147 @@ mod tests {
     }
 
     #[test]
+    fn the_follow_panel_reopens_the_same_attachment_after_foreground_work() {
+        use std::sync::atomic::AtomicUsize;
+
+        static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        fn yielding_source(
+            attachment: &Attachment,
+            stop: &AtomicBool,
+            publish: &mut dyn FnMut(FollowUpdate, Instant),
+        ) -> Result<ListenEnd, String> {
+            assert_eq!(
+                (attachment.path.as_str(), attachment.address),
+                ("8-2.1", 10)
+            );
+            if OPEN_COUNT.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(ListenEnd::Yielded);
+            }
+            let now = Instant::now();
+            publish(FollowUpdate::Volume(64), now);
+            while !stop.load(Ordering::Relaxed) && now.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(ListenEnd::Stopped)
+        }
+
+        fn shows_pause(ctx: &egui::Context, follow: &mut Follow) -> bool {
+            const PAUSE: &str = "Follow paused while the rig is in use.";
+            fn contains(shape: &egui::Shape) -> bool {
+                match shape {
+                    egui::Shape::Text(text) => text.galley.text() == PAUSE,
+                    egui::Shape::Vec(shapes) => shapes.iter().any(contains),
+                    _ => false,
+                }
+            }
+            ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| follow.show(ui, true));
+            })
+            .shapes
+            .iter()
+            .any(|item| contains(&item.shape))
+        }
+
+        enum Foreground {
+            DeviceCheck,
+            LiveEdit,
+            Store {
+                error: Option<&'static str>,
+                unknown: bool,
+            },
+        }
+        for operation in [
+            Foreground::DeviceCheck,
+            Foreground::LiveEdit,
+            Foreground::Store {
+                error: None,
+                unknown: false,
+            },
+            Foreground::Store {
+                error: Some("Injected pre-commit failure"),
+                unknown: false,
+            },
+            Foreground::Store {
+                error: Some("Store outcome unknown"),
+                unknown: true,
+            },
+        ] {
+            OPEN_COUNT.store(0, Ordering::SeqCst);
+            let (ctx, mut app) = app();
+            let editor = app.variax_mut();
+            super::super::refresh::tests::attach(editor);
+            editor.follow.start(yielding_source, &ctx).unwrap();
+            let started = Instant::now();
+            while editor.follow.resume.is_none() {
+                editor.follow.listen(&ctx);
+                assert!(started.elapsed() < Duration::from_secs(1));
+                std::thread::yield_now();
+            }
+            assert!(shows_pause(&ctx, &mut editor.follow));
+            let (source, ready) = editor.follow.resume.unwrap();
+            editor.follow.resume_if_ready(&ctx, ready - RESUME_DELAY);
+            assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+
+            let (expected_error, unknown) = match operation {
+                Foreground::DeviceCheck => {
+                    use variax_workbench::device_probe::{
+                        Consent, ProbeSession, Scenario, SimulatedRig, Stage, StageStatus,
+                    };
+                    let mut check = ProbeSession::new(SimulatedRig::new(Scenario::Connected));
+                    check.answer(Consent::Yes);
+                    assert_eq!(check.status(Stage::UsbRecognition), StageStatus::Passed);
+                    editor.follow.resume = Some((source, Instant::now()));
+                    (None, false)
+                }
+                Foreground::LiveEdit => {
+                    let finish = editor.hold_fake_edit();
+                    editor.follow.resume = Some((source, Instant::now()));
+                    editor.poll_follow(&ctx);
+                    assert!(shows_pause(&ctx, &mut editor.follow));
+                    assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+                    finish.send(()).unwrap();
+                    let started = Instant::now();
+                    while editor.live_edit.busy() {
+                        editor.poll_edit_buffer(&ctx);
+                        assert!(started.elapsed() < Duration::from_secs(1));
+                        std::thread::yield_now();
+                    }
+                    (None, false)
+                }
+                Foreground::Store { error, unknown } => {
+                    let finish = editor.hold_fake_store(super::super::device_sync::Report {
+                        error: error.map(str::to_owned),
+                        store_unknown: unknown,
+                        ..Default::default()
+                    });
+                    editor.follow.resume = Some((source, Instant::now()));
+                    editor.poll_follow(&ctx);
+                    assert!(shows_pause(&ctx, &mut editor.follow));
+                    assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+                    finish.send(()).unwrap();
+                    let started = Instant::now();
+                    while editor.device_sync.busy() {
+                        editor.poll_device_sync(&ctx);
+                        assert!(started.elapsed() < Duration::from_secs(1));
+                        std::thread::yield_now();
+                    }
+                    (error, unknown)
+                }
+            };
+            if unknown {
+                editor.poll_follow(&ctx);
+                assert!(editor.follow.resume.is_none() && !editor.follow.busy());
+                assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+            } else {
+                poll_until(editor, &ctx, |follow| follow.snapshot.volume == Some(64));
+                assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 2);
+            }
+            assert_eq!(editor.error.as_deref(), expected_error);
+        }
+    }
+
+    #[test]
     fn completed_worker_delivers_disconnect_before_its_snapshot_is_cleared() {
         let (ctx, mut app) = app();
         let editor = app.variax_mut();
@@ -558,7 +772,7 @@ mod tests {
             publish(FollowUpdate::Connected, Instant::now());
             publish(FollowUpdate::Disconnected, Instant::now());
             publish(FollowUpdate::Connected, Instant::now());
-            Ok(())
+            Ok(ListenEnd::Stopped)
         };
 
         editor.follow.start(source, &ctx).unwrap();
