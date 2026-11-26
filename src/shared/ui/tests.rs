@@ -764,6 +764,15 @@ fn show_tuning(
         .show(ui)
 }
 
+// Default component width minus the 138px buffer for a 120×120 sprite.
+const DEFAULT_TEST_PICKUP_DIVISOR: f32 = 438.0 - 138.0;
+
+fn expected_pickup_move(origin: f32, art_dx: f32, divisor: f32) -> f32 {
+    let span = 9.5 - 0.1;
+    let normalized = (origin - 0.1) / span + art_dx / divisor;
+    normalized.clamp(0.0, 1.0) * span + 0.1
+}
+
 #[test]
 fn pickup_placement_and_hit_testing_follow_the_approved_map() {
     let placement = PickupPlacement::default();
@@ -783,7 +792,6 @@ fn pickup_placement_and_hit_testing_follow_the_approved_map() {
     };
     assert_eq!(lester.position_to_art(0.1).x, -8.0);
     assert_eq!(lester.position_to_art(9.5).x, 503.0);
-    assert_eq!(body_canvas::move_inches(9.5, 40.0, placement), 9.5);
     assert!((body_canvas::rotate_degrees(0.0, -20.0, false) - 18.0).abs() < 0.01);
     assert!((body_canvas::rotate_degrees(0.0, -20.0, true) - 1.8).abs() < 0.01);
     assert_eq!(body_canvas::rotate_degrees(0.0, -80.0, false), 45.0);
@@ -914,14 +922,6 @@ fn workbench_body_limits_place_and_drag_per_body() {
     assert_eq!(lester.position_to_art(0.1).x, 40.0);
     assert_eq!(lester.position_to_art(9.5).x, 431.0);
     assert_eq!(lester.position_to_art(1.8).x, 110.0);
-    let firebird = body_canvas::placement_for_body(0x0310_0009);
-    let lester_step = body_canvas::move_inches(1.8, 100.0, lester);
-    let firebird_step = body_canvas::move_inches(1.8, 100.0, firebird);
-    assert!(
-        (lester_step - firebird_step).abs() > 0.1,
-        "{lester_step} vs {firebird_step}"
-    );
-
     let body = missing_image("variax/lester.png", [426, 412]);
     let pickup = missing_image("variax/lester-pickup.png", [120, 120]);
     let mut harness = Harness::new();
@@ -958,14 +958,76 @@ fn workbench_body_limits_place_and_drag_per_body() {
         BodyEvent::Moved { index: 0, inches } => Some(*inches),
         _ => None,
     });
-    let expected = body_canvas::move_inches(1.8, 100.0 / scale, lester);
-    let on_default = body_canvas::move_inches(1.8, 100.0 / scale, PickupPlacement::default());
+    let expected = expected_pickup_move(1.8, 100.0 / scale, 511.0 - 138.0);
+    let on_default = expected_pickup_move(1.8, 100.0 / scale, DEFAULT_TEST_PICKUP_DIVISOR);
     let inches = inches.expect("lester drag");
     assert!((inches - expected).abs() < 1.0e-3, "{inches} vs {expected}");
     assert!(
         (inches - on_default).abs() > 0.05,
         "{inches} vs {on_default}"
     );
+}
+
+#[test]
+fn body_canvas_move_with_no_usable_travel_emits_no_edit() {
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let placement = PickupPlacement::default();
+    let cases = [
+        // These buffers equal and exceed the 438px default component width.
+        (placement, [381, 30]),
+        (placement, [30, 390]),
+        (
+            PickupPlacement {
+                x_max: f32::INFINITY,
+                ..placement
+            },
+            [120, 120],
+        ),
+    ];
+    for (placement, pixels) in cases {
+        let pickup = missing_image("variax/pickup.png", pixels);
+        let sprites = [PickupSprite {
+            position_inches: 4.8,
+            angle_degrees: 0.0,
+            enabled: true,
+            selected: true,
+            image: &pickup,
+        }];
+        let mut harness = Harness::new();
+        let mut frame = |events| {
+            let mut output = None;
+            harness.run(events, Default::default(), |_, ui| {
+                output = Some(
+                    BodyCanvas::new(&body, &sprites)
+                        .placement(placement)
+                        .show(ui),
+                );
+            });
+            output.unwrap()
+        };
+        let center = placement.screen_point(frame(vec![]).art_rect, sprites[0].position_inches);
+        let press = frame(vec![
+            egui::Event::PointerMoved(center),
+            pointer(center, true),
+        ]);
+        assert_eq!(press.events, [BodyEvent::PickupClicked { index: 0 }]);
+        let end = center + egui::vec2(40.0, 0.0);
+        assert_eq!(
+            frame(vec![egui::Event::PointerMoved(end)]).events,
+            [BodyEvent::DragStarted {
+                index: 0,
+                kind: DragKind::Move,
+            }],
+            "sprite {pixels:?}, placement {placement:?}",
+        );
+        assert_eq!(
+            frame(vec![pointer(end, false)]).events,
+            [BodyEvent::DragFinished {
+                index: 0,
+                kind: DragKind::Move,
+            }],
+        );
+    }
 }
 
 #[test]
@@ -1014,7 +1076,7 @@ fn body_canvas_drag_reports_move_rotate_and_clamp() {
         },
     );
     let inches = inches.expect("move");
-    let expected = body_canvas::move_inches(1.8, 30.0 / scale, placement);
+    let expected = expected_pickup_move(1.8, 30.0 / scale, DEFAULT_TEST_PICKUP_DIVISOR);
     assert!((inches - expected).abs() < 1.0e-3, "{inches} vs {expected}");
     assert!(inches > 1.8);
     let mut finished = false;
@@ -1465,7 +1527,7 @@ fn body_canvas_drag_tracks_the_press_point_and_rebases_rotation() {
         BodyEvent::Moved { index: 0, inches } => Some(*inches),
         _ => None,
     });
-    let expected_mid = body_canvas::move_inches(1.8, 200.0 / scale, placement);
+    let expected_mid = expected_pickup_move(1.8, 200.0 / scale, DEFAULT_TEST_PICKUP_DIVISOR);
     let mid_inches = mid_inches.expect("mid move");
     assert!(
         (mid_inches - expected_mid).abs() < 1.0e-3,
@@ -1694,7 +1756,7 @@ fn ctrl_held_first_rotation_sample_rebases_without_adding_angle() {
         BodyEvent::Moved { index: 0, inches } => Some(*inches),
         _ => None,
     });
-    let expected_inches = body_canvas::move_inches(1.8, 30.0 / scale, placement);
+    let expected_inches = expected_pickup_move(1.8, 30.0 / scale, DEFAULT_TEST_PICKUP_DIVISOR);
     let inches = inches.expect("ctrl-held move");
     assert!(
         (inches - expected_inches).abs() < 1.0e-3,
