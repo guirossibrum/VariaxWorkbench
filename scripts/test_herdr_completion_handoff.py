@@ -1,9 +1,10 @@
 import copy
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from herdr_completion_handoff import baseline, observe, tick, report_from_screen
+from herdr_completion_handoff import baseline, change_hold, hold_file, observe, tick, report_from_screen
 
 REPORT = """• ## Lane #4
 
@@ -91,6 +92,24 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(len(self.herdr.sent), 1)
         self.assertIn("abcdef2", self.herdr.sent[0][1])
         self.assertEqual(self.state["pending"], [])
+
+    def test_held_repository_keeps_reports_and_resumes_once(self):
+        self.completion()
+        self.herdr.status["gate"]["agent_status"] = "idle"
+        with TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            routes = {"/work/held": CONFIG, "/work/other": CONFIG}
+            change_hold(config, routes, "/work/held", "Owner chooses the default", False)
+            marker = hold_file(config, "/work/held")
+            self.assertFalse(hold_file(config, "/work/other").exists())
+            tick(self.herdr, CONFIG, self.state, lambda _: None, held=marker.exists)
+            self.assertEqual(self.herdr.sent, [])
+            self.assertEqual(len(self.state["pending"]), 1)
+            change_hold(config, routes, "/work/held", None, True)
+            tick(self.herdr, CONFIG, self.state, lambda _: None, held=marker.exists)
+            tick(self.herdr, CONFIG, self.state, lambda _: None, held=marker.exists)
+            self.assertEqual(len(self.herdr.sent), 1)
+            self.assertEqual(self.state["pending"], [])
 
     def test_missing_session_never_sends(self):
         self.completion()

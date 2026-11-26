@@ -74,3 +74,29 @@ If a session changes or a route is added, stop the watcher, preserve and
 resolve outstanding reports, update the configuration, and initialize a new
 state file. Use `journalctl --user -u herdr-completion-handoff` for delivery
 status when running as a user service.
+
+## Stop at an owner decision
+
+When a review needs the owner's decision, hold that repository before
+ending the turn. Examples include a scope choice, hardware approval, and
+permission to publish a release. Send one direct **Decision needed** message
+that states what is waiting, why it needs the owner, and the available options.
+Do not leave the question only inside a lane report or a general status update.
+Finish any independent checks already authorized. Wait before starting another
+review or assignment in the held repository.
+
+```sh
+python3 scripts/herdr_completion_handoff.py /private/path/config.json \
+  --repository /absolute/path/to/project --hold "Which workflow should the app use?"
+```
+
+The watcher continues recording completions and queues reports. The hold
+survives restarts and applies only to the named repository. If there is exactly
+one configured repository, `--repository` can be omitted. A hold applies to
+new delivery. The Gatekeeper remains responsible for stopping work already
+in progress at the decision boundary.
+
+When the owner answers, record the decision on the relevant issue if it
+changes scope or acceptance criteria. Then run the same command with
+`--resume` in place of `--hold` and its message. If the owner declines, stop
+the affected work and record the outcome before resuming unrelated reviews.
