@@ -28,8 +28,17 @@ The earlier five-card Rig Check mode is superseded.
   device, or changes the active configuration. The selected interface still
   requires its existing alternate setting.
 - Transport writes carry the shared session's gated commands. Discovery
-  uses identity-only policies. The application and Rig Check keep their
-  existing approval, backup and verification rules.
+  uses identity-only policies. Workbench's initial detection finishes
+  interface 0 before it asks the guitar through interface 1. Refresh guitar
+  uses the remembered attachment and asks only the guitar. Shared Device
+  Check selects its attachment at step 1 and reopens that pair under a lock
+  for each explicitly consented operation. Its one-request identity step
+  still rejects ambiguous replies and stops on cleanup failure.
+- Workbench's PODxt consumer is #291. Its Device Check backup is admitted
+  separately from the Linux-only Variax backup actions. Rig Check's full
+  workflow consumer is #290. Neither consumer owns the transport contract.
 
 The transport checkpoint is for integration with the Workbench PODxt and
 Rig Check consumers. It stays off master until both consumers are reviewed.
+The [private owner build and parity card](podxt-macos-usb-test-card.md)
+records native build checks separately from owner device observations.

@@ -233,6 +233,14 @@ fn tone_offered() -> bool {
     }
 }
 
+fn device_check_platform_notice() -> Option<&'static str> {
+    if cfg!(all(test, target_os = "macos")) {
+        Some(variax_workbench::MAC_CONNECTION_UNAVAILABLE)
+    } else {
+        variax_workbench::offline_device_notice()
+    }
+}
+
 fn parse_tone_channel(text: &str) -> Result<String, String> {
     #[cfg(feature = "usb")]
     {
@@ -439,6 +447,8 @@ impl Workbench {
         let rig = HostRig::new(reader);
         #[cfg(all(target_os = "linux", feature = "usb", not(test)))]
         let rig = rig.with_recognition_lock();
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        let rig = rig.with_macos_usb();
         ProbeSession::new(RigBackend::ThisComputer(rig))
     }
 
@@ -758,7 +768,7 @@ impl Workbench {
                 ui.disable();
             }
             if self.device_check.mode() == ProbeMode::ThisComputer
-                && let Some(notice) = variax_workbench::offline_device_notice()
+                && let Some(notice) = device_check_platform_notice()
             {
                 ui.label(notice);
                 #[cfg(test)]
@@ -1772,7 +1782,7 @@ mod tests {
     fn device_check_window_opens_on_this_computer_and_declines_by_default() {
         let (context, mut app) = device_check_app();
         assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
-        if let Some(notice) = variax_workbench::offline_device_notice() {
+        if let Some(notice) = device_check_platform_notice() {
             assert_eq!(app.device_check_visible, notice);
             assert!(app.device_check.finished());
             assert!(!app.device_check_buttons.contains_key("yes"));
@@ -1838,7 +1848,7 @@ mod tests {
 
     #[test]
     fn device_check_defaults_to_no_on_each_new_consent() {
-        if let Some(notice) = variax_workbench::offline_device_notice() {
+        if let Some(notice) = device_check_platform_notice() {
             let (context, mut app) = device_check_app();
             press_device_check_enter(&context, &mut app);
             assert_eq!(app.device_check_visible, notice);

@@ -1040,6 +1040,8 @@ pub struct HostRig<S: OsMetadataSource> {
     settings_note: Option<String>,
     firmware_notice: Option<FirmwareNotice>,
     #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+    mac_live: bool,
+    #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
     mac_attachment: Option<line6_devices::transport::usb::macos::Attachment>,
     #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
     mac_open_error: Option<String>,
@@ -1054,6 +1056,8 @@ impl<S: OsMetadataSource> HostRig<S> {
             settings_note: None,
             firmware_notice: None,
             #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+            mac_live: false,
+            #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
             mac_attachment: None,
             #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
             mac_open_error: None,
@@ -1064,6 +1068,14 @@ impl<S: OsMetadataSource> HostRig<S> {
     /// detached the driver whose binding the first step inspects.
     pub fn with_recognition_lock(mut self) -> Self {
         self.lock_recognition = true;
+        self
+    }
+
+    /// A native GUI opts in explicitly. Injected readers and GUI test builds
+    /// never use the system USB source, even when linked against the live lib.
+    #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+    pub fn with_macos_usb(mut self) -> Self {
+        self.mac_live = true;
         self
     }
 
@@ -1089,6 +1101,10 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
     }
 
     fn can_run(&self, stage: Stage) -> bool {
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        if !self.mac_live {
+            return false;
+        }
         live_stage_available(stage)
     }
 
@@ -1102,6 +1118,9 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         {
             use line6_devices::{device_lock::DeviceLock, transport::usb::macos};
 
+            if !self.mac_live {
+                return Err(host_refusal());
+            }
             self.calls.os_reads += 1;
             self.mac_attachment = None;
             return hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
@@ -1154,6 +1173,9 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
         {
             use line6_devices::device_lock::{DeviceLock, LockError};
+            if !self.mac_live {
+                return Err(IdentifyError::Locked);
+            }
             self.mac_open_error = None;
             let attachment = self.mac_attachment.as_ref().ok_or(IdentifyError::Locked)?;
             let rig = DeviceLock::acquire().map_err(|error| {

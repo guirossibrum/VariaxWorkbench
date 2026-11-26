@@ -1,8 +1,11 @@
 import plistlib
+import contextlib
+import io
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import package
 
@@ -71,6 +74,47 @@ class PackageTests(unittest.TestCase):
                     path.write_bytes(contents)
                 with self.assertRaisesRegex(ValueError, error):
                     package.verify_artwork(bundle)
+
+    def test_owner_dmg_requires_static_libusb_in_each_mounted_binary_slice(self):
+        symbols = "\n".join(f"000001 T _{name}" for name in package.USB_SYMBOLS)
+        with tempfile.TemporaryDirectory() as folder:
+            mount = Path(folder) / "mount"
+            image = Path(folder) / "owner.dmg"
+            image.touch()
+            for title, binary in package.APPS.items():
+                app = mount / f"{title}.app"
+                executable = app / "Contents" / "MacOS" / binary
+                executable.parent.mkdir(parents=True)
+                executable.write_bytes(b"universal")
+                if title == "Variax Workbench":
+                    package.stage_artwork(app)
+
+            def tools(tool, *args):
+                if tool == "lipo" and args[0] == "-archs":
+                    return "arm64 x86_64"
+                if tool == "lipo":
+                    Path(args[-1]).write_bytes(b"slice")
+                    return ""
+                if tool == "vtool":
+                    return "minos 11.0" if args[-1].name.endswith("arm64") else "minos 10.15"
+                if tool == "otool":
+                    return LOADS
+                if tool == "nm":
+                    if args[-1].name == unavailable_slice:
+                        return ""
+                    return symbols
+                self.fail(f"unexpected tool: {tool}")
+
+            with patch("package.xcrun", side_effect=tools), contextlib.redirect_stdout(io.StringIO()):
+                unavailable_slice = None
+                package.verify(mount, folder, image, "owner-usb")
+                for name in package.APPS.values():
+                    for arch in package.ARCHITECTURES:
+                        unavailable_slice = f"{name}-{arch}"
+                        with self.subTest(slice=unavailable_slice), self.assertRaisesRegex(
+                            ValueError, "missing defined Mach-O symbol"
+                        ):
+                            package.verify(mount, folder, image, "owner-usb")
 
 
 if __name__ == "__main__":
