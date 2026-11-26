@@ -240,14 +240,7 @@ fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
         let artwork = tempfile::tempdir().unwrap();
         let mut app = Workbench::with_context(&context, None, artwork.path().to_owned(), None);
         app.theme_polled = Instant::now();
-        let texture = context.load_texture(
-            "synthetic pickup",
-            egui::ColorImage::filled([26, 92], Color32::WHITE),
-            egui::TextureOptions::LINEAR,
-        );
-        app.variax_mut()
-            .textures
-            .insert("pickups/strat.png".into(), texture);
+        app.variax_mut().install_pickup_fixture(&context);
         let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
         let initial = app.variax().float(slot, 0x200000).unwrap();
         let other = app.variax().float(other_slot, 0x200000).unwrap();
@@ -280,11 +273,7 @@ fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
 
         let end = second + step;
         frame(&context, &mut app, vec![button(end, false)]);
-        let released = app.variax().float(slot, 0x200000).unwrap();
-        assert!(
-            (released - (3.0 * moved - 2.0 * initial).clamp(0.1, 9.5)).abs() < 1e-5,
-            "slot {slot:#x}: initial {initial}, first movement {moved}, released {released}"
-        );
+        assert_eq!(app.variax().float(slot, 0x200000), Some(moved_twice));
         assert_eq!(app.variax().float(other_slot, 0x200000), Some(other));
         let changed = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
         app.variax_mut().undo();
@@ -1099,14 +1088,7 @@ fn acoustic_body_hides_pickup_sprites_and_disables_electrics_with_workbench_labe
     }
     let (ctx, mut app) = app();
     app.variax_mut().open_example();
-    let texture = ctx.load_texture(
-        "pickup fixture",
-        egui::ColorImage::filled([26, 92], egui::Color32::WHITE),
-        egui::TextureOptions::LINEAR,
-    );
-    app.variax_mut()
-        .textures
-        .insert("pickups/strat.png".into(), texture);
+    app.variax_mut().install_pickup_fixture(&ctx);
     let render = |app: &mut Workbench| {
         ctx.run(
             egui::RawInput {
