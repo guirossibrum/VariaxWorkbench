@@ -410,7 +410,7 @@ pub(super) mod tests {
         }
     }
 
-    fn verified_rig() -> detection::DetectionService {
+    pub(crate) fn verified_rig() -> detection::DetectionService {
         let mut metadata = SyntheticSysfs::new();
         metadata.add_device(
             "8-2.1",
@@ -426,7 +426,7 @@ pub(super) mod tests {
         verified_tab_for(&mut verified_rig())
     }
 
-    fn verified_tab_for(detection: &mut detection::DetectionService) -> DeviceTab {
+    pub(crate) fn verified_tab_for(detection: &mut detection::DetectionService) -> DeviceTab {
         let devices = detection
             .refresh(Scan::Automatic, crate::editor::registry::DEVICE_PROFILES)
             .unwrap();
@@ -484,6 +484,12 @@ pub(super) mod tests {
             );
             std::thread::yield_now();
         }
+    }
+
+    pub(crate) fn download(editor: &mut VariaxEditor, ctx: &egui::Context) {
+        editor.request_refresh(complete_capture);
+        wait_for_completion(editor, ctx);
+        assert!(editor.has_current_guitar_library());
     }
 
     #[test]

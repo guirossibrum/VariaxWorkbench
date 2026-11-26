@@ -544,7 +544,9 @@ fn read_updates(
 
 #[cfg(test)]
 mod tests {
+    use super::super::refresh::tests as refresh_tests;
     use super::*;
+    use crate::editor::registry::DEVICE_PROFILES;
     use crate::editor::tests::app;
     use variax_workbench::{bundle::BundleFile, edit::WIRING};
 
@@ -676,20 +678,16 @@ mod tests {
         let (ctx, mut app) = app();
         let editor = app.variax_mut();
         assert!(editor.follow.start(fake_source, &ctx).is_err());
-        super::super::refresh::tests::attach(editor);
+        refresh_tests::attach(editor);
+        refresh_tests::download(editor, &ctx);
 
-        let mut document = EditorDocument::from_bundle(
-            BundleFile::new_default_bundle().unwrap(),
-            "test.vwb".into(),
-        )
-        .unwrap();
+        let document = editor.document.as_mut().unwrap();
         document.select(4, 2).unwrap();
         document
             .apply(|preset| preset.set_parameter(WIRING, 0x200005, 0, 1))
             .unwrap();
         let before = document.as_bytes().to_vec();
         document.select(0, 0).unwrap();
-        editor.document = Some(document);
         editor.follow.start(fake_source, &ctx).unwrap();
         poll_until(editor, &ctx, |follow| follow.snapshot.queue_overflow);
         let snapshot = editor.follow.snapshot;
@@ -755,6 +753,69 @@ mod tests {
         ));
         editor.poll_follow(&ctx);
         assert_eq!(editor.document.as_ref().unwrap().selection(), Some((4, 2)));
+    }
+
+    #[test]
+    fn reverified_attachment_discards_queued_follow_updates_and_keeps_the_earlier_library() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let mut rig = refresh_tests::verified_rig();
+        let first = refresh_tests::verified_tab_for(&mut rig);
+        editor.observe_device(Some(&first));
+        refresh_tests::download(editor, &ctx);
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let document = editor.document.as_ref().unwrap();
+        let selected = document.selection();
+        let before = document.as_bytes().to_vec();
+        assert_ne!(selected, Some((4, 2)));
+
+        let old_source: Source = |_, _, publish| {
+            let now = Instant::now();
+            publish(
+                FollowUpdate::ProgramChange(Preset::new(4, 2).unwrap()),
+                now - Duration::from_secs(2),
+            );
+            publish(FollowUpdate::TonePosition(12), now);
+            publish(FollowUpdate::Disconnected, now);
+            Ok(ListenEnd::Stopped)
+        };
+        editor.follow.start(old_source, &ctx).unwrap();
+        // Leave the old snapshot queued until after the shell has reverified.
+        let started = Instant::now();
+        while !editor.follow.worker.as_ref().unwrap().thread.is_finished() {
+            assert!(started.elapsed() < Duration::from_secs(1));
+            std::thread::yield_now();
+        }
+
+        rig.report_guitar_disconnect(&first.device.key, DEVICE_PROFILES)
+            .unwrap();
+        editor.observe_device(None);
+        assert!(rig.queue_guitar_refresh(&first.device.key.attachment, false));
+        let second = refresh_tests::verified_tab_for(&mut rig);
+        assert_eq!(first.device.key.attachment, second.device.key.attachment);
+        assert_eq!(first.device.support, second.device.support);
+        assert_ne!(first.device.key, second.device.key);
+        editor.observe_device(Some(&second));
+        editor.poll_follow(&ctx);
+        assert!(!editor.follow.busy());
+        assert!(!editor.follow.disconnected());
+        assert!(editor.take_device_event().is_none());
+        assert!(editor.follow.snapshot.program.is_none());
+        assert!(editor.follow.snapshot.tone.is_none());
+        assert_eq!(editor.document.as_ref().unwrap().selection(), selected);
+
+        assert!(editor.has_historical_guitar_library());
+        editor.follow.start(fake_source, &ctx).unwrap();
+        poll_until(editor, &ctx, |follow| follow.snapshot.queue_overflow);
+        assert_eq!(
+            editor.follow.snapshot.program.unwrap().0,
+            Preset::new(4, 2).unwrap()
+        );
+        assert_eq!(editor.follow.snapshot.tone, Some(127));
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.selection(), selected);
+        assert_eq!(document.as_bytes(), before);
+        assert!(document.can_undo());
     }
 
     #[test]
