@@ -140,10 +140,9 @@ impl VariaxEditor {
     }
 
     pub(super) fn sync_available(&self) -> bool {
-        matches!(
-            self.library_origin,
-            Some(LibraryOrigin::Backup(..) | LibraryOrigin::Download(..))
-        )
+        self.library_origin
+            .as_ref()
+            .is_some_and(LibraryOrigin::is_guitar_library)
     }
 
     pub(super) fn sync_ready(&self, action: Action) -> bool {

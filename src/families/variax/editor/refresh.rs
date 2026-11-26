@@ -25,7 +25,7 @@ type ReadLibrary = fn(&Attachment, &AtomicBool, &AtomicUsize) -> Result<Capture,
 struct Worker {
     stop: Arc<AtomicBool>,
     progress: Arc<AtomicUsize>,
-    thread: JoinHandle<Result<Capture, String>>,
+    thread: JoinHandle<Result<(DeviceKey, Capture), String>>,
 }
 
 #[derive(Default)]
@@ -77,7 +77,10 @@ impl Refresh {
         let worker_progress = progress.clone();
         let thread = std::thread::Builder::new()
             .name("variax-refresh".into())
-            .spawn(move || read(&attachment, &worker_stop, &worker_progress))
+            .spawn(move || {
+                let capture = read(&attachment, &worker_stop, &worker_progress)?;
+                Ok((attachment.key, capture))
+            })
             .map_err(|error| format!("Could not start Variax Refresh: {error}"))?;
         self.worker = Some(Worker {
             stop,
@@ -98,6 +101,14 @@ impl Drop for Refresh {
 }
 
 impl VariaxEditor {
+    pub(super) fn connected_library_attachment(&self) -> Option<&DeviceKey> {
+        self.refresh
+            .attachment
+            .as_ref()
+            .filter(|_| !self.follow.disconnected())
+            .map(|attachment| &attachment.key)
+    }
+
     pub(super) fn download_target_ready(&self) -> bool {
         self.refresh.attachment.is_some()
             && !self.follow.disconnected()
@@ -222,15 +233,15 @@ impl VariaxEditor {
             self.error = result.err();
             return;
         }
-        match result.and_then(|capture| {
+        match result.and_then(|(attachment, capture)| {
             let mut document =
                 EditorDocument::from_bundle(capture.bundle, "Downloaded Variax library".into())?;
             if let Restore::Switched { to, .. } = capture.restore {
                 document.select(usize::from(to.bank()), usize::from(to.slot()))?;
             }
-            Ok((document, capture.restore, capture.release_error))
+            Ok((document, attachment, capture.restore, capture.release_error))
         }) {
-            Ok((document, restore, release_error)) => {
+            Ok((document, attachment, restore, release_error)) => {
                 let time = SystemTime::now();
                 let snapshot_error = self.preferences_path.as_deref().and_then(|preferences| {
                     super::startup_library::save_download(preferences, &document, time)
@@ -240,7 +251,8 @@ impl VariaxEditor {
                         })
                 });
                 self.adopt_document(document, None);
-                self.library_origin = Some(super::LibraryOrigin::Download(time));
+                self.library_origin =
+                    Some(super::LibraryOrigin::AttachedDownload(time, attachment));
                 self.status =
                     "Read 60 guitar presets and 12 bank names. Use Save As to keep this library."
                         .into();
@@ -398,7 +410,7 @@ pub(super) mod tests {
         }
     }
 
-    pub(crate) fn verified_tab() -> DeviceTab {
+    fn verified_rig() -> detection::DetectionService {
         let mut metadata = SyntheticSysfs::new();
         metadata.add_device(
             "8-2.1",
@@ -407,7 +419,14 @@ pub(super) mod tests {
             "PODxt Live",
             &[],
         );
-        let mut detection = detection::DetectionService::new(Box::new(VerifiedRig(metadata)));
+        detection::DetectionService::new(Box::new(VerifiedRig(metadata)))
+    }
+
+    pub(crate) fn verified_tab() -> DeviceTab {
+        verified_tab_for(&mut verified_rig())
+    }
+
+    fn verified_tab_for(detection: &mut detection::DetectionService) -> DeviceTab {
         let devices = detection
             .refresh(Scan::Automatic, crate::editor::registry::DEVICE_PROFILES)
             .unwrap();
@@ -508,9 +527,72 @@ pub(super) mod tests {
         wait_for_completion(editor, &ctx);
         assert!(matches!(
             editor.library_origin,
-            Some(super::super::LibraryOrigin::Download(_))
+            Some(super::super::LibraryOrigin::AttachedDownload(..))
         ));
         assert_eq!(editor.document.as_ref().unwrap().banks().unwrap().len(), 12);
+    }
+
+    #[test]
+    fn download_provenance_expires_when_the_guitar_on_the_same_bridge_changes() {
+        let (ctx, _) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let defaults = super::super::EditorDefaults {
+            artwork: directory.path().join("artwork"),
+            preferences: Some(directory.path().join("editor-preferences.txt")),
+            startup_panel: None,
+        };
+        let mut rig = verified_rig();
+        let first = verified_tab_for(&mut rig);
+        let mut editor = VariaxEditor::new(&defaults);
+        editor.observe_device(Some(&first));
+        editor.request_refresh(complete_capture);
+        wait_for_completion(&mut editor, &ctx);
+        let downloaded = editor.document.as_ref().unwrap().as_bytes().to_vec();
+        let connected_label = editor.library_label().unwrap();
+        assert!(connected_label.starts_with("Downloaded on this connection · "));
+
+        // The same bridge and model/firmware answer after a guitar disconnect.
+        let profiles = crate::editor::registry::DEVICE_PROFILES;
+        rig.report_guitar_disconnect(&first.device.key, profiles)
+            .unwrap();
+        assert!(rig.queue_guitar_refresh(&first.device.key.attachment, false));
+        let second = verified_tab_for(&mut rig);
+        assert_eq!(first.device.key.attachment, second.device.key.attachment);
+        assert_eq!(first.device.support, second.device.support);
+        assert_ne!(first.device.key, second.device.key);
+
+        editor.observe_device(Some(&second));
+        let historical = editor.library_label().unwrap();
+        assert!(historical.starts_with("Saved guitar download · "));
+        assert!(historical.ends_with("Source guitar unverified for this connection"));
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), downloaded);
+
+        let mut reopened = VariaxEditor::new(&defaults);
+        reopened.load_initial_library(&defaults);
+        assert_eq!(reopened.document.as_ref().unwrap().as_bytes(), downloaded);
+        assert!(
+            reopened
+                .library_label()
+                .unwrap()
+                .starts_with("Saved guitar download · ")
+        );
+        assert!(
+            !reopened
+                .library_label()
+                .unwrap()
+                .contains("this connection")
+        );
+        reopened.observe_device(Some(&first));
+        assert_eq!(reopened.library_label(), Some(historical));
+
+        editor.request_refresh(complete_capture);
+        wait_for_completion(&mut editor, &ctx);
+        assert!(
+            editor
+                .library_label()
+                .unwrap()
+                .starts_with("Downloaded on this connection · ")
+        );
     }
 
     #[test]
@@ -552,7 +634,7 @@ pub(super) mod tests {
         wait_for_completion(editor, &ctx);
         assert!(matches!(
             editor.library_origin,
-            Some(super::super::LibraryOrigin::Download(_))
+            Some(super::super::LibraryOrigin::AttachedDownload(..))
         ));
     }
 
