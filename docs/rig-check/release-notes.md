@@ -28,11 +28,11 @@ explained, confirmed step at a time and writes a text report. Catalogue:
 - The output trim check raises the level near its minimum. The
   alternate-tuning check changes the low string even when alternate tuning
   is already on, and skips acoustic and sitar presets.
-- For real runs, supply `--engine-folder DIR` with a local model manifest
-  and verified reference files to run the model-dependent checks. If model
-  data is missing, 0.3, 4.3–4.5 and 5.3 show “needs Variax model data on
-  this computer” and skip as not applicable. These automatic skips allow later
-  checks and saves to proceed when their own requirements are met.
+- Rig Check uses the built-in Variax model library for the engine, audition,
+  trim, and tuning checks. Use `--engine-folder DIR` to select your own
+  manifest and reference models. If the selected model data is missing,
+  0.3, 4.3–4.5 and 5.3 skip as not applicable. Other checks and saves
+  remain available when their own requirements are met.
 - The report is local and redacted. A passing run is the owner's approval
   to test the corresponding writes in the app. Shared releases need a
   separate owner decision.

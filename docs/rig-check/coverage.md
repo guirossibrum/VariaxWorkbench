@@ -64,7 +64,7 @@ Real runs save raw evidence by default in the report's companion folder.
 
 | Checks | Starting state and outcome |
 | --- | --- |
-| 0.3, 4.3–4.5, 5.3 | Model-dependent checks skip when model data is missing. The own-byte upload and saves remain available. A local test model must match its reference before audition. |
+| 0.3, 4.3–4.5, 5.3 | Model-dependent checks use the bundled library by default. They skip when the selected data is missing. The own-byte upload and saves remain available. An audition model must match its reference. |
 | 4.4, 5.3 | Lower trim by 6 dB when it fits. Raise it by 6 dB near the minimum. A preset whose affected words cannot be reproduced skips the edit. |
 | 4.5 | Test a different low-string tuning when tuning is already on. Acoustic presets and sitar skip. |
 | 4.1 | Stomp toggles from either state. Drive moves away from the upper limit. Tempo outside the editable range skips only the tempo comparison. |

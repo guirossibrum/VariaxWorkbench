@@ -70,9 +70,12 @@ fn resonator(
 impl BodyVariant {
     /// Canonical big-endian field encoding, including normalized boolean bytes.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(BODY_VARIANT_BYTES);
-        self.encode(&mut bytes);
-        bytes
+        let mut output = Writer {
+            bytes: Vec::with_capacity(BODY_VARIANT_BYTES),
+            little_endian: false,
+        };
+        self.encode(&mut output);
+        output.bytes
     }
 
     /// Original host-library field blending, not DSP execution or device output.

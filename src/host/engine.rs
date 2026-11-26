@@ -11,8 +11,8 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-/// Definitions must be supplied from the user's local files; none are bundled.
-#[derive(Default, Debug)]
+/// Definitions for the legacy host coefficient engine.
+#[derive(Clone, Default, Debug)]
 pub struct ModelLibrary {
     pub bodies: BTreeMap<u32, BodyDefinition>,
     pub pickups: BTreeMap<u32, PickupDefinition>,

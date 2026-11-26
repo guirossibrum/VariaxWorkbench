@@ -51,6 +51,8 @@ jobs:
           cargo test --offline --locked --target $target --no-default-features --features gui,portable-math
           cargo test --offline --locked --target $target --manifest-path crates/line6-devices/Cargo.toml --no-default-features
           python packaging/windows/test_package.py
+      - name: Record bundled Variax data and portable render checksums
+        run: cargo run --offline --locked --target x86_64-pc-windows-msvc --no-default-features --features portable-math --example verify_variax_models
       - name: Build and verify the Windows x64 package
         run: python packaging/windows/build.py (Join-Path $env:RUNNER_TEMP "windows-package")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

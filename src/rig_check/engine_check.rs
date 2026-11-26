@@ -1,11 +1,9 @@
 //! Step 0.3, the engine check (#252): build reference programs on this
 //! computer and compare all 1,092 words with the expected result.
 //!
-//! Built-in references use only the repository's synthetic fixtures (see
-//! `tests/fixtures/README.md`): eight synthetic body resources, four synthetic
-//! pickup resources, 48 synthetic native inputs with their original native
-//! outputs, and one synthetic preset with its original Java/native result. No
-//! vendor model data, factory preset or owner file is built in.
+//! Synthetic fixtures cover the original native inputs and Java preset
+//! pipeline. The model bundle also renders a generated audition preset,
+//! checked against the Workbench oracle's program digest.
 //!
 //! A person may add a local, private folder of reference models: a
 //! `models.tsv` model manifest (their own copy of the model data, as used by
@@ -18,8 +16,8 @@ use crate::body::BodyDefinition;
 use crate::host::{HostEngine, HostOptions, HostParameters, ModelLibrary, WorkbenchSettings};
 use crate::models::PickupDefinition;
 use crate::preset::PresetFile;
-use std::path::Path;
 use std::sync::OnceLock;
+use std::{borrow::Cow, path::Path};
 
 pub const WORDS: usize = 1092;
 pub const PACKED: usize = WORDS * 3;
@@ -106,8 +104,7 @@ pub fn compare(expected: &[u8], actual: &[u8]) -> Vec<WordDiff> {
 #[derive(Clone, Debug)]
 pub struct ModelResult {
     pub name: String,
-    /// The program built here, for local-folder models only (test models
-    /// for step 4.3 must come from a model that matched its reference).
+    /// A program eligible for step 4.3 if it matched its reference.
     pub program: Option<Vec<u8>>,
     /// `NAME.listen.txt`: the A/B question for this model in step 4.3.
     pub question: Option<String>,
@@ -226,6 +223,48 @@ fn result(name: String, expected: &[u8], actual: Result<Vec<u8>, String>) -> Mod
             hash_only: None,
             error: Some(error),
         },
+    }
+}
+
+/// Select locally supplied definitions when requested.
+pub(super) fn model_library(root: Option<&Path>) -> Result<Cow<'static, ModelLibrary>, String> {
+    match root {
+        Some(root) => ModelLibrary::load_manifest(&root.join("models.tsv")).map(Cow::Owned),
+        None => ModelLibrary::built_in().map(Cow::Borrowed),
+    }
+}
+
+/// Workbench oracle digest for the generated drop-D audition.
+pub const AUDITION_SHA256: &str =
+    "dd5e2acd4c39d28d97c421a764c1927b08acb1106df9599c7b4a4695aca659f5";
+
+/// Generated audition settings, with no saved preset in the bundle.
+pub fn audition_preset() -> Result<PresetFile, String> {
+    let mut preset = PresetFile::default_legacy_model()?;
+    preset.set_stored_name("Rig Check Drop D")?;
+    preset.set_parameter(crate::edit::TUNING, 0x200000, 0, (-2i32) as u32)?;
+    preset.set_enabled(crate::edit::TUNING, true)?;
+    Ok(preset)
+}
+
+pub(super) fn bundled_audition() -> ModelResult {
+    let actual =
+        audition_preset().and_then(|preset| render_preset(ModelLibrary::built_in()?, &preset));
+    let name = "Bundled model data (drop D audition)".into();
+    match actual {
+        Ok(program) => {
+            let hash = super::record::sha256_hex(&program);
+            ModelResult {
+                name,
+                hash_only: Some(hash == AUDITION_SHA256),
+                actual_sha256: Some(hash),
+                program: Some(program),
+                question: Some("Play the same passage and compare it with your starting sound. Do you hear a difference?".into()),
+                diffs: Vec::new(),
+                error: None,
+            }
+        }
+        Err(error) => result(name, &[], Err(error)),
     }
 }
 

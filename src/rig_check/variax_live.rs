@@ -377,22 +377,19 @@ pub(super) fn edit_images(
         return Ok((packed(&next), muted));
     }
 
-    let root = ctx
-        .data
-        .engine_folder
-        .as_deref()
-        .ok_or_else(|| format!("{NOT_APPLICABLE}{MODEL_DATA_NEEDED}"))?;
-    render_edits(root, original, edit)
+    let models = super::engine_check::model_library(ctx.data.engine_folder.as_deref())
+        .map_err(|error| format!("{NOT_APPLICABLE}{MODEL_DATA_NEEDED}. {error}"))?;
+    render_edits(&models, original, edit)
 }
 
 fn render_edits(
-    root: &std::path::Path,
+    models: &crate::host::ModelLibrary,
     original: &Program,
     edit: AuditionEdit,
 ) -> Result<(shared_variax::Image, Option<shared_variax::Image>), String> {
     use crate::{
         PresetMetadata, edit as field,
-        host::{HostEngine, HostOptions, HostParameters, ModelLibrary},
+        host::{HostEngine, HostOptions, HostParameters},
         preset::PresetFile,
     };
     let target = edit_target(original, edit)?;
@@ -403,15 +400,13 @@ fn render_edits(
             .expect("settings size"),
     )?;
     let mut preset = PresetFile::from_metadata(&metadata, 0x0007_0004, 0x0310_0000)?;
-    let models = ModelLibrary::load_manifest(&root.join("models.tsv"))
-        .map_err(|error| format!("{NOT_APPLICABLE}{MODEL_DATA_NEEDED}. {error}"))?;
     let render = |preset: &PresetFile, muted| -> Result<shared_variax::Image, String> {
         let parameters = HostParameters::from_preset(preset)?;
         let settings = parameters.map(HostOptions {
             muted,
             ..HostOptions::default()
         })?;
-        let result = HostEngine::new(&models).generate(&settings)?;
+        let result = HostEngine::new(models).generate(&settings)?;
         Ok(parameters.finish(preset.name(), &settings, result.packed()))
     };
     let before = render(&preset, false)?;
@@ -822,8 +817,14 @@ mod tests {
             u32::from_be_bytes([0, a, b, c])
         });
         let name = program_name(&words);
+        let models = crate::rig_check::engine_check::model_library(Some(&root)).unwrap();
+        let bundled = crate::rig_check::engine_check::model_library(None).unwrap();
         for edit in [super::AuditionEdit::Trim, super::AuditionEdit::Tuning] {
-            let (next, muted) = super::render_edits(&root, &words, edit).unwrap();
+            let (next, muted) = super::render_edits(&models, &words, edit).unwrap();
+            assert_eq!(
+                super::render_edits(&bundled, &words, edit).unwrap(),
+                (next, muted),
+            );
             write::Program::new(&name, &next).unwrap();
             if let Some(muted) = muted {
                 assert_ne!(next, muted);

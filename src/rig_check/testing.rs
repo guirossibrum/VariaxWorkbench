@@ -291,7 +291,10 @@ mod tests {
         let report = crate::rig_check::report::render_plain(&run, "test time");
         let expected = crate::rig_check::engine_check::builtin();
         let step = run.step(StepId(0, 3));
-        assert_eq!(step.checksums.len(), expected.len());
+        assert_eq!(step.checksums.len(), expected.len() + 1);
+        assert!(
+            report.contains("Bundled model data (drop D audition): matches the expected SHA-256")
+        );
         for case in expected {
             let hash = case.actual_sha256.as_deref().expect("built reference case");
             assert!(report.contains(&format!("{hash}  {} (built here)", case.name)));
@@ -794,12 +797,10 @@ mod tests {
                 step.id
             );
         }
-        let expected = if cfg!(target_os = "windows") {
-            &[StepId(0, 1), StepId(0, 2), StepId(0, 3), StepId(8, 1)][..]
-        } else {
-            &[StepId(0, 1), StepId(0, 2), StepId(8, 1)]
-        };
-        assert_eq!(person.cards, expected);
+        assert_eq!(
+            person.cards,
+            [StepId(0, 1), StepId(0, 2), StepId(0, 3), StepId(8, 1)]
+        );
         assert!(person.cards.iter().all(|id| run.step(*id).outcome.passed()));
     }
 

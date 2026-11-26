@@ -5,6 +5,7 @@ on:
     paths:
       - "src/**"
       - "examples/**"
+      - "assets/variax-models/**"
       - "tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -91,6 +92,8 @@ jobs:
         run: |
           rustc -vV
           cargo run --locked --no-default-features --features portable-math --bin variax-workbench -- math-profile
+      - name: Verify bundled Variax data and portable render checksums
+        run: cargo run --locked --no-default-features --features portable-math --example verify_variax_models
       # No USB or GUI feature, original library, personal capture, or device API
       # is needed. Preset, DSP, and Variax message fixtures are synthetic.
       # The Variax prefix, variax_startup, and cold-body instructions are
