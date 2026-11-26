@@ -35,6 +35,10 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   GitHub issue or update the existing issue with the agreed scope and
   acceptance criteria. The Gatekeeper records the issue before assigning
   work and gives its number to the lane.
+- Before assigning or reassigning an issue, read its live GitHub description,
+  acceptance criteria, and relevant follow-up decisions. Compare them with
+  current master, prior deliveries, and dependencies. Update stale issue text
+  and record the agreed criteria on GitHub before sending the lane prompt.
 - Reference the issue in the branch, delivery, and relevant commits. The
   Gatekeeper records the merged revision, verification evidence, and any
   outstanding deliverables on the issue. Close it only after every
