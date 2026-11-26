@@ -11,13 +11,12 @@ const TABLE: &str = include_str!("../../../research/podxt-live-parameters.json")
 // the assertions so the device crate needs no new dependency. The Python
 // oracle loads and validates the full JSON with a general-purpose parser.
 fn rows(section: &str) -> impl Iterator<Item = &'static str> {
-    let heading = format!("  \"{section}\": [\n");
-    TABLE
-        .split_once(&heading)
-        .expect("missing table section")
-        .1
-        .lines()
-        .take_while(|line| line.trim_start().starts_with('{'))
+    let heading = format!("  \"{section}\": [");
+    let mut lines = TABLE.lines();
+    lines
+        .find(|line| *line == heading)
+        .expect("missing table section");
+    lines.take_while(|line| line.trim_start().starts_with('{'))
 }
 
 fn field<'a>(row: &'a str, key: &str) -> Option<&'a str> {
