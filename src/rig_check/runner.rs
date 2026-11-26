@@ -64,6 +64,13 @@ pub struct Question {
     pub verified_by_bytes: Vec<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResultDecision {
+    Continue,
+    Stop,
+    Different(String),
+}
+
 /// The person at the rig, through the GUI, the terminal or a test script.
 pub trait Operator {
     /// The start notice. `false` (the default) quits before any step.
@@ -82,8 +89,9 @@ pub trait Operator {
     /// A short progress line.
     fn progress(&mut self, text: &str);
     /// Publish any outcome. If the step ran, wait for the person to read it.
-    /// Return false when they choose Stop or leave the session.
-    fn finished(&mut self, record: &StepRecord) -> bool;
+    fn finished(&mut self, record: &StepRecord) -> ResultDecision;
+    /// Update the result after a reported display mismatch.
+    fn result_updated(&mut self, record: &StepRecord);
     /// The person asked to stop the running step.
     fn stop_requested(&self) -> bool;
 }
@@ -452,6 +460,24 @@ impl<'a> Runner<'a> {
         }
         let rec = rec.clone();
         self.write_report();
-        self.op.finished(&rec)
+        match self.op.finished(&rec) {
+            ResultDecision::Continue => true,
+            ResultDecision::Stop => false,
+            ResultDecision::Different(value) => {
+                let rec = self.run.step_mut(id);
+                if rec.outcome.passed()
+                    && let Some(look) = &mut rec.look
+                {
+                    look.different = Some(value);
+                    rec.outcome = Outcome::Failed(
+                        "The device display differed from the expected result.".into(),
+                    );
+                    let rec = rec.clone();
+                    self.write_report();
+                    self.op.result_updated(&rec);
+                }
+                true
+            }
+        }
     }
 }

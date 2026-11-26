@@ -99,6 +99,23 @@ impl Outcome {
 pub type MessageLine = String;
 
 #[derive(Clone, Debug)]
+pub struct LookCheck {
+    pub prompt: &'static str,
+    pub expected: String,
+    pub different: Option<String>,
+}
+
+impl LookCheck {
+    pub fn report_line(&self) -> String {
+        let reported = self.different.as_ref().map_or_else(
+            || "not reported different".to_string(),
+            |value| format!("{value:?}"),
+        );
+        format!("Expected {:?} · On the device: {reported}", self.expected)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct StepRecord {
     pub id: StepId,
     pub title: &'static str,
@@ -108,6 +125,7 @@ pub struct StepRecord {
     pub duration_ms: Option<u128>,
     /// Questions and the person's answers, in order.
     pub answers: Vec<(String, String)>,
+    pub look: Option<LookCheck>,
     /// Plain observations selected for the on-screen and terminal result.
     pub result: Vec<String>,
     /// Full observations, including byte details, for the report.
@@ -130,6 +148,7 @@ impl StepRecord {
             started: None,
             duration_ms: None,
             answers: Vec::new(),
+            look: None,
             result: Vec::new(),
             evidence: Vec::new(),
             messages: Vec::new(),
@@ -160,21 +179,22 @@ impl StepRecord {
                 .iter()
                 .map(|hint| format!("Hint: {}", plain_result(hint))),
         );
-        if self.outcome.passed() {
-            let look = match self.id {
-                StepId(2, 2) => "Does the PODxt Live display show the same current tone name?",
-                StepId(2, 3) => {
-                    "If the PODxt Live is already on this channel, does its display show the same name?"
-                }
-                StepId(4, 1) => "Check that the stomp LED is back to its starting state.",
-                StepId(7, 3) => {
-                    "Check that the PODxt Live display shows the starting channel again."
-                }
-                _ => return lines,
-            };
-            lines.push(look.into());
+        if let Some(look) = &self.look {
+            if look.different.is_some() {
+                lines.push(look.report_line());
+            } else if self.outcome.passed() {
+                lines.push(format!("{} Expected: {:?}.", look.prompt, look.expected));
+            }
         }
         lines
+    }
+
+    pub fn look_at(&mut self, prompt: &'static str, expected: impl Into<String>) {
+        self.look = Some(LookCheck {
+            prompt,
+            expected: expected.into(),
+            different: None,
+        });
     }
 
     pub fn checksum(&mut self, label: impl Into<String>, bytes: &[u8]) -> String {
@@ -287,6 +307,14 @@ impl RunRecord {
             .iter_mut()
             .find(|s| s.id == id)
             .expect("every catalogue step has a record")
+    }
+
+    pub fn look_mismatches(&self) -> impl Iterator<Item = String> + '_ {
+        self.steps.iter().filter_map(|step| {
+            let look = step.look.as_ref()?;
+            look.different.as_ref()?;
+            Some(format!("Step {} — {}", step.id, look.report_line()))
+        })
     }
 
     pub fn count(&self, code: &str) -> usize {

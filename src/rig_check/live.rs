@@ -70,6 +70,16 @@ pub fn podxt_stomp(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     if test.exact_undo() {
         podxt_editor_controls(ctx)?;
+        let control = podxt::Control::StompEnable;
+        let expected = if control.is_on(test.before.cc(control.cc())) {
+            "on"
+        } else {
+            "off"
+        };
+        ctx.rec.look_at(
+            "Check that the stomp LED is back to its starting state.",
+            expected,
+        );
         ctx.rec
             .show("The whole tone matches the start byte for byte. Nothing was saved.");
         Ok(())

@@ -2,7 +2,7 @@
 
 use super::catalogue::{SaveNotice, Step, StepId};
 use super::record::{Mode, Outcome, StepRecord};
-use super::runner::{Answer, Decision, Operator, Question, Retry};
+use super::runner::{Answer, Decision, Operator, Question, ResultDecision, Retry};
 use std::cell::Cell;
 
 /// Answers every card with `default`, except listed steps.
@@ -23,6 +23,7 @@ pub struct Script {
     pub questions: Vec<Question>,
     pub saves: Vec<String>,
     pub finished: Vec<(StepId, Outcome)>,
+    pub different: Option<(StepId, String)>,
     current: Cell<Option<StepId>>,
 }
 
@@ -52,6 +53,7 @@ impl Script {
             questions: Vec::new(),
             saves: Vec::new(),
             finished: Vec::new(),
+            different: None,
             current: Cell::new(None),
         }
     }
@@ -121,9 +123,18 @@ impl Operator for Script {
 
     fn progress(&mut self, _: &str) {}
 
-    fn finished(&mut self, record: &StepRecord) -> bool {
+    fn finished(&mut self, record: &StepRecord) -> ResultDecision {
         self.finished.push((record.id, record.outcome.clone()));
-        true
+        if let Some((id, value)) = &self.different
+            && *id == record.id
+        {
+            return ResultDecision::Different(value.clone());
+        }
+        ResultDecision::Continue
+    }
+
+    fn result_updated(&mut self, record: &StepRecord) {
+        self.finished.last_mut().expect("result was shown").1 = record.outcome.clone();
     }
 
     fn stop_requested(&self) -> bool {
@@ -225,6 +236,47 @@ mod tests {
         for case in expected {
             let hash = case.actual_sha256.as_deref().expect("built reference case");
             assert!(report.contains(&format!("{hash}  {} (built here)", case.name)));
+        }
+    }
+
+    #[test]
+    fn look_checks_pass_on_continue_and_block_live_edits_and_saves_on_a_difference() {
+        let look_step = StepId(2, 2);
+        for different in [None, Some("  Other tone  ")] {
+            let mut person = Script::run_all();
+            person.different = different.map(|value| (look_step, value.into()));
+            let (run, _, rig) = run_practice(
+                Faults::default(),
+                &mut person,
+                &mut NoReport,
+                RunData::default(),
+            );
+            let look = run.step(look_step).look.as_ref().unwrap();
+            assert_eq!(look.expected, "Practice 5B");
+            assert_eq!(look.different.as_deref(), different);
+            let report = super::super::report::render_plain(&run, "practice");
+            if let Some(value) = different {
+                assert!(matches!(person.outcome(look_step), Outcome::Failed(_)));
+                let expected =
+                    format!("Step 2.2 — Expected \"Practice 5B\" · On the device: {value:?}");
+                assert!(report.find(&expected).unwrap() < report.find("Passed ").unwrap());
+                for id in [StepId(4, 1), StepId(4, 2), StepId(5, 1), StepId(5, 2)] {
+                    assert!(
+                        matches!(&run.step(id).outcome, Outcome::SkippedNeeds(reason) if reason == "read-only from here: step 2.2 failed")
+                    );
+                    assert!(!person.cards.contains(&id));
+                }
+                assert!(person.saves.is_empty());
+                assert_eq!(rig.borrow().variax.stores, 0);
+            } else {
+                assert!(person.outcome(look_step).passed());
+                for id in [StepId(2, 3), StepId(4, 1), StepId(7, 3)] {
+                    let step = run.step(id);
+                    assert!(step.outcome.passed() && step.look.is_some());
+                }
+                assert!(run.step(StepId(5, 1)).outcome.passed());
+                assert!(report.contains("On the device: not reported different"));
+            }
         }
     }
 

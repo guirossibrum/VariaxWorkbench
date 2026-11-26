@@ -3,7 +3,7 @@
 use super::catalogue::{START_NOTICE, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, StepRecord, plain_result};
-use super::runner::{Answer, Decision, Operator, Question, Retry};
+use super::runner::{Answer, Decision, Operator, Question, ResultDecision, Retry};
 use std::io::{BufRead, Write};
 
 pub struct Terminal<R, W> {
@@ -29,8 +29,21 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
     }
 
     fn response(&mut self) -> Option<String> {
+        self.raw_response().map(|text| text.trim().to_owned())
+    }
+
+    fn raw_response(&mut self) -> Option<String> {
         let mut text = String::new();
-        (self.input.read_line(&mut text).unwrap_or(0) != 0).then(|| text.trim().to_owned())
+        if self.input.read_line(&mut text).ok()? == 0 {
+            return None;
+        }
+        if text.ends_with('\n') {
+            text.pop();
+            if text.ends_with('\r') {
+                text.pop();
+            }
+        }
+        Some(text)
     }
 
     /// One trimmed line; end of input counts as an empty answer (the default).
@@ -189,25 +202,35 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         self.say(&plain_result(text));
     }
 
-    fn finished(&mut self, record: &StepRecord) -> bool {
+    fn finished(&mut self, record: &StepRecord) -> ResultDecision {
         self.show_result(record);
         self.results.retain(|previous| previous.id != record.id);
         self.results.push(record.clone());
         if record.started.is_none() {
-            return true;
+            return ResultDecision::Continue;
         }
+        let look = record.outcome.passed() && record.look.is_some();
         let back = history::back(&self.results, Some(record.id), self.start_accepted);
         loop {
             let label = if back.is_some() { "[b] Back   " } else { "" };
+            let different = if look { "[d] Different…   " } else { "" };
             self.say(&format!(
-                "{label}[c] Continue   [q] Stop.   Enter = Continue"
+                "{label}[c] Continue   {different}[q] Stop.   Enter = Continue"
             ));
             let Some(response) = self.response() else {
-                return false;
+                return ResultDecision::Stop;
             };
             match response.to_ascii_lowercase().as_str() {
-                "" | "c" | "continue" => return true,
-                "q" | "stop" => return false,
+                "" | "c" | "continue" => return ResultDecision::Continue,
+                "q" | "stop" => return ResultDecision::Stop,
+                "d" | "different" if look => {
+                    self.say("Type exactly what the device shows. Enter alone goes back.");
+                    match self.raw_response() {
+                        Some(text) if !text.is_empty() => return ResultDecision::Different(text),
+                        Some(_) => {}
+                        None => return ResultDecision::Stop,
+                    }
+                }
                 "b" | "back" => {
                     if let Some(back) = back {
                         self.review(back);
@@ -217,6 +240,17 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
                 _ => {}
             }
         }
+    }
+
+    fn result_updated(&mut self, record: &StepRecord) {
+        if let Some(previous) = self
+            .results
+            .iter_mut()
+            .find(|previous| previous.id == record.id)
+        {
+            *previous = record.clone();
+        }
+        self.show_result(record);
     }
 
     fn stop_requested(&self) -> bool {
@@ -230,6 +264,22 @@ mod tests {
     use crate::rig_check::record::Outcome;
 
     #[test]
+    fn different_accepts_exact_display_text_after_d() {
+        let mut record = StepRecord::new(StepId(2, 2));
+        record.started = Some("practice".into());
+        record.outcome = Outcome::Passed;
+        record.look_at("Compare the display.", "Practice 5B");
+        let mut terminal = Terminal::new(&b"d\n  Other name  \r\n"[..], Vec::new());
+        assert_eq!(
+            terminal.finished(&record),
+            ResultDecision::Different("  Other name  ".into())
+        );
+        let output = String::from_utf8(terminal.into_output()).unwrap();
+        assert!(output.contains("[d] Different…"));
+        assert!(output.contains("Type exactly what the device shows."));
+    }
+
+    #[test]
     fn terminal_result_waits_for_continue_and_keeps_raw_failure_evidence_in_the_report() {
         let mut record = StepRecord::new(StepId(2, 3));
         record.started = Some("practice".into());
@@ -239,8 +289,12 @@ mod tests {
         record.hints.push("Check the cable.".into());
 
         let mut terminal = Terminal::new(&b"r\nc\n"[..], Vec::new());
-        assert!(terminal.finished(&record));
-        assert!(!terminal.finished(&record), "end of input stops");
+        assert_eq!(terminal.finished(&record), ResultDecision::Continue);
+        assert_eq!(
+            terminal.finished(&record),
+            ResultDecision::Stop,
+            "end of input stops"
+        );
         let text = String::from_utf8(terminal.into_output()).unwrap();
         for line in record.result_lines() {
             assert!(text.contains(&line));

@@ -21,6 +21,7 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
 | Step result with the channel name, a display check, Continue and Stop | [11-step-result.png](mockups/11-step-result.png) |
 | Reviewing an earlier result | [12-review-result.png](mockups/12-review-result.png) |
 | Reviewing the accepted start notice | [13-review-start.png](mockups/13-review-start.png) |
+| Recording a display mismatch | [14-display-difference.png](mockups/14-display-difference.png) |
 
 ## Owner release
 
@@ -41,7 +42,12 @@ testing the app's matching writes.
   is disabled until the typed confirmation matches.
 - After a step runs, the result screen shows its outcome and the values
   named on the **SEE** card. A failure includes the reason and any known
-  hint. Display checks ask the person to look and require no answer.
+  hint. Display checks use Continue or Enter when the displayed value matches.
+  **Different…** opens a field for the exact displayed text. The terminal uses
+  **[d]**. A reported difference fails the step and blocks later live edits and
+  saves. The summary lists differences first, with the expected and reported
+  values together. With no typed difference, the report says “not reported
+  different”.
 - **Continue** starts with focus on the result screen. It returns to the next
   card, which still requires its own Run choice. **Stop** ends the run and
   offers the closing rig check in a normal run.

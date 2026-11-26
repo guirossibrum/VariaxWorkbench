@@ -61,7 +61,14 @@ fn read_channels(ctx: &mut Ctx<'_>, indices: &[u16]) -> Result<(), String> {
 }
 
 pub fn one_channel(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    read_channels(ctx, &[ONE_CHANNEL])
+    read_channels(ctx, &[ONE_CHANNEL])?;
+    if let Some((_, Ok(tone))) = ctx.data.podxt_reads.last() {
+        ctx.rec.look_at(
+            "If the PODxt Live is already on this channel, does its display show the same name?",
+            tone.name(),
+        );
+    }
+    Ok(())
 }
 
 pub fn one_bank(ctx: &mut Ctx<'_>) -> Result<(), String> {

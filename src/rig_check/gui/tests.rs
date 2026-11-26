@@ -274,9 +274,59 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
 }
 
 #[test]
+fn different_opens_a_field_and_enter_records_exact_text() {
+    let ctx = egui::Context::default();
+    let mut record = StepRecord::new(StepId(2, 2));
+    record.started = Some("practice".into());
+    record.outcome = Outcome::Passed;
+    record.look_at("Compare the display.", "Practice 5B");
+    let (mut wizard, replies) = wired(Prompt::Finished(record));
+    let output = ctx.run(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1180.0, 800.0))),
+            ..Default::default()
+        },
+        |ctx| wizard.show(ctx),
+    );
+    let position = labels(&output)
+        .into_iter()
+        .find(|(label, _)| label == "Different…")
+        .unwrap()
+        .1;
+    let pointer = |pressed| Event::PointerButton {
+        pos: position,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    frame(
+        &ctx,
+        &mut wizard,
+        vec![Event::PointerMoved(position), pointer(true)],
+    );
+    frame(&ctx, &mut wizard, vec![pointer(false)]);
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(
+        texts
+            .iter()
+            .any(|s| s == "Type exactly what the device shows.")
+    );
+    assert!(replies.try_recv().is_err());
+    frame(
+        &ctx,
+        &mut wizard,
+        vec![Event::Text("  A different tone  ".into())],
+    );
+    frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
+    assert!(
+        matches!(replies.try_recv(), Ok(Reply::Different(value)) if value == "  A different tone  ")
+    );
+}
+
+#[test]
 fn mockups_render_headless() {
     let states = mockup_states();
-    assert_eq!(states.len(), 13);
+    assert_eq!(states.len(), 14);
     let (_, mut wizard) = mockup_states().into_iter().nth(2).unwrap();
     let image = raster::render(400, 300, |ctx| wizard.show(ctx));
     let mut colours = std::collections::BTreeSet::new();

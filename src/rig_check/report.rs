@@ -51,6 +51,9 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
     );
 
     section(&mut out, "SUMMARY");
+    for mismatch in run.look_mismatches() {
+        let _ = writeln!(out, "{mismatch}");
+    }
     let _ = writeln!(
         out,
         "Passed {} · Failed {} · Skipped by you {} · Skipped (tested firmware) {} · Skipped (needs) {} · Not authorized {} · Not available {} · Unverified device {} · Stopped {} · Not reached {}",
@@ -141,6 +144,9 @@ fn render_step(out: &mut String, step: &StepRecord) {
         step.duration_ms.unwrap_or(0),
         step.retries
     );
+    if let Some(look) = &step.look {
+        let _ = writeln!(out, "  Look check: {}", look.report_line());
+    }
     if !step.answers.is_empty() {
         let _ = writeln!(out, "  Your answers:");
         for (question, answer) in &step.answers {
@@ -215,7 +221,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
         .iter()
         .map(|step| {
             format!(
-                "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
+                "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
                 json_string(&step.id.to_string()),
                 json_string(step.title),
                 json_string(step.outcome.code()),
@@ -226,6 +232,11 @@ pub fn json(run: &RunRecord, written: &str) -> String {
                 step.retries,
                 step.messages.len(),
                 json_pairs(&step.answers),
+                step.look.as_ref().map_or("null".into(), |look| format!(
+                    "{{\"expected\":{},\"different\":{}}}",
+                    json_string(&look.expected),
+                    look.different.as_deref().map_or("null".into(), json_string),
+                )),
                 json_pairs(&step.checksums),
                 json_list(&step.evidence),
                 json_list(&step.hints),

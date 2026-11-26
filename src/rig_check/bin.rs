@@ -292,6 +292,9 @@ fn main() {
         let state_file = sink.path.with_extension("state");
         rig_check::run_with_state(&mut port, &mut person, &mut sink, data, state_file).0
     };
+    for mismatch in run.look_mismatches() {
+        println!("{mismatch}");
+    }
     println!(
         "\nRig Check finished: {} passed, {} failed, {} skipped. {}\nWorking report: {}",
         run.count("passed"),

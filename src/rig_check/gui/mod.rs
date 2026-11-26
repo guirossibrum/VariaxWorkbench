@@ -14,7 +14,7 @@ pub mod raster;
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
-use super::runner::{Answer, Decision, Operator, Question, Retry};
+use super::runner::{Answer, Decision, Operator, Question, ResultDecision, Retry};
 use crate::ui::chrome::section_panel;
 use crate::ui::theme::{
     self, AMBER, BG, BODY, DANGER, DIM, LINE, MUTED, OK, PANEL, RAISED, SECTION, SPACE_8, SPACE_12,
@@ -49,6 +49,7 @@ pub enum Prompt {
     Ask(Question),
     Progress(String),
     Finished(StepRecord),
+    Recorded(StepRecord),
     Done {
         run: Box<RunRecord>,
         report: String,
@@ -77,6 +78,7 @@ pub enum Reply {
     Retry(Retry),
     Answer(Answer, String),
     Continue(bool),
+    Different(String),
 }
 
 /// The runner's side: blocks on the window's answer. A closed window
@@ -157,14 +159,21 @@ impl Operator for ChannelOperator {
         self.send(Prompt::Progress(text.into()));
     }
 
-    fn finished(&mut self, record: &StepRecord) -> bool {
+    fn finished(&mut self, record: &StepRecord) -> ResultDecision {
         let prompt = Prompt::Finished(record.clone());
-        if prompt.needs_reply() {
-            matches!(self.request(prompt), Some(Reply::Continue(true)))
-        } else {
+        if !prompt.needs_reply() {
             self.send(prompt);
-            true
+            return ResultDecision::Continue;
         }
+        match self.request(prompt) {
+            Some(Reply::Continue(true)) => ResultDecision::Continue,
+            Some(Reply::Different(value)) => ResultDecision::Different(value),
+            _ => ResultDecision::Stop,
+        }
+    }
+
+    fn result_updated(&mut self, record: &StepRecord) {
+        self.send(Prompt::Recorded(record.clone()));
     }
 
     fn stop_requested(&self) -> bool {
@@ -181,6 +190,7 @@ pub struct Wizard {
     pub progress: Vec<StepRecord>,
     reviewing: Option<Review>,
     start_accepted: bool,
+    different_open: bool,
     pub messages: Vec<String>,
     pub typed: String,
     pub note: String,
@@ -202,6 +212,7 @@ impl Default for Wizard {
             progress: Vec::new(),
             reviewing: None,
             start_accepted: false,
+            different_open: false,
             messages: Vec::new(),
             typed: String::new(),
             note: String::new(),
@@ -286,6 +297,7 @@ impl Wizard {
         }
         self.prompt = None;
         self.typed.clear();
+        self.different_open = false;
         self.note.clear();
         self.focus_armed = true;
     }
@@ -302,6 +314,15 @@ impl Wizard {
         for prompt in incoming {
             match prompt {
                 Prompt::Progress(text) => self.messages.push(text),
+                Prompt::Recorded(record) => {
+                    if let Some(previous) = self
+                        .progress
+                        .iter_mut()
+                        .find(|previous| previous.id == record.id)
+                    {
+                        *previous = record;
+                    }
+                }
                 Prompt::Finished(record) => {
                     self.running = None;
                     self.instruction = None;
@@ -469,7 +490,8 @@ impl Wizard {
             });
             return;
         }
-        if self.back_target().is_some()
+        if !self.different_open
+            && self.back_target().is_some()
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
         {
             self.go_back();
@@ -556,14 +578,36 @@ impl Wizard {
             });
         }
         ui.add_space(SPACE_16);
-        if awaiting {
+        if awaiting && self.different_open {
+            ui.label("Type exactly what the device shows.");
+            let field = ui.text_edit_singleline(&mut self.typed);
+            self.focus_once(&field);
+            let enter = (field.has_focus() || field.lost_focus())
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             ui.horizontal(|ui| {
+                let enabled = !self.typed.is_empty();
+                if button(ui, "Record difference", enabled).clicked() || (enabled && enter) {
+                    self.reply(Reply::Different(self.typed.clone()));
+                } else if button(ui, "Cancel", true).clicked() {
+                    self.different_open = false;
+                    self.typed.clear();
+                    self.focus_armed = true;
+                }
+            });
+        } else if awaiting {
+            ui.horizontal_wrapped(|ui| {
                 let next = button(ui, "Continue", true);
                 self.focus_once(&next);
+                let different = record.outcome.passed()
+                    && record.look.is_some()
+                    && button(ui, "Different…", true).clicked();
                 let stop = button(ui, "Stop", true);
                 let back = button(ui, "Back", self.back_target().is_some());
                 if back.clicked() {
                     self.go_back();
+                } else if different {
+                    self.different_open = true;
+                    self.focus_armed = true;
                 } else if next.clicked() {
                     self.reply(Reply::Continue(true));
                 } else if stop.clicked() {
@@ -843,6 +887,14 @@ impl Wizard {
             .size(SECTION)
             .color(TEXT),
         );
+        let mismatches: Vec<_> = run.look_mismatches().collect();
+        if !mismatches.is_empty() {
+            section_panel(ui, "Display mismatches", |ui| {
+                for mismatch in mismatches {
+                    ui.label(RichText::new(mismatch).size(SECTION).color(DANGER));
+                }
+            });
+        }
         section_panel(ui, "Your rig", |ui| {
             ui.label(
                 RichText::new(plain_result(&run.rig_state))
@@ -1063,6 +1115,13 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     record.started = Some("2026-11-25 22:02:00 UTC".into());
     record.outcome = Outcome::Passed;
     record.show("Channel 1A: Practice 1A");
+    record.look_at(
+        "If the PODxt Live is already on this channel, does its display show the same name?",
+        "Practice 1A",
+    );
+    let mut difference = with_progress(practice(Some(Prompt::Finished(record.clone()))), 10);
+    difference.different_open = true;
+    difference.typed = "Other tone".into();
     let mut run = RunRecord::new(Mode::Practice, "2026-11-25 22:00:00 UTC".into());
     for record in &done {
         *run.step_mut(record.id) = record.clone();
@@ -1100,6 +1159,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     start.start_accepted = true;
     start.go_back();
     states.push(("13-review-start", start));
+    states.push(("14-display-difference", difference));
     states
 }
 

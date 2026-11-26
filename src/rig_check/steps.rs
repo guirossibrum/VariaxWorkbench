@@ -347,6 +347,10 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let current = with_podxt(ctx, PODXT_READ, |session| podxt::read_current(session))?;
     let tone = current.tone;
     ctx.rec.show(format!("Current tone: {}", tone.name()));
+    ctx.rec.look_at(
+        "Does the PODxt Live display show the same current tone name?",
+        tone.name(),
+    );
     for line in tone.describe() {
         ctx.rec.note(format!("  {line}"));
     }

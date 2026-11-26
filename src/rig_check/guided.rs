@@ -342,6 +342,10 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Back on channel {}: the starting tone.",
         start.label()
     ));
+    ctx.rec.look_at(
+        "Check that the PODxt Live display shows the starting channel again.",
+        start.label(),
+    );
     Ok(())
 }
 
