@@ -3,7 +3,7 @@ use eframe::egui::{self, Color32, Modifiers, Pos2, Rect, Vec2};
 use super::assets::{self, UiImage};
 use super::body_canvas::{
     self, BodyCanvas, BodyEvent, DragKind, PickupLimits, PickupPlacement, PickupSprite, PickupZone,
-    SpriteHit,
+    SpriteHit, outline_rect, paint_body_outline, wireframe_path,
 };
 use super::chrome::{self, DialogButton, DialogEvent, Family, LinkState};
 use super::controls::{Selector, Switch};
@@ -698,13 +698,11 @@ fn show_body_alphas(
             image: pickup,
         })
         .collect();
-    let mut canvas = BodyCanvas::new(body, &sprites)
+    let _ = outline;
+    BodyCanvas::new(body, &sprites)
         .alphas(alphas)
-        .interactive(interactive);
-    if let Some(outline) = outline {
-        canvas = canvas.outline(Some(outline));
-    }
-    canvas.show(ui)
+        .interactive(interactive)
+        .show(ui)
 }
 
 fn open_rows(labels: &[String; 6]) -> Vec<TuningRow<'_>> {
@@ -1558,22 +1556,90 @@ fn body_outline_paints_only_when_requested() {
     let outline = UiImage::missing("variax/outline.png");
     let none: &[PickupSprite] = &[];
     let mut harness = Harness::new();
+    let mut art_rect = Rect::NOTHING;
+    let mut panel_min = Pos2::ZERO;
     let with_outline = harness.run(vec![], Default::default(), |_, ui| {
-        let _ = BodyCanvas::new(&body, none)
-            .outline(Some(&outline))
-            .show(ui);
+        let slot = outline_rect(Pos2::ZERO, &outline, 1.0).size();
+        let (space, _) = ui.allocate_exact_size(slot, egui::Sense::hover());
+        panel_min = space.min - egui::vec2(body_canvas::OUTLINE_X, body_canvas::OUTLINE_Y);
+        paint_body_outline(ui, &outline, panel_min, 1.0);
+        art_rect = BodyCanvas::new(&body, none).show(ui).art_rect;
     });
-    assert!(
-        texts(&with_outline)
-            .iter()
-            .any(|label| label.contains("outline.png"))
-    );
+    let center = label_center(&with_outline, "variax/outline.png").expect("outline name");
+    let slot = outline_rect(panel_min, &outline, 1.0);
+    assert_eq!(slot.size(), egui::vec2(238.0, 148.0));
+    assert!((center - slot.center()).length() < 1.0);
+    assert!(!art_rect.contains(center));
+
     let photo_only = harness.run(vec![], Default::default(), |_, ui| {
         let _ = BodyCanvas::new(&body, none).show(ui);
     });
     let labels = texts(&photo_only);
     assert!(labels.iter().all(|label| !label.contains("outline.png")));
     assert!(labels.iter().any(|label| label.contains("spank-body.png")));
+}
+
+#[test]
+fn body_wireframe_uses_the_file_size_and_workbench_paths() {
+    let missing = UiImage::missing("bodies/wireframe/strat.png");
+    assert_eq!(
+        outline_rect(Pos2::new(10.0, 20.0), &missing, 1.0),
+        Rect::from_min_size(Pos2::new(54.0, 23.0), egui::vec2(238.0, 148.0))
+    );
+    for scale in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            outline_rect(Pos2::new(10.0, 20.0), &missing, scale),
+            outline_rect(Pos2::new(10.0, 20.0), &missing, 1.0)
+        );
+    }
+    let mut native = UiImage::missing("bodies/wireframe/lespaul.png");
+    native.missing = false;
+    native.pixels = [90, 140];
+    assert_eq!(
+        outline_rect(Pos2::ZERO, &native, 1.0),
+        Rect::from_min_size(Pos2::new(44.0, 3.0), egui::vec2(90.0, 140.0))
+    );
+    assert_eq!(
+        outline_rect(Pos2::new(100.0, 200.0), &native, 2.0),
+        Rect::from_min_size(Pos2::new(188.0, 206.0), egui::vec2(180.0, 280.0))
+    );
+
+    let rows = [
+        (0x0310_0000, "bodies/wireframe/tele.png"),
+        (0x0310_0001, "bodies/wireframe/tele.png"),
+        (0x0310_0002, "bodies/wireframe/thinline.png"),
+        (0x0310_0003, "bodies/wireframe/strat.png"),
+        (0x0310_0004, "bodies/wireframe/lespaul.png"),
+        (0x0310_0005, "bodies/wireframe/lespaul.png"),
+        (0x0310_0006, "bodies/wireframe/lespaul.png"),
+        (0x0310_0007, "bodies/wireframe/juniorsinglecut.png"),
+        (0x0310_0008, "bodies/wireframe/lpspecial.png"),
+        (0x0310_0009, "bodies/wireframe/firebird.png"),
+        (0x0310_000A, "bodies/wireframe/gretsch6120.png"),
+        (0x0310_000B, "bodies/wireframe/sparklejet.png"),
+        (0x0310_000C, "bodies/wireframe/ric6.png"),
+        (0x0310_000D, "bodies/wireframe/ric12.png"),
+        (0x0310_000E, "bodies/wireframe/es335.png"),
+        (0x0310_000F, "bodies/wireframe/casino.png"),
+        (0x0310_0010, "bodies/wireframe/es175.png"),
+        (0x0310_0011, "bodies/wireframe/super400.png"),
+        (0x0310_0012, "bodies/wireframe/martind28.png"),
+        (0x0310_0013, "bodies/wireframe/martind12_28.png"),
+        (0x0310_0014, "bodies/wireframe/martin018.png"),
+        (0x0310_0015, "bodies/wireframe/guildf212.png"),
+        (0x0310_0016, "bodies/wireframe/j200.png"),
+        (0x0310_0017, "bodies/wireframe/dobro.png"),
+        (0x0310_0018, "bodies/wireframe/sitar.png"),
+        (0x0310_0019, "bodies/wireframe/danelectro.png"),
+        (0x0310_001A, "bodies/wireframe/banjo.png"),
+        (0x0310_001B, "bodies/wireframe/tricone.png"),
+    ];
+    for (id, path) in rows {
+        assert_eq!(wireframe_path(id), path, "{id:#x}");
+    }
+    for id in [0, 0x0310_001C, u32::MAX] {
+        assert_eq!(wireframe_path(id), "bodies/wireframe/strat.png");
+    }
 }
 
 #[test]

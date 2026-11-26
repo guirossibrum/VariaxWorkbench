@@ -8,8 +8,9 @@
 //! #189 hits a pickup only where the transformed pixel's alpha is above 204,
 //! measures the move circle on the padded image buffer, drags from the press
 //! point, rebases rotation when Ctrl changes, and selects on mouse press.
-//! #190 places a pickup from that body's `UpdateBodyImage` limits. #191
-//! passes the wireframe through [`BodyCanvas::outline`].
+//! #190 places a pickup from that body's `UpdateBodyImage` limits. #191 paints
+//! each body's wireframe on the Body tab at its native size ([`paint_body_outline`]).
+//! That drawing is not stretched over the guitar photo.
 
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Vec2, vec2};
 
@@ -42,6 +43,11 @@ pub const FINE_ROTATE: f32 = 0.1;
 ///
 /// 120 / 426 is the Spank pickup on the Spank body.
 pub const FALLBACK_SPRITE_WIDTH: f32 = 120.0 / 426.0;
+/// Body-panel origin of the wireframe (`l6Panel2.Add(..., 44, 3, 238, 148)`).
+pub const OUTLINE_X: f32 = 44.0;
+pub const OUTLINE_Y: f32 = 3.0;
+/// Size of that label before `SetImage` replaces it with the file's size.
+pub const OUTLINE_SLOT: Vec2 = vec2(238.0, 148.0);
 
 /// Body photo origin on the Workbench panel, in parent pixels.
 pub const BODY_IMAGE_X: i32 = 12;
@@ -451,7 +457,6 @@ pub struct PickupSprite<'a> {
 
 pub struct BodyCanvas<'a> {
     body: &'a UiImage,
-    outline: Option<&'a UiImage>,
     pickups: &'a [PickupSprite<'a>],
     /// One unmultiplied RGBA buffer per pickup, in pickup order.
     alphas: &'a [Option<&'a [u8]>],
@@ -463,7 +468,6 @@ impl<'a> BodyCanvas<'a> {
     pub fn new(body: &'a UiImage, pickups: &'a [PickupSprite<'a>]) -> Self {
         Self {
             body,
-            outline: None,
             pickups,
             alphas: &[],
             placement: PickupPlacement::default(),
@@ -476,13 +480,6 @@ impl<'a> BodyCanvas<'a> {
     /// A missing entry is an opaque rectangle of `image.pixels`.
     pub fn alphas(mut self, alphas: &'a [Option<&'a [u8]>]) -> Self {
         self.alphas = alphas;
-        self
-    }
-
-    /// Draw a body-tab wireframe over the photo. A missing file paints its
-    /// name, which is the #191 placeholder.
-    pub fn outline(mut self, outline: Option<&'a UiImage>) -> Self {
-        self.outline = outline;
         self
     }
 
@@ -511,9 +508,6 @@ impl<'a> BodyCanvas<'a> {
         let art_rect = Rect::from_center_size(stage.center(), size);
         paint_well(ui, stage);
         paint_image(ui, self.body, art_rect);
-        if let Some(outline) = self.outline {
-            paint_image(ui, outline, art_rect);
-        }
 
         let paint_order = paint_order(self.pickups);
         let scale = placement.screen_scale(art_rect);
@@ -630,6 +624,78 @@ fn paint_well(ui: &egui::Ui, stage: Rect) {
         Stroke::new(1.0_f32, LINE),
         egui::StrokeKind::Inside,
     );
+}
+
+/// `Images.GetBodyWireImagePath`. An id with no entry is
+/// `bodies/wireframe/strat.png`. Spank (`0x0310_0003`) is that file too.
+pub fn wireframe_path(model_id: u32) -> &'static str {
+    match model_id {
+        0x0310_0000..=0x0310_0001 => "bodies/wireframe/tele.png",
+        0x0310_0002 => "bodies/wireframe/thinline.png",
+        0x0310_0003 => "bodies/wireframe/strat.png",
+        0x0310_0004..=0x0310_0006 => "bodies/wireframe/lespaul.png",
+        0x0310_0007 => "bodies/wireframe/juniorsinglecut.png",
+        0x0310_0008 => "bodies/wireframe/lpspecial.png",
+        0x0310_0009 => "bodies/wireframe/firebird.png",
+        0x0310_000A => "bodies/wireframe/gretsch6120.png",
+        0x0310_000B => "bodies/wireframe/sparklejet.png",
+        0x0310_000C => "bodies/wireframe/ric6.png",
+        0x0310_000D => "bodies/wireframe/ric12.png",
+        0x0310_000E => "bodies/wireframe/es335.png",
+        0x0310_000F => "bodies/wireframe/casino.png",
+        0x0310_0010 => "bodies/wireframe/es175.png",
+        0x0310_0011 => "bodies/wireframe/super400.png",
+        0x0310_0012 => "bodies/wireframe/martind28.png",
+        0x0310_0013 => "bodies/wireframe/martind12_28.png",
+        0x0310_0014 => "bodies/wireframe/martin018.png",
+        0x0310_0015 => "bodies/wireframe/guildf212.png",
+        0x0310_0016 => "bodies/wireframe/j200.png",
+        0x0310_0017 => "bodies/wireframe/dobro.png",
+        0x0310_0018 => "bodies/wireframe/sitar.png",
+        0x0310_0019 => "bodies/wireframe/danelectro.png",
+        0x0310_001A => "bodies/wireframe/banjo.png",
+        0x0310_001B => "bodies/wireframe/tricone.png",
+        _ => "bodies/wireframe/strat.png",
+    }
+}
+
+/// Where the Body-tab wireframe is drawn.
+///
+/// Workbench adds the label at (44, 3) with a 238×148 slot, then
+/// `L6ImageLabel.SetImage(image, true)` resizes it to the file's width and
+/// height. A missing file, or one with no pixels, keeps the slot. `scale`
+/// multiplies the offset and the size. A non-positive or non-finite scale
+/// is 1.
+pub fn outline_rect(panel_min: Pos2, image: &UiImage, scale: f32) -> Rect {
+    let scale = outline_scale(scale);
+    let origin = panel_min + vec2(OUTLINE_X, OUTLINE_Y) * scale;
+    Rect::from_min_size(origin, outline_pixels(image) * scale)
+}
+
+/// Paint one body's wireframe on the Body tab, at the file's native size.
+///
+/// `panel_min` is the body panel's top-left, not the guitar photo. `paintIcon`
+/// draws the image 1:1 from the label origin, so a loaded file is not fitted
+/// into 238×148 and is not drawn on the photo. A missing file paints its name
+/// in that slot.
+pub fn paint_body_outline(ui: &egui::Ui, image: &UiImage, panel_min: Pos2, scale: f32) {
+    paint_image(ui, image, outline_rect(panel_min, image, scale));
+}
+
+fn outline_pixels(image: &UiImage) -> Vec2 {
+    if !image.missing && image.pixels[0] > 0 && image.pixels[1] > 0 {
+        vec2(image.pixels[0] as f32, image.pixels[1] as f32)
+    } else {
+        OUTLINE_SLOT
+    }
+}
+
+fn outline_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
 }
 
 fn paint_image(ui: &egui::Ui, image: &UiImage, rect: Rect) {

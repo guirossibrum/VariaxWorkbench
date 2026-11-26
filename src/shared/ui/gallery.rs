@@ -4,7 +4,7 @@
 //! shell tab would edit `src/app/shell`, which this library does not do.
 
 use super::assets::UiImage;
-use super::body_canvas::{BodyCanvas, BodyEvent, PickupSprite};
+use super::body_canvas::{self, BodyCanvas, BodyEvent, PickupSprite};
 use super::chrome::{self, DialogButton, DocumentTab, Family, LinkState};
 use super::controls::{self, Selector, Switch};
 use super::knob::Knob;
@@ -201,6 +201,16 @@ impl GalleryState {
         ui.vertical(|ui| {
             caption(ui, "Body");
             ui.checkbox(&mut self.show_outline, "Outline");
+            if self.show_outline {
+                let slot = body_canvas::outline_rect(egui::Pos2::ZERO, &self.outline, 1.0).size();
+                let (space, _) = ui.allocate_exact_size(slot, egui::Sense::hover());
+                body_canvas::paint_body_outline(
+                    ui,
+                    &self.outline,
+                    space.min - egui::vec2(body_canvas::OUTLINE_X, body_canvas::OUTLINE_Y),
+                    1.0,
+                );
+            }
             for (index, label) in ["Pickup 1", "Pickup 2"].into_iter().enumerate() {
                 ui.selectable_value(
                     &mut self.selected_pickup,
@@ -226,11 +236,10 @@ impl GalleryState {
             },
         ];
         let alphas = [self.pickup_rgba.as_deref(); 2];
-        let mut canvas = BodyCanvas::new(&self.body, &pickups).alphas(&alphas);
-        if self.show_outline {
-            canvas = canvas.outline(Some(&self.outline));
-        }
-        let events = canvas.show(ui).events;
+        let events = BodyCanvas::new(&self.body, &pickups)
+            .alphas(&alphas)
+            .show(ui)
+            .events;
         self.apply_body(events);
     }
 
