@@ -3,8 +3,8 @@
 
 use super::{
     BankKind, CC_GAP, CurrentTone, EditBuffer, IDENTITY_FAMILY, LiveControl, Location,
-    PODXT_LIVE_MEMBER, PodxtRequest, STORED_GAP, STORED_WINDOW, WINDOW, is_edit_buffer,
-    read_current,
+    PODXT_LIVE_MEMBER, PODXT_LIVE_VERSION, PodxtRequest, STORED_GAP, STORED_WINDOW, WINDOW,
+    is_edit_buffer, read_current,
 };
 use crate::{
     identity::Identity,
@@ -34,7 +34,7 @@ pub fn check_live_identity(identity: &Identity) -> Result<(), String> {
     if identity.is_line6()
         && identity.family == IDENTITY_FAMILY
         && identity.member == PODXT_LIVE_MEMBER
-        && identity.version == [0, 3, 0, 1]
+        && identity.version == PODXT_LIVE_VERSION
     {
         Ok(())
     } else {

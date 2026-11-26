@@ -10,6 +10,7 @@
 
 pub mod backup;
 pub mod controls;
+pub mod firmware_read;
 pub mod models;
 mod procedures;
 mod store;
@@ -45,6 +46,7 @@ use std::time::Duration;
 
 pub const IDENTITY_FAMILY: u16 = 0x0003;
 pub const PODXT_LIVE_MEMBER: u16 = 0x000a;
+pub const PODXT_LIVE_VERSION: [u8; 4] = [0, 3, 0, 1];
 /// Line 6 Edit waits 1 s for the edit buffer; this allows a little more.
 const WINDOW: Duration = Duration::from_secs(2);
 pub const EDIT_BUFFER_LEN: usize = 168;
