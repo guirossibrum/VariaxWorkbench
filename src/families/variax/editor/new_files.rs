@@ -5,7 +5,7 @@ use super::{
 use variax_workbench::bundle::BackupBundle;
 use variax_workbench::{bundle::BundleFile, document::save_new};
 
-#[cfg(all(test, feature = "usb"))]
+#[cfg(test)]
 #[path = "../file/bundle/synthetic_backup.rs"]
 pub(super) mod synthetic_backup;
 
