@@ -6,7 +6,7 @@ use notice::Notice;
 use super::ProductFamily;
 use identity::{Guitar, Identify, Job, JobKind, Outcome, Worker};
 use std::collections::BTreeMap;
-use variax_workbench::device_probe::{MetadataError, OsMetadataSource, UsbDevice};
+use variax_workbench::device_probe::{MetadataError, UsbDevice};
 use variax_workbench::firmware_notice::FirmwareNotice;
 
 #[cfg(test)]
@@ -73,7 +73,16 @@ pub(super) struct DetectedDevice {
 }
 
 pub(super) trait PresenceSource {
-    fn metadata(&self) -> &dyn OsMetadataSource;
+    #[cfg(any(test, target_os = "linux"))]
+    fn metadata(&self) -> &dyn variax_workbench::device_probe::OsMetadataSource;
+
+    #[cfg(any(test, target_os = "linux"))]
+    fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
+        self.metadata().usb_devices()
+    }
+
+    #[cfg(not(any(test, target_os = "linux")))]
+    fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError>;
     #[cfg(not(test))]
     fn usb_address(&self, path: &str) -> Option<u8>;
 
@@ -98,12 +107,48 @@ struct CachedUsbPresence(variax_workbench::device_probe::LinuxSysfs);
 
 #[cfg(all(target_os = "linux", not(test)))]
 impl PresenceSource for CachedUsbPresence {
-    fn metadata(&self) -> &dyn OsMetadataSource {
+    fn metadata(&self) -> &dyn variax_workbench::device_probe::OsMetadataSource {
         &self.0
     }
 
     fn usb_address(&self, path: &str) -> Option<u8> {
         self.0.usb_device_address(path)
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+#[derive(Default)]
+struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, u8>>);
+
+#[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+impl PresenceSource for MacUsbPresence {
+    fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
+        use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
+        let attachments = run_if_unlocked(
+            Gate::OsDiscovery,
+            line6_devices::transport::usb::macos::attachments,
+        )
+        .map_err(MetadataError::Unreadable)?;
+        let mut addresses = self.0.borrow_mut();
+        addresses.clear();
+        Ok(attachments
+            .into_iter()
+            .map(|attachment| {
+                addresses.insert(attachment.path.clone(), attachment.address);
+                UsbDevice {
+                    sysfs_name: attachment.path,
+                    vendor_id: 0x0e41,
+                    product_id: 0x4650,
+                    product: Some("PODxt Live".into()),
+                    bcd_device: None,
+                    interfaces: vec![],
+                }
+            })
+            .collect())
+    }
+
+    fn usb_address(&self, path: &str) -> Option<u8> {
+        self.0.borrow().get(path).copied()
     }
 }
 
@@ -302,13 +347,22 @@ impl DetectionService {
                 variax_workbench::device_probe::LinuxSysfs::new(),
             ))))
         }
-        #[cfg(any(not(target_os = "linux"), test))]
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        {
+            variax_workbench::offline_device_notice()
+                .is_none()
+                .then(|| Self::new(Box::new(MacUsbPresence::default())))
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", not(test)),
+            all(target_os = "macos", feature = "usb", not(test))
+        )))]
         {
             None
         }
     }
 
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test, all(target_os = "macos", feature = "usb")))]
     pub fn new(source: Box<dyn PresenceSource>) -> Self {
         Self {
             source,
@@ -368,7 +422,7 @@ impl DetectionService {
 
     fn refresh_attachments(&mut self, profiles: &[DiscoveryProfile]) -> Result<(), MetadataError> {
         let mut listed = BTreeMap::new();
-        for device in self.source.metadata().usb_devices()? {
+        for device in self.source.usb_devices()? {
             if listed.insert(device.sysfs_name.clone(), device).is_some() {
                 return Err(MetadataError::Unreadable(
                     "the USB device list (duplicate attachment path)".into(),
@@ -552,6 +606,9 @@ impl DetectionService {
             return;
         };
         let job = queued.or_else(|| {
+            if cfg!(target_os = "macos") && !cfg!(test) {
+                return None;
+            }
             let mut bridges = self
                 .attachments
                 .values()

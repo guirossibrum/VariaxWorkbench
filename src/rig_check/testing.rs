@@ -906,3 +906,181 @@ mod tests {
         assert!(at_start(&rig));
     }
 }
+
+#[cfg(feature = "usb")]
+mod macos_owner {
+    use super::*;
+    use crate::rig_check::{
+        approvals::MAC_OWNER_STEPS,
+        catalogue::{MAC_OWNER_START_NOTICE, RIG_GUARD},
+        computer::{FileSource, UsbDevice},
+        port::{PracticePort, RigPort},
+        practice::{Faults, SimRig},
+        runner::{NoReport, Runner},
+        steps::RunData,
+    };
+    use line6_devices::{identity::REQUEST, session::Link};
+    use std::{cell::RefCell, rc::Rc};
+
+    struct OwnerPort {
+        inner: PracticePort,
+        opens: Vec<StepId>,
+        releases: usize,
+        inventory_calls: usize,
+    }
+
+    impl RigPort for OwnerPort {
+        fn mode(&self) -> Mode {
+            Mode::Practice
+        }
+
+        fn macos_owner_test(&self) -> bool {
+            true
+        }
+
+        fn macos_inventory(&mut self) -> Result<Vec<UsbDevice>, String> {
+            self.inventory_calls += 1;
+            Ok(vec![UsbDevice {
+                port: "1-2".into(),
+                address: Some(5),
+                vendor: 0x0e41,
+                product: 0x4650,
+                name: Some("PODxt Live".into()),
+                manufacturer: None,
+                serial: None,
+                speed: None,
+                bus: Some(1),
+                interfaces: Vec::new(),
+                node: None,
+            }])
+        }
+
+        fn podxt(&mut self, step: StepId) -> Result<&mut dyn Link, String> {
+            self.opens.push(step);
+            self.inner.podxt(step)
+        }
+
+        fn variax(&mut self, step: StepId) -> Result<&mut dyn Link, String> {
+            self.opens.push(step);
+            self.inner.variax(step)
+        }
+
+        fn variax_claimed(&self) -> bool {
+            self.inner.variax_claimed()
+        }
+
+        fn release_variax(&mut self) -> Result<Vec<String>, String> {
+            self.releases += 1;
+            self.inner.release_variax()
+        }
+
+        fn system(&self) -> Box<dyn FileSource + '_> {
+            panic!("the Mac owner test uses only its attachment inventory")
+        }
+    }
+
+    fn run(
+        faults: Faults,
+        person: &mut Script,
+    ) -> (
+        OwnerPort,
+        Rc<RefCell<SimRig>>,
+        crate::rig_check::record::RunRecord,
+    ) {
+        let rig = SimRig::shared(faults);
+        let mut port = OwnerPort {
+            inner: PracticePort::new(Rc::clone(&rig)),
+            opens: vec![],
+            releases: 0,
+            inventory_calls: 0,
+        };
+        let (run, _) = Runner::new(&mut port, person, &mut NoReport, RunData::default()).run();
+        (port, rig, run)
+    }
+
+    #[test]
+    fn scoped_run_offers_five_cards_sends_two_identities_and_only_releases_usb_at_end() {
+        let mut person = Script::run_all();
+        person.repeat_once = Some(StepId(2, 1));
+        let (port, rig, run) = run(Faults::default(), &mut person);
+        assert_eq!(person.notices, [MAC_OWNER_START_NOTICE]);
+        assert_eq!(person.cards, MAC_OWNER_STEPS);
+        assert_eq!(port.inventory_calls, 1);
+        assert_eq!(port.opens, [StepId(2, 1), StepId(1, 2), StepId(3, 1)]);
+        assert_eq!(port.releases, 2);
+        assert!(!port.variax_claimed());
+        assert!(
+            MAC_OWNER_STEPS
+                .iter()
+                .all(|id| run.step(*id).outcome.passed())
+        );
+        assert!(run.step(RIG_GUARD).messages.is_empty());
+        assert!(!run.step(StepId(2, 1)).can_repeat());
+        assert_eq!(
+            rig.borrow().written,
+            [
+                ("PodxtMidi", REQUEST.to_vec()),
+                ("VariaxViaPodxt", REQUEST.to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn scoped_run_stops_after_unverified_podxt_without_offering_variax_evidence() {
+        let mut person = Script::run_all();
+        let (port, rig, run) = run(
+            Faults {
+                unverified_podxt: true,
+                ..Faults::default()
+            },
+            &mut person,
+        );
+        assert_eq!(person.cards, MAC_OWNER_STEPS[..3]);
+        assert_eq!(person.notices, [MAC_OWNER_START_NOTICE]);
+        assert_eq!(port.opens, [StepId(2, 1)]);
+        assert!(run.rig_state.contains("did not report firmware 3.01"));
+        assert_eq!(rig.borrow().written, [("PodxtMidi", REQUEST.to_vec())]);
+    }
+
+    #[test]
+    fn scoped_run_stops_on_driver_conflict_before_any_guitar_message() {
+        let mut person = Script::run_all();
+        let (port, rig, run) = run(
+            Faults {
+                interface_busy: true,
+                ..Faults::default()
+            },
+            &mut person,
+        );
+        assert_eq!(person.cards, MAC_OWNER_STEPS[..4]);
+        assert_eq!(port.opens, [StepId(2, 1), StepId(1, 2)]);
+        assert!(matches!(run.step(StepId(1, 2)).outcome, Outcome::Failed(_)));
+        assert_eq!(rig.borrow().written, [("PodxtMidi", REQUEST.to_vec())]);
+    }
+
+    #[test]
+    fn silent_variax_gets_at_most_two_questions_and_no_cable_or_recovery_prompt() {
+        let mut person = Script::run_all();
+        person.retry_variax = true;
+        let (port, rig, run) = run(
+            Faults {
+                variax_silent: true,
+                ..Faults::default()
+            },
+            &mut person,
+        );
+        assert_eq!(person.cards, MAC_OWNER_STEPS);
+        assert!(person.instructions.is_empty());
+        assert_eq!(port.releases, 2);
+        assert!(!port.variax_claimed());
+        assert!(matches!(run.step(StepId(3, 1)).outcome, Outcome::Failed(_)));
+        assert_eq!(
+            rig.borrow().written,
+            [
+                ("PodxtMidi", REQUEST.to_vec()),
+                ("VariaxViaPodxt", REQUEST.to_vec()),
+                ("VariaxViaPodxt", REQUEST.to_vec()),
+            ]
+        );
+    }
+}

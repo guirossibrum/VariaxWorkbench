@@ -95,20 +95,36 @@ pub const fn approved(id: StepId) -> bool {
     }
 }
 
+/// The first Mac owner test has a fixed sequence ending at guitar identity.
+pub const MAC_OWNER_STEPS: [StepId; 5] = [
+    StepId(0, 2),
+    StepId(1, 1),
+    StepId(2, 1),
+    StepId(1, 2),
+    StepId(3, 1),
+];
+
 /// Whether a step can run in real mode. Device steps require their
 /// approval and every gate they name. The offline PODxt comparison also
 /// has its own approval, separate from the library's addressed read.
 pub fn real_device_check(id: StepId) -> Result<(), String> {
+    device_check(id, crate::macos_owner_test_enabled())
+}
+
+fn device_check(id: StepId, mac_owner: bool) -> Result<(), String> {
     let Some(step) = catalogue::step(id) else {
         return Err(format!("Step {id} is not in the catalogue."));
     };
+    if mac_owner && !MAC_OWNER_STEPS.contains(&id) {
+        return Err(format!("Step {id} is outside the Mac USB identity test."));
+    }
     if id == catalogue::PODXT_COMPATIBILITY && !approved(id) {
         return Err(format!("Step {id} is {NOT_AUTHORIZED}."));
     }
     if !step.needs_device_approval() {
         return Ok(());
     }
-    if let Some(notice) = crate::offline_device_notice() {
+    if !mac_owner && let Some(notice) = crate::offline_device_notice() {
         return Err(notice.into());
     }
     if !approved(id) {
@@ -162,6 +178,25 @@ mod tests {
         assert!(approved(id));
         assert!(!catalogue::step(id).unwrap().needs_device_approval());
         assert!(real_device_check(id).is_ok());
+    }
+
+    #[test]
+    fn mac_owner_test_approves_only_the_five_card_steps() {
+        let allowed: Vec<_> = STEPS
+            .iter()
+            .filter(|step| device_check(step.id, true).is_ok())
+            .map(|step| step.id)
+            .collect();
+        assert_eq!(
+            allowed,
+            [
+                StepId(0, 2),
+                StepId(1, 1),
+                StepId(1, 2),
+                StepId(2, 1),
+                StepId(3, 1)
+            ]
+        );
     }
 
     #[test]

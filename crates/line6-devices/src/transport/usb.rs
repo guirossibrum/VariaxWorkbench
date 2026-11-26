@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 pub use super::InterfaceSpec;
 pub use crate::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
 
+#[cfg(any(target_os = "macos", test))]
+pub mod macos;
 mod podxt;
 pub use podxt::PODXT_DIRECT_USB_APPROVED;
 
@@ -29,6 +31,8 @@ pub struct UsbInterfaceLink<Rig = Option<DeviceLock>> {
 
 impl UsbInterfaceLink {
     pub fn open(spec: InterfaceSpec) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        macos::check_open(spec, false)?;
         podxt::check_open(spec, false)?;
         let devices = rusb::devices().map_err(|e| format!("USB list: {e}"))?;
         let found: Vec<_> = devices
@@ -63,7 +67,7 @@ impl UsbInterfaceLink {
         address: u8,
         rig: DeviceLock,
     ) -> Result<Self, String> {
-        let device = with_attachment(&rig, spec, path, address, Ok)?;
+        let device = with_matching_attachment(&rig, spec, path, address, Ok)?;
         Self::open_device(spec, &device, Some(rig))
     }
 
@@ -87,7 +91,7 @@ impl UsbInterfaceLink {
         address: u8,
         rig: &'rig DeviceLock,
     ) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
-        with_attachment(rig, spec, path, address, |device| {
+        with_matching_attachment(rig, spec, path, address, |device| {
             UsbInterfaceLink::open_device(spec, &device, rig)
         })
     }
@@ -99,12 +103,15 @@ impl<Rig> UsbInterfaceLink<Rig> {
         device: &rusb::Device<rusb::GlobalContext>,
         rig: Rig,
     ) -> Result<Self, String> {
-        if podxt::targets_interface(spec) {
-            podxt::verify_descriptor(device)?;
+        if cfg!(target_os = "macos") || podxt::targets_interface(spec) {
+            podxt::verify_descriptor(device, spec)?;
         }
-        let handle = device
-            .open()
-            .map_err(|e| format!("Cannot open the USB device: {e}"))?;
+        let handle = device.open().map_err(|error| {
+            #[cfg(target_os = "macos")]
+            return macos::open_error(error);
+            #[cfg(not(target_os = "macos"))]
+            format!("Cannot open the USB device: {error}")
+        })?;
         let mut link = Self {
             spec,
             handle,
@@ -125,26 +132,34 @@ impl<Rig> UsbInterfaceLink<Rig> {
 
     fn prepare(&mut self) -> Result<(), String> {
         let interface = self.spec.interface;
-        let driver_active = self
-            .handle
-            .kernel_driver_active(interface)
-            .map_err(|e| format!("Kernel driver check: {e}"))?;
-        #[cfg(target_os = "linux")]
-        if podxt::targets_interface(self.spec) {
-            if !driver_active {
-                return Err("PODxt Live interface 0 has no active kernel driver.".into());
+        #[cfg(target_os = "macos")]
+        macos::check_interfaces(|number| self.handle.kernel_driver_active(number))?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            let driver_active = self
+                .handle
+                .kernel_driver_active(interface)
+                .map_err(|e| format!("Kernel driver check: {e}"))?;
+            #[cfg(target_os = "linux")]
+            if podxt::targets_interface(self.spec) {
+                if !driver_active {
+                    return Err("PODxt Live interface 0 has no active kernel driver.".into());
+                }
+                podxt::require_driver(&self.handle)?;
             }
-            podxt::require_driver(&self.handle)?;
+            if driver_active {
+                self.handle
+                    .detach_kernel_driver(interface)
+                    .map_err(|e| format!("Detach interface {interface}: {e}"))?;
+                self.detached = true;
+            }
         }
-        if driver_active {
-            self.handle
-                .detach_kernel_driver(interface)
-                .map_err(|e| format!("Detach interface {interface}: {e}"))?;
-            self.detached = true;
-        }
-        self.handle
-            .claim_interface(interface)
-            .map_err(|e| format!("Claim interface {interface}: {e}"))?;
+        self.handle.claim_interface(interface).map_err(|error| {
+            #[cfg(target_os = "macos")]
+            return macos::open_error(error);
+            #[cfg(not(target_os = "macos"))]
+            format!("Claim interface {interface}: {error}")
+        })?;
         self.claimed = true;
         self.handle
             .set_alternate_setting(interface, self.spec.altsetting)
@@ -279,13 +294,26 @@ pub fn reattach_variax_driver(rig: &DeviceLock, path: &str, address: u8) -> Resu
 
 /// Apply an operation to the single USB device at the verified physical
 /// port and enumeration address. Other devices of the same model are ignored.
+#[cfg(not(target_os = "macos"))]
 pub fn with_attachment<T>(
+    rig: &DeviceLock,
+    spec: InterfaceSpec,
+    path: &str,
+    address: u8,
+    open: impl FnOnce(rusb::Device<rusb::GlobalContext>) -> Result<T, String>,
+) -> Result<T, String> {
+    with_matching_attachment(rig, spec, path, address, open)
+}
+
+fn with_matching_attachment<T>(
     _rig: &DeviceLock,
     spec: InterfaceSpec,
     path: &str,
     address: u8,
     open: impl FnOnce(rusb::Device<rusb::GlobalContext>) -> Result<T, String>,
 ) -> Result<T, String> {
+    #[cfg(target_os = "macos")]
+    macos::check_open(spec, true)?;
     podxt::check_open(spec, true)?;
     let devices = rusb::devices().map_err(|e| format!("USB list: {e}"))?;
     with_matching_device(
@@ -345,12 +373,10 @@ impl<Rig> Link for UsbInterfaceLink<Rig> {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        write_packets(
-            self.spec,
-            bytes,
-            |endpoint, chunk, timeout| self.handle.write_interrupt(endpoint, chunk, timeout),
-            std::thread::sleep,
-        )
+        #[cfg(target_os = "macos")]
+        return macos::write_identity(bytes, |bytes| self.write_usb_packets(bytes));
+        #[cfg(not(target_os = "macos"))]
+        self.write_usb_packets(bytes)
     }
 
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
@@ -365,6 +391,17 @@ impl<Rig> Link for UsbInterfaceLink<Rig> {
 
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+}
+
+impl<Rig> UsbInterfaceLink<Rig> {
+    fn write_usb_packets(&mut self, bytes: &[u8]) -> Result<(), String> {
+        write_packets(
+            self.spec,
+            bytes,
+            |endpoint, chunk, timeout| self.handle.write_interrupt(endpoint, chunk, timeout),
+            std::thread::sleep,
+        )
     }
 }
 

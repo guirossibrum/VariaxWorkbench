@@ -23,17 +23,26 @@ pub(in crate::editor) struct Job {
 #[derive(Debug)]
 pub(in crate::editor) enum Guitar {
     #[cfg_attr(
-        not(any(test, all(feature = "usb", target_os = "linux"))),
+        not(any(
+            test,
+            all(feature = "usb", any(target_os = "linux", target_os = "macos"))
+        )),
         allow(dead_code)
     )]
     Verified(&'static str),
     #[cfg_attr(
-        not(any(test, all(feature = "usb", target_os = "linux"))),
+        not(any(
+            test,
+            all(feature = "usb", any(target_os = "linux", target_os = "macos"))
+        )),
         allow(dead_code)
     )]
     Silent,
     #[cfg_attr(
-        not(any(test, all(feature = "usb", target_os = "linux"))),
+        not(any(
+            test,
+            all(feature = "usb", any(target_os = "linux", target_os = "macos"))
+        )),
         allow(dead_code)
     )]
     Unverified(UnverifiedGuitarReply),
@@ -49,12 +58,18 @@ pub(in crate::editor) enum Guitar {
 #[derive(Debug)]
 pub(in crate::editor) enum Outcome {
     #[cfg_attr(
-        not(any(test, all(feature = "usb", target_os = "linux"))),
+        not(any(
+            test,
+            all(feature = "usb", any(target_os = "linux", target_os = "macos"))
+        )),
         allow(dead_code)
     )]
     Deferred,
     #[cfg_attr(
-        not(any(test, all(feature = "usb", target_os = "linux"))),
+        not(any(
+            test,
+            all(feature = "usb", any(target_os = "linux", target_os = "macos"))
+        )),
         allow(dead_code)
     )]
     OtherProcessBusy,
@@ -64,7 +79,10 @@ pub(in crate::editor) enum Outcome {
     )]
     Notices(Vec<Notice>),
     #[cfg_attr(
-        not(any(test, all(feature = "usb", target_os = "linux"))),
+        not(any(
+            test,
+            all(feature = "usb", any(target_os = "linux", target_os = "macos"))
+        )),
         allow(dead_code)
     )]
     UnverifiedPod(FirmwareNotice),
@@ -130,6 +148,107 @@ pub(super) fn platform() -> Option<Identify> {
     #[cfg(any(not(feature = "usb"), not(target_os = "linux"), test))]
     {
         None
+    }
+}
+
+#[cfg(all(feature = "usb", target_os = "macos", not(test)))]
+pub(super) fn platform() -> Option<Identify> {
+    variax_workbench::offline_device_notice()
+        .is_none()
+        .then_some(macos::identify)
+}
+
+#[cfg(all(feature = "usb", target_os = "macos", not(test)))]
+mod macos {
+    use super::*;
+    use line6_devices::{
+        device_lock::{DeviceLock, LockError},
+        family::variax,
+        gate::{GatePolicy, Operation},
+        session::{Quiet, Session},
+        transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE},
+    };
+    use variax_workbench::{
+        hardware_gates::{Gate, run_if_unlocked},
+        identity_stage::{BRIDGE_VERSION, GUITAR_VERSION},
+    };
+
+    struct GuitarIdentityOnly;
+    impl GatePolicy for GuitarIdentityOnly {
+        fn allows(&self, operation: Operation) -> bool {
+            operation == Operation::VariaxIdentity
+        }
+    }
+
+    pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
+        let Some((path, address)) = job.attachment.usb_location() else {
+            return Outcome::Deferred;
+        };
+        let result = run_if_unlocked(Gate::OsDiscovery, || {
+            run_if_unlocked(Gate::IdentityRequest, || {
+                run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, || {
+                    identify_on(path, address, cancel)
+                })
+            })
+        });
+        result.unwrap_or_else(|error| Outcome::Finished {
+            pod_firmware: None,
+            guitar: Guitar::Unavailable(error),
+        })
+    }
+
+    fn identify_on(path: &str, address: u8, cancel: &AtomicBool) -> Result<Outcome, String> {
+        let rig = match DeviceLock::acquire() {
+            Ok(rig) => rig,
+            Err(LockError::Busy) => return Ok(Outcome::OtherProcessBusy),
+            Err(LockError::BusyHere) => return Ok(Outcome::Deferred),
+            Err(error) => return Err(error.to_string()),
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(Outcome::Deferred);
+        }
+        {
+            let mut link = UsbInterfaceLink::open_attachment_borrowed(
+                line6_devices::transport::usb::macos::PODXT_MIDI,
+                path,
+                address,
+                &rig,
+            )?;
+            let pod = super::pod::identify(&mut link, cancel);
+            link.finish()?;
+            if let Some(notice) = pod? {
+                return Ok(Outcome::UnverifiedPod(notice));
+            }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(Outcome::Deferred);
+        }
+        let result = (|| {
+            let mut link = UsbInterfaceLink::open_attachment_borrowed(
+                VARIAX_VIA_PODXT_LIVE,
+                path,
+                address,
+                &rig,
+            )?;
+            let mut quiet = Quiet;
+            let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
+            session.require_expected_sysex();
+            let reply = variax::identify_if_present(&mut session);
+            link.finish()?;
+            match reply? {
+                Some(reply) if variax::procedures::check_identity(&reply.identity).is_ok() => {
+                    Ok(Guitar::Verified(GUITAR_VERSION))
+                }
+                Some(reply) => UnverifiedGuitarReply::from_identity(&reply.identity)
+                    .map(Guitar::Unverified)
+                    .ok_or_else(|| "Could not classify the guitar identity reply.".into()),
+                None => Ok(Guitar::Silent),
+            }
+        })();
+        Ok(Outcome::Finished {
+            pod_firmware: Some(BRIDGE_VERSION),
+            guitar: result.unwrap_or_else(Guitar::Unavailable),
+        })
     }
 }
 
@@ -344,7 +463,7 @@ mod live {
     }
 }
 
-#[cfg(all(feature = "usb", any(test, target_os = "linux")))]
+#[cfg(all(feature = "usb", any(test, target_os = "linux", target_os = "macos")))]
 mod pod {
     use super::*;
     use line6_devices::family::podxt::PodxtRequest;

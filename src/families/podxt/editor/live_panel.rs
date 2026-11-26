@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(all(not(target_os = "linux"), not(test), feature = "usb"))]
+use variax_workbench::hardware_gates::Gate;
 
 mod edit;
 mod locker;

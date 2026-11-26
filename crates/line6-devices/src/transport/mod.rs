@@ -10,7 +10,7 @@ use crate::session::Path;
 use std::time::Duration;
 
 /// Where one control interface lives and how it frames writes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InterfaceSpec {
     pub vendor: u16,
     pub product: u16,

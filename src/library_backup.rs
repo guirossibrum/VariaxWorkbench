@@ -221,6 +221,7 @@ impl line6_devices::gate::GatePolicy for BackupPolicy {
 /// Silence after the identity question, or a lost first packet that a second
 /// question on that same open still did not complete. Preset reads are not
 /// included: those already changed the guitar.
+#[cfg(any(test, target_os = "linux"))]
 fn identity_miss(error: &str) -> bool {
     error.contains("nothing arrived from the guitar")
         || error.contains("No complete identity reply after the second request")

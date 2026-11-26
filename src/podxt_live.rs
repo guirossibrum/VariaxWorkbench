@@ -9,7 +9,9 @@
 use std::time::Duration;
 
 use line6_devices::family::podxt::{self, models};
-use line6_devices::gate::{GatePolicy, Operation};
+#[cfg(any(test, target_os = "linux"))]
+use line6_devices::gate::GatePolicy;
+use line6_devices::gate::Operation;
 use line6_devices::session::{Link, Request, Session, Wait};
 
 use crate::hardware_gates::{self, Gate};
@@ -1132,6 +1134,7 @@ fn is_packs(message: &[u8]) -> bool {
     message.len() == 9 && message[..6] == [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e]
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn test_summary(test: &LiveEditTest) -> String {
     let name = test.before.name();
     if test.undone() && test.stuck() {
@@ -1147,6 +1150,7 @@ fn test_summary(test: &LiveEditTest) -> String {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn channel_summary(result: &ChannelSwitch) -> String {
     if result.switched() {
         let name = result
