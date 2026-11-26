@@ -1,11 +1,10 @@
-//! Same-transaction capture boundary. Only the offline fake adapter is
-//! implemented at this checkpoint.
+//! Same-transaction capture boundary.
 //!
 //! Platform integration contract
 //!
-//! - Lane 1 must provide an adapter created only by the existing gated workflow
-//!   after selecting the verified attachment under its rig lock. Keep the lock
-//!   alive in the adapter or borrow it for the adapter's entire lifetime.
+//! - The caller enters through the existing gated workflow and selects the
+//!   verified attachment under its rig lock. The macOS adapter borrows that
+//!   lock from open through release and handle drop.
 //! - On macOS use a fresh borrowed interface-0 USB handle and call its
 //!   fallible `finish()` exactly once before dropping it. Do not wrap an
 //!   already-finalized handle because repeated `finish()` can return success.
