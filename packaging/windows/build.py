@@ -37,6 +37,29 @@ def require(text, *markers):
             raise ValueError(f"Missing smoke evidence {marker!r}\n{text}")
 
 
+def windows_system_evidence(step):
+    """Check the fields emitted by the Windows collector in step 0.1."""
+    results = step.get("results", [])
+
+    def value(field):
+        prefix = f"{field}: "
+        matches = [line.removeprefix(prefix) for line in results if line.startswith(prefix)]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one {field} field in Windows step 0.1")
+        return matches[0]
+
+    version = value("Windows version")
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", version) is None:
+        raise ValueError(f"Invalid Windows version in step 0.1: {version!r}")
+    build = value("Windows build")
+    if build != version.split(".")[2]:
+        raise ValueError(f"Windows build in step 0.1 does not match version {version}: {build!r}")
+    architecture = value("Architecture")
+    if architecture not in {"x86_64", "aarch64", "x86", "arm"}:
+        raise ValueError(f"Unrecognized Windows architecture in step 0.1: {architecture!r}")
+    return f"Windows version: {version}\nWindows build: {build}\nArchitecture: {architecture}\n"
+
+
 def smoke(extracted, scratch, env):
     # Execute the archived payload. Practice uses only the fake rig. In
     # computer mode skip even OS USB and audio inventory on the build host.
@@ -64,8 +87,6 @@ def smoke(extracted, scratch, env):
     computer = report.read_text(encoding="utf-8")
     require(computer, "Operating system: Windows", "Synthetic preset (full pipeline)",
             WINDOWS_CONNECTION)
-    if re.search(r"Windows version: \d+(?:\.\d+){2,3}", computer) is None:
-        raise ValueError("Computer smoke check did not report the Windows version")
     # The detail section omits steps that never started, including refusals.
     _, begin, data = computer.partition("\nBEGIN RIG CHECK JSON\n")
     data, end, _ = data.partition("\nEND RIG CHECK JSON")
@@ -85,19 +106,24 @@ def smoke(extracted, scratch, env):
     outcomes = {step: steps.get(step, {}).get("outcome") for step in expected_computer}
     if outcomes != expected_computer:
         raise ValueError(f"Unexpected computer outcomes in Windows computer mode: {outcomes}")
+    system_evidence = windows_system_evidence(steps["0.1"])
+    unexpected_messages = [step["id"] for step in steps.values() if step.get("messages") != 0]
+    if unexpected_messages:
+        raise ValueError(f"Expected zero device messages in Windows computer mode: {unexpected_messages}")
     device_steps = [step for key, step in steps.items() if key not in expected_computer]
     unexpected = [
         step["id"] for step in device_steps
-        if (step["outcome"], step["reason"], step["messages"])
-        != ("not_available", WINDOWS_CONNECTION, 0)
+        if (step["outcome"], step.get("reason")) != ("not_available", WINDOWS_CONNECTION)
     ]
     if not device_steps or unexpected:
         raise ValueError(f"Unexpected device outcomes in Windows computer mode: {unexpected}")
     return (
         f"{version}\nRig Check catalogue loaded.\n"
         "Practice report includes simulated USB recognition.\n"
-        "Computer report includes Windows information and the offline engine comparison.\n"
-        "Device steps report the Windows notice. OS USB and audio inventories were skipped.\n"
+        "Computer report includes step 0.1 and the offline engine comparison.\n"
+        f"{system_evidence}"
+        "Device steps report the Windows notice. Zero device messages recorded.\n"
+        "OS USB and audio inventories were skipped.\n"
     )
 
 
