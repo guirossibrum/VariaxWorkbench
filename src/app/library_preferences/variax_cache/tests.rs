@@ -4,8 +4,9 @@ use line6_devices::{
     family::{
         podxt::{IDENTITY_FAMILY, PODXT_LIVE_MEMBER, PODXT_LIVE_VERSION},
         variax::{
-            BANKS, BankName, Identified, Library, Preset, PresetMetadata, Restore, StoredPreset,
-            backup::SnapshotCapture,
+            BANKS, BankName, Identified, Library, PRESETS_PER_BANK, Preset, PresetMetadata,
+            Restore, StoredPreset,
+            procedures::{PROGRAM_BYTES, set_firmware_checksum},
         },
     },
 };
@@ -41,9 +42,15 @@ fn capture(label: u8) -> Library {
     let original_replies = replies(label);
     let original =
         PresetMetadata::from_replies(&original_replies[0], &original_replies[1]).unwrap();
+    let start = Preset::new(0, 0).unwrap();
     let presets = Preset::all()
         .map(|preset| {
-            let replies = replies(preset.program_number());
+            let data = if preset == start {
+                label
+            } else {
+                preset.program_number()
+            };
+            let replies = replies(data);
             let metadata = PresetMetadata::from_replies(&replies[0], &replies[1]).unwrap();
             StoredPreset {
                 preset,
@@ -77,7 +84,7 @@ fn capture(label: u8) -> Library {
         presets,
         bank_names,
         restore: Restore::Switched {
-            to: Preset::new(0, 0).unwrap(),
+            to: start,
             verified: true,
         },
         release_error: None,
@@ -102,49 +109,47 @@ impl Fixture {
         }
     }
 
-    fn write(&self, capture: &Library) -> PathBuf {
+    fn write(&self, label: u8, coverage: SnapshotCoverage) -> PathBuf {
+        let capture = capture(label);
         let source = tempfile::tempdir_in(self.root.path()).unwrap().keep();
         let mut folder = BackupFolder::create(&source, "synthetic").unwrap();
-        save_variax_library(&mut folder, capture).unwrap();
+        save_variax_library(&mut folder, &capture).unwrap();
+        if coverage == SnapshotCoverage::FullPrograms {
+            for entry in &capture.presets {
+                let preset = entry.preset;
+                let name = format!(
+                    "programs/{:02}-{}-{}.bin",
+                    (preset.bank() + 1) * PRESETS_PER_BANK - 1 - preset.slot(),
+                    preset.bank_name().replace(' ', "_"),
+                    preset.slot() + 1
+                );
+                let mut program = [0; PROGRAM_BYTES];
+                program[851 * 3] = entry.replies[0][7] | (entry.replies[0][8] << 4);
+                set_firmware_checksum(&mut program);
+                folder.file(&name, &program).unwrap();
+            }
+        }
         folder.finish(true).unwrap()
     }
 
-    // Only the synthetic fixture can supply a simulated transport outcome.
-    // Production issuance needs a sealed same-link finalizer.
-    fn proof(
+    // The sealed capture is exercised with fake links in the device crate.
+    // App fixtures exercise the private staging path with synthetic v1 files.
+    fn stage_file(
         &self,
-        path: &Path,
-        capture: &Library,
-        cleanup: Option<&Result<(), String>>,
-        seconds: u64,
-    ) -> Result<VariaxCaptureProof, String> {
-        let snapshot = validate_snapshot(
-            path,
-            &self.key.guitar.identity(),
-            SnapshotCoverage::Metadata,
-        )?;
-        snapshot.check_cache_eligibility(SnapshotCapture::Metadata(capture), cleanup)?;
-        Ok(VariaxCaptureProof {
-            key: self.key.clone(),
-            source: path.into(),
-            captured_at: UNIX_EPOCH + Duration::from_secs(seconds),
-            coverage: Coverage::Settings,
-            manifest_sha256: snapshot.manifest_sha256().into(),
-        })
-    }
-
-    fn source_and_proof(&self, second: u8) -> (PathBuf, VariaxCaptureProof) {
-        let capture = capture(second);
-        let path = self.write(&capture);
-        let proof = self
-            .proof(&path, &capture, Some(&Ok(())), second.into())
-            .unwrap();
-        (path, proof)
+        source: &Path,
+        key: VariaxCacheKey,
+        coverage: SnapshotCoverage,
+        second: u8,
+    ) -> Staged {
+        self.prefs
+            .stage_variax_cache(source, key, coverage, timestamp(second), &digest(source))
+            .unwrap()
     }
 
     fn stage(&self, second: u8) -> Staged {
-        let (path, proof) = self.source_and_proof(second);
-        self.prefs.stage_variax_cache(&path, proof).unwrap()
+        let coverage = SnapshotCoverage::Metadata;
+        let path = self.write(second, coverage);
+        self.stage_file(&path, self.key.clone(), coverage, second)
     }
 
     fn latest(&self) -> PublishedVariaxSnapshot {
@@ -155,6 +160,17 @@ impl Fixture {
     }
 }
 
+fn timestamp(second: u8) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(u64::from(second))
+}
+
+fn digest(source: &Path) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(fs::read(source.join("MANIFEST.sha256")).unwrap())
+    )
+}
+
 fn replace_file(path: &Path, bytes: impl AsRef<[u8]>) {
     fs::remove_file(path).unwrap();
     fs::write(path, bytes).unwrap();
@@ -163,9 +179,13 @@ fn replace_file(path: &Path, bytes: impl AsRef<[u8]>) {
 #[test]
 fn published_receipt_reopens_independent_profile_snapshot() {
     let fixture = Fixture::new();
-    let (source, proof) = fixture.source_and_proof(b'A');
+    let coverage = SnapshotCoverage::Metadata;
+    let source = fixture.write(b'A', coverage);
     let manifest = fs::read(source.join("MANIFEST.sha256")).unwrap();
-    fixture.prefs.publish_variax_cache(&source, proof).unwrap();
+    fixture
+        .stage_file(&source, fixture.key.clone(), coverage, b'A')
+        .publish()
+        .unwrap();
     assert_eq!(fs::read(source.join("MANIFEST.sha256")).unwrap(), manifest);
     fs::rename(&source, fixture.root.path().join("moved-source")).unwrap();
 
@@ -175,10 +195,7 @@ fn published_receipt_reopens_independent_profile_snapshot() {
         .next()
         .unwrap();
     assert_ne!(cached.directory(), source);
-    assert_eq!(
-        cached.captured_at(),
-        UNIX_EPOCH + Duration::from_secs(u64::from(b'A'))
-    );
+    assert_eq!(cached.captured_at(), timestamp(b'A'));
     assert_eq!(cached.source(), BackupSource::DeviceCheck);
     assert_eq!(cached.snapshot().coverage(), SnapshotCoverage::Metadata);
     assert_eq!(cached.snapshot().library().presets.len(), 60);
@@ -208,75 +225,88 @@ fn published_receipt_reopens_independent_profile_snapshot() {
 }
 
 #[test]
-fn capture_proof_requires_matching_sweep_return_and_both_cleanup_results() {
-    let fixture = Fixture::new();
-    let mut original = capture(b'A');
-    let source = fixture.write(&original);
-    let valid_cleanup = Ok(());
-    assert!(fixture.proof(&source, &original, None, 1).is_err());
-    assert!(
-        fixture
-            .proof(&source, &original, Some(&Err("driver".into())), 1)
-            .is_err()
-    );
-    let other = capture(b'B');
-    assert!(
-        fixture
-            .proof(&source, &other, Some(&valid_cleanup), 1)
-            .err()
-            .unwrap()
-            .contains("differs")
-    );
+fn preserves_full_program_generation_after_a_metadata_refresh_in_the_same_profile() {
+    use line6_devices::family::variax::backup::SnapshotPrograms;
 
-    original.release_error = Some("bridge".into());
+    let fixture = Fixture::new();
+    let coverage = SnapshotCoverage::FullPrograms;
+    let full = fixture.write(b'A', coverage);
     assert!(
         fixture
-            .proof(&source, &original, Some(&valid_cleanup), 1)
-            .is_err()
-    );
-    original.release_error = None;
-    original.restore = Restore::NoUniqueMatch { matches: 2 };
-    assert!(
-        fixture
-            .proof(&source, &original, Some(&valid_cleanup), 1)
+            .prefs
+            .stage_variax_cache(
+                &full,
+                fixture.key.clone(),
+                SnapshotCoverage::Metadata,
+                timestamp(b'A'),
+                &digest(&full),
+            )
             .is_err()
     );
     assert!(!fixture.prefs.variax.directory.exists());
+    fixture
+        .stage_file(&full, fixture.key.clone(), coverage, b'A')
+        .publish()
+        .unwrap();
+    fixture.stage(b'B').publish().unwrap();
+
+    let second_profile = key("two");
+    let other = fixture.write(b'C', coverage);
+    fixture
+        .stage_file(&other, second_profile.clone(), coverage, b'C')
+        .publish()
+        .unwrap();
+    let cached: Vec<_> = fixture
+        .prefs
+        .variax_cache_candidates(&fixture.key)
+        .collect();
+    let [settings, programs] = cached.as_slice() else {
+        panic!("expected two cache generations for profile one");
+    };
+    assert_eq!(settings.captured_at(), timestamp(b'B'));
+    assert_eq!(settings.source(), BackupSource::DeviceCheck);
+    assert!(matches!(
+        settings.snapshot().programs(),
+        SnapshotPrograms::MetadataOnly
+    ));
+    assert_eq!(programs.captured_at(), timestamp(b'A'));
+    assert_eq!(programs.source(), BackupSource::FullBackup);
     assert!(
-        fixture
-            .prefs
-            .variax_cache_candidates(&fixture.key)
-            .next()
-            .is_none()
+        matches!(programs.snapshot().programs(), SnapshotPrograms::Full(entries) if entries.len() == 60)
     );
+    assert_eq!(programs.snapshot().manifest_sha256(), digest(&full));
+
+    let other_profile: Vec<_> = fixture
+        .prefs
+        .variax_cache_candidates(&second_profile)
+        .collect();
+    assert_eq!(other_profile.len(), 1);
+    assert_eq!(other_profile[0].captured_at(), timestamp(b'C'));
 }
 
 #[test]
-fn wrong_source_path_or_new_valid_manifest_cannot_reuse_capture_proof() {
+fn revalidates_bound_source_and_rejects_a_replacement_with_a_valid_manifest() {
     let fixture = Fixture::new();
-    let original = capture(b'A');
-    let source = fixture.write(&original);
-    let copy = fixture.write(&original);
-    let proof = || fixture.proof(&source, &original, Some(&Ok(())), 1).unwrap();
-    assert!(
-        fixture
-            .prefs
-            .publish_variax_cache(&copy, proof())
-            .unwrap_err()
-            .contains("path")
-    );
+    let coverage = SnapshotCoverage::Metadata;
+    let source = fixture.write(b'A', coverage);
+    let manifest_sha256 = digest(&source);
+    let stage = || {
+        fixture.prefs.stage_variax_cache(
+            &source,
+            fixture.key.clone(),
+            coverage,
+            timestamp(b'A'),
+            &manifest_sha256,
+        )
+    };
 
-    let original_proof = proof();
-    let different = fixture.write(&capture(b'B'));
     fs::rename(&source, fixture.root.path().join("preserved")).unwrap();
+    assert!(stage().is_err());
+    let different = fixture.write(b'B', coverage);
     fs::rename(&different, &source).unwrap();
-    assert!(
-        fixture
-            .prefs
-            .publish_variax_cache(&source, original_proof)
-            .unwrap_err()
-            .contains("manifest")
-    );
+    assert!(matches!(stage(), Err(error) if error.contains("manifest differs")));
+    assert!(!fixture.prefs.variax.directory.exists());
+
     let legacy = crate::variax_library::CompletedVariaxBackup::import(&source).unwrap();
     fixture.prefs.remember_backup(&legacy).unwrap();
     assert!(fixture.prefs.latest_variax_library().is_some());
