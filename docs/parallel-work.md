@@ -37,6 +37,8 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   Use `git show origin/master:AGENTS.md` and
   `git show origin/master:docs/parallel-work.md` when the lane branch is older.
   Repeat the final report requirements in delivery and review follow-up prompts.
+- Start every lane reply with `Lane #<number>` on its own line, such as
+  `Lane #3`. This applies to deliveries, status updates, and blockers.
 - One worktree and branch per issue, created from `origin/master` under the
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).

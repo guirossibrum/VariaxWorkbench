@@ -242,6 +242,7 @@ At lane startup, the Gatekeeper asks the agent to read `AGENTS.md` and
 ask it to reread the relevant file when its rules have changed since that
 lane read it. Name the change and the commit that contains it. Each delivery
 prompt repeats the worktree requirements for the final report.
+Every lane reply starts with `Lane #<number>` on its own line, such as `Lane #3`.
 
 A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
