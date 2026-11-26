@@ -143,18 +143,24 @@ an automatic update. GitHub issues and the linked project contain the work plan.
 ## Implementation
 
 The product is written in Rust. Python and Java are offline analysis/reference
-helpers. Keep original vendor artifacts, captures, and user settings local and
-ignored. Do not publish them or contact third parties without explicit user
-instructions.
+helpers. Do not contact third parties without explicit user instructions.
 
-**UI art exception (owner decision 2026-11-24).** As part of the layout work
-(#215–#217, #219, #224), Line 6 UI art from POD Farm 2, Variax Workbench and
-Line 6 Edit may be committed. The owner considers this fair use: the app
-supports legacy gear and does not compete with Line 6. The repository is
-public. Commit only the images the app actually uses, under `assets/ui/`, with
-`assets/ui/SOURCES.md` naming each file's product, version and archive path.
-Installers, binaries, decompiled code, firmware, captures and user data stay
-local and ignored.
+**Reverse-engineered and vendor material (owner decision 2026-11-25; replaces
+the earlier wording).** Raw reverse-engineered material is never published.
+That covers decompiled code, disassembly, vendor files as extracted,
+installers, firmware images, captures and user data: they stay local and
+ignored, and are never committed, attached to issues or uploaded as-is. What
+the app needs in order to run may be committed and shipped, once re-packaged
+for the app, with each item's source product, version and archive path
+recorded. The owner considers this fair use: the app supports legacy gear and
+does not compete with Line 6. The repository is public. Commit only what the
+app actually uses:
+- **UI art** (owner decision 2026-11-24, layout work #215–#217, #219, #224):
+  Line 6 UI art from POD Farm 2, Variax Workbench and Line 6 Edit, under
+  `assets/ui/`, with `assets/ui/SOURCES.md`.
+- **Variax model data** (#278): the body, pickup and special-model
+  definitions the host engine needs to render programs, converted into the
+  app's own format and built into the app, with a sources file.
 
 Preserve originals. New copies must use atomic non-overwriting saves. **Editor Save
 exception (owner decision 2026-11-25, #241):** the editors' Save may replace the
