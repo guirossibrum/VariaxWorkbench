@@ -1,6 +1,4 @@
-use super::{
-    FamilyTab, LibraryOrigin, PresetFile, VariaxEditor, egui, live_attachment::Attachment,
-};
+use super::{FamilyTab, PresetFile, VariaxEditor, egui, live_attachment::Attachment};
 use line6_devices::family::variax::Preset;
 use std::{
     path::PathBuf,
@@ -127,7 +125,7 @@ pub(super) fn unavailable(
 
 impl VariaxEditor {
     pub(super) fn modified_guitar_positions(&self) -> Vec<Position> {
-        if !self.sync_available() {
+        if !self.has_current_guitar_library() {
             return Vec::new();
         }
         let Some(document) = &self.document else {
@@ -139,15 +137,9 @@ impl VariaxEditor {
             .collect()
     }
 
-    pub(super) fn sync_available(&self) -> bool {
-        self.library_origin
-            .as_ref()
-            .is_some_and(LibraryOrigin::is_guitar_library)
-    }
-
     pub(super) fn sync_ready(&self, action: Action) -> bool {
         cfg!(target_os = "linux")
-            && self.sync_available()
+            && self.has_current_guitar_library()
             && action.permitted()
             && self.device_sync.attachment.is_some()
             && !self.device_sync.unsafe_store
@@ -158,7 +150,7 @@ impl VariaxEditor {
     }
 
     pub(super) fn sync_button(&mut self, ui: &mut egui::Ui) {
-        if self.sync_available()
+        if self.has_current_guitar_library()
             && ui
                 .add_enabled(
                     !self.is_reading() && !self.blocking_prompt(),
@@ -372,6 +364,7 @@ use unavailable as execute;
 
 #[cfg(test)]
 mod tests {
+    use super::super::{LibraryOrigin, refresh::tests::verified_tab};
     use super::*;
     use std::time::SystemTime;
     use variax_workbench::{bundle::BundleFile, document::SlotBuffer};
@@ -388,8 +381,13 @@ mod tests {
         let mut other = model.clone();
         other.rename("Edited").unwrap();
         bundle.replace(0, 1, &other).unwrap();
+        let tab = verified_tab();
+        editor.observe_device(Some(&tab));
         editor
-            .adopt_startup_library(bundle, LibraryOrigin::Download(SystemTime::UNIX_EPOCH))
+            .adopt_startup_library(
+                bundle,
+                LibraryOrigin::AttachedDownload(SystemTime::UNIX_EPOCH, tab.device.key),
+            )
             .unwrap();
         let doc = editor.document.as_mut().unwrap();
         doc.copy_to_slot_buffer(SlotBuffer::ModelClipboard).unwrap();
