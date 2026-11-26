@@ -624,6 +624,14 @@ fn restore<L: Link>(
             matches: matches.len(),
         };
     };
+    switch_back(session, to, original)
+}
+
+fn switch_back<L: Link>(
+    session: &mut Session<L>,
+    to: Preset,
+    original: &PresetMetadata,
+) -> Restore {
     if let Err(error) = session.send(VariaxRequest::Program(to)) {
         return Restore::Failed(error);
     }
@@ -657,15 +665,37 @@ fn sweep_library<L: Link>(
 
 fn sweep_library_with_programs<L: Link>(
     session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&StoredPreset),
+    programs: Option<&mut backup::ProgramCaptures>,
+) -> Result<Library, String> {
+    sweep_library_from(session, cancelled, progress, programs, None)
+}
+
+struct KnownStart<'a> {
+    guitar: &'a Identity,
+    preset: Preset,
+    stored_metadata: &'a PresetMetadata,
+}
+
+fn sweep_library_from<L: Link>(
+    session: &mut Session<L>,
     mut cancelled: impl FnMut() -> bool,
     mut progress: impl FnMut(&StoredPreset),
     mut programs: Option<&mut backup::ProgramCaptures>,
+    known_start: Option<KnownStart<'_>>,
 ) -> Result<Library, String> {
     const CANCELLED: &str = "Variax library read cancelled.";
     if cancelled() {
         return Err(CANCELLED.into());
     }
     let identified = identify_variax(session)?;
+    if known_start
+        .as_ref()
+        .is_some_and(|start| identified.identity != *start.guitar)
+    {
+        return Err("The Variax identity reply differs from the selected attachment.".into());
+    }
     if programs.is_some()
         && (identified.identity.member != 4 || identified.identity.version != *b"0310")
     {
@@ -683,6 +713,15 @@ fn sweep_library_with_programs<L: Link>(
         }
         in_session(session, |session| {
             let (original_replies, original) = read_metadata(session)?;
+            if known_start
+                .as_ref()
+                .is_some_and(|start| !same_preset(&original, start.stored_metadata))
+            {
+                return Err(
+                    "The starting Variax metadata differs from the verified stored preset.".into(),
+                );
+            }
+            let mut switched = false;
             let mut presets = Vec::new();
             let mut bank_names = Vec::new();
             let mut stopped = None;
@@ -691,6 +730,7 @@ fn sweep_library_with_programs<L: Link>(
                     stopped = Some(CANCELLED.into());
                     break;
                 }
+                switched = true;
                 let stored = match read_stored(session, preset) {
                     Ok(stored) => stored,
                     Err(error) => {
@@ -728,7 +768,11 @@ fn sweep_library_with_programs<L: Link>(
                     }
                 }
             }
-            let restore = restore(session, &original, &presets);
+            let restore = match known_start {
+                Some(start) if switched => switch_back(session, start.preset, &original),
+                Some(_) => Restore::NoUniqueMatch { matches: 0 },
+                None => restore(session, &original, &presets),
+            };
             Ok(Library {
                 identified,
                 original_replies,

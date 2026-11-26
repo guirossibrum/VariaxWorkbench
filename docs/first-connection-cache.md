@@ -98,6 +98,36 @@ remain an explicit local-file workflow. [Device check](device-check.md) ·
   opening, editing and cache selection send no device messages. Save edits
   to the user's file or a new copy under the existing editor save rules.
 
+## Variax capture proof (#240)
+
+The inactive device-crate finalizer consumes the verified selection and holds
+its rig lock through the exact link's open, sweep, return and checked release.
+The adapter establishes a clean stored starting slot before any program
+change. The family checks the guitar identity reply, starting metadata, all
+60 positions and 12 bank names, and a unique match to the starting slot.
+Full-program mode also verifies each checksum and checks the embedded
+settings against the corresponding metadata pair. Return requires a matching
+readback and a fresh observation of the clean starting slot. Failure or
+cancellation after a selection attempt still calls for return and cleanup
+when the original attachment is available.
+
+Only that finalized sweep can stage a new v1 source and bind it to the strict
+#284 validator. The sealed receipt carries the profile, verified guitar and
+relay tuple, coverage, capture time, source path and manifest digest. The
+publisher can independently revalidate that source before copying it.
+Compatibility backups and file comparisons provide no sealed receipt.
+
+A future adapter needs observations that distinguish a guitar replacement
+behind the same relay, establish that the active buffer is a clean stored
+slot, and prevent traffic from reaching a replacement between continuity
+checks. It also needs checked closure of the exact scoped handle, including
+any driver return. The existing relay generation and Variax model/firmware
+reply cannot distinguish two identical guitars. The existing metadata sweep
+only finds a possible starting slot after sending program changes. The
+current adapter supplies neither the required guitar continuity nor the
+clean-slot observation. Fake interfaces exercise the contract and authorize
+no native adapter or runtime publication.
+
 ## Lane 3 handoff and acceptance tests
 
 Consume a validated immutable snapshot as an editor input. Use

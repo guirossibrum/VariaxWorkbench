@@ -69,14 +69,20 @@ impl ValidatedSnapshot {
         &self.manifest_sha256
     }
 
-    /// Check same-capture provenance before publishing an automatic cache
-    /// receipt. The link owner must supply a successful release/driver result.
-    /// Older backups without that evidence remain available for explicit import.
+    /// Compare a compatibility sweep and its reported cleanup with this file
+    /// snapshot. This comparison alone carries no capture provenance.
     pub fn check_cache_eligibility(
         &self,
         capture: SnapshotCapture<'_>,
         link_cleanup: Option<&Result<(), String>>,
     ) -> Result<(), String> {
+        if !matches!(link_cleanup, Some(Ok(()))) {
+            return Err("Variax session and link cleanup were not verified.".into());
+        }
+        self.check_capture_matches(capture)
+    }
+
+    pub(super) fn check_capture_matches(&self, capture: SnapshotCapture<'_>) -> Result<(), String> {
         let (settings, full) = match capture {
             SnapshotCapture::Metadata(library) => (library, None),
             SnapshotCapture::Full(backup) => (&backup.settings, Some(backup)),
@@ -94,7 +100,7 @@ impl ValidatedSnapshot {
         if !matches!(settings.restore, Restore::Switched { verified: true, .. }) {
             return Err("The Variax switch-back was not verified.".into());
         }
-        if settings.release_error.is_some() || !matches!(link_cleanup, Some(Ok(()))) {
+        if settings.release_error.is_some() {
             return Err("Variax session and link cleanup were not verified.".into());
         }
         if settings.identified.identity != self.identity {
