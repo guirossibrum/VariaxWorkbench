@@ -19,7 +19,43 @@ MAX_BATCH_BYTES = 64 * 1024
 LEGACY_REVIEW_HOLD = "Owner review in the dedicated review pane"
 HERDR_ERRORS = (RuntimeError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError)
 HEADINGS = ["Result", "Verification", "Remaining work", "Worktree handoff"]
-TAIL = re.compile(r"^\s*(?:[›❯✶]|Worked for \d|[└╰]─)", re.M)
+TAIL = re.compile(r"^(?:[›❯✶]|Worked for \d|[└╰]─)")
+TABLE_TOP = re.compile(r"┌─+(?:┬─+)*┐")
+TABLE_RULE = re.compile(r"├─+(?:┼─+)*┤")
+TABLE_BOTTOM = re.compile(r"└─+(?:┴─+)*┘")
+
+
+def report_tail(text):
+    """Keep closed table borders inside the report and stop at terminal endings."""
+    columns = 0
+    offset = 0
+    has_rows = ruled = False
+    for raw_line in text.splitlines(keepends=True):
+        line_start = offset
+        offset += len(raw_line)
+        line = raw_line.strip()
+        if columns:
+            if len(line) >= 2 and line[0] == line[-1] == "│":
+                has_rows = True
+                continue
+            if TABLE_RULE.fullmatch(line) and line.count("┼") == columns - 1:
+                ruled = True
+                continue
+            if columns > 1 or ruled:
+                if not (has_rows and TABLE_BOTTOM.fullmatch(line)
+                        and line.count("┴") == columns - 1):
+                    return None
+                columns = 0
+                continue
+            columns = 0
+        if TAIL.match(line):
+            return text[:line_start]
+        if TABLE_TOP.fullmatch(line):
+            columns = line.count("┬") + 1
+            has_rows = ruled = False
+    if columns:
+        return None
+    return text
 
 
 def report_from_screen(screen, lane, binding=None):
@@ -37,16 +73,21 @@ def report_from_screen(screen, lane, binding=None):
     if not matches:
         return None
     match = matches[-1]
-    tail = TAIL.split(screen[match.end():], maxsplit=1)[0]
+    tail = report_tail(screen[match.end():])
+    if tail is None or len(tail) > 12_000:
+        return None
     lines = [line.strip() for line in tail.strip().splitlines()]
     headings = []
     for index, line in enumerate(lines):
         if line.startswith("### "):
-            headings.append(line[4:])
+            headings.append((index, line[4:]))
         elif line in expected and (match[1] != label or rendered == label):
-            headings.append(line)
+            headings.append((index, line))
             lines[index] = f"### {line}"
-    if headings != expected or len(tail) > 12_000:
+    if [name for _, name in headings] != expected:
+        return None
+    positions = [index for index, _ in headings] + [len(lines)]
+    if any(not any(lines[start + 1:end]) for start, end in zip(positions, positions[1:])):
         return None
     return f"{label}\n\n" + "\n".join(lines)
 
@@ -157,24 +198,26 @@ def capture(herdr, config, state, save):
             continue
         sequence = agent.get("completion_seq") or 0
         previous = state["seen"][lane]
-        if sequence <= previous["sequence"]:
+        # A later terminal view cannot establish which turn supplied it.
+        # Leave an unread completion for manual review, even after restart.
+        if sequence <= max(previous["sequence"], previous.get("unread_sequence", 0)):
             continue
+        reason = "no complete current report was visible"
         try:
             report = report_from_screen(herdr.read(binding["pane"]), lane, binding)
             current = herdr.match(herdr.agents(), binding)
+            if (not current or current["agent_status"] not in READY
+                    or current.get("completion_seq") != sequence):
+                report = None
+                reason = "the bound session or completion changed during the read"
         except HERDR_ERRORS as error:
-            print(f"Lane #{lane} capture deferred: {error}", flush=True)
-            continue
-        if (not current or current["agent_status"] not in READY
-                or current.get("completion_seq") != sequence):
-            continue
+            report = None
+            reason = f"the terminal read could not be verified ({error})"
         if not report:
-            if previous.get("unread_sequence") != sequence:
-                previous["unread_sequence"] = sequence
-                save(state)
-                print(f"Lane #{lane} completion {sequence} has no complete visible report yet", flush=True)
+            previous["unread_sequence"] = sequence
+            save(state)
+            print(f"Lane #{lane} completion {sequence} held for manual review: {reason}", flush=True)
             continue
-        previous.pop("unread_sequence", None)
         previous["sequence"] = sequence
         if digest(report) != previous["digest"]:
             previous["digest"] = digest(report)
