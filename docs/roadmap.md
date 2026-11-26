@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] Rig Check recovery of an accidental Skip within the same run. The [design, generated mockups, and Practice checklist](rig-check/skip-recovery.md) await owner review before implementation. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276#issuecomment-7198373640).
+
 - [ ] Linux guitar-to-DAW and app recording. The prepared-handle libasound lifecycle in [#146](https://github.com/guirossibrum/VariaxWorkbench/issues/146) is implemented offline. The [source contract](hardware-gates/g4-contract.md) records the installed driver evidence and the source-derived directional rate request from #118. An approved owner check must verify the prepared-handle readback and attachment binding. Physical channel order needs separate signal evidence. The [#147 owner card](hardware-gates/g4.md) is drafted. In-app acceptance [#128](https://github.com/guirossibrum/VariaxWorkbench/issues/128) and the separate DAW path remain owner-run. [Route and rate limits](audio-capture-session.md#daw-route-and-in-app-recording).
 
 - [ ] Native Mac acceptance for the private two-app universal DMG with the six-knob sweep, report continuation, the merged layout and the Variax checksum comparison. Gatekeeper review and merge come before building and transferring it. [#298](https://github.com/guirossibrum/VariaxWorkbench/issues/298).

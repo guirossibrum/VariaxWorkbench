@@ -26,6 +26,19 @@ and the remaining review gaps.
 | Reviewing the accepted start notice | [13-review-start.png](mockups/13-review-start.png) |
 | Recording a display mismatch | [14-display-difference.png](mockups/14-display-difference.png) |
 
+## Recover an accidental Skip (#276)
+
+Owner review checkpoint. The [design and Practice checklist](skip-recovery.md)
+cover the wizard and terminal. The screens use synthetic Practice data and
+depict proposed behavior.
+
+| Screen | Mockup |
+| --- | --- |
+| Review a user-skipped check with Return focused | [15-review-skipped.png](mockups/15-review-skipped.png) |
+| Confirm the recovery with Keep it skipped focused | [16-confirm-skipped.png](mockups/16-confirm-skipped.png) |
+| Review a skipped check whose prerequisites changed | [17-skipped-unavailable.png](mockups/17-skipped-unavailable.png) |
+| Return to the same pending backup card after the read | [18-return-after-skipped.png](mockups/18-return-after-skipped.png) |
+
 ## Laptop and Retina views
 
 The screen index above uses 1180×800 logical points at 1×. These Practice

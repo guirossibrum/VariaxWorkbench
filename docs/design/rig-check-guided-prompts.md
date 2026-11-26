@@ -269,93 +269,9 @@ NOW. The return is not printed during the first countdown.
 
 ## Accidental Skip, for #276
 
-Enter on a step card skips, in the window and the terminal. Any other
-terminal line on that card also skips. That is the safe default and it
-stays. A person who presses Enter while reaching for R loses the step
-and cannot start it from Back.
-
-Add one control on the review of a step whose outcome is skipped-by-you.
-The label is **Run this skipped step**. It is absent for an automatic
-firmware skip, a needs-skip, not applicable, a failed step, a stopped
-step, a save, a live edit or store that already sent, and any attempt
-whose record contains an uncertain write. Those no-replay protections
-stay. Listening that only received, and a live step skipped from its
-card before any send, are the only candidates. Gates and the
-catalogue's traffic for that step are unchanged.
-
-The control is not focused. Focus on review stays **Return to current
-step**. Back, Backspace, Enter, C, and terminal `[b]` and `[c]` do not
-activate it.
-
-Choosing it checks eligibility against the current run before showing
-a confirmation or card. Use the runner's existing checks, the current
-run's verified rig evidence and results, and the data the step will
-use. Opening review or checking eligibility sends no device request.
-If the current rig cannot be established from that evidence, keep the
-skip.
-
-- **Rig.** `precheck` still accepts the step for the connected rig in
-  this run. A missing device, a different verification result, or an
-  offline-device refusal leaves the skip in place.
-- **Gate.** In Real mode, `real_device_check` still passes for that
-  step. A closed approval or gate leaves the skip in place.
-- **Order.** Every Needs entry must have passed. A retry must still fit
-  catalogue order and the current run's safety state. If any failure
-  has made the run read-only, a live step stays skipped even if its
-  catalogue position precedes the failure. The save rules still apply
-  to later dependents.
-- **Step prerequisites.** Use the data the step needs for this run.
-  7.3 requires the starting channel and both starting and target
-  tones from the backup. 7.1 requires the starting preset and full
-  program plus the target program from the backup. If later activity
-  leaves any required data or restore condition uncertain, keep the
-  skip.
-
-Any check that cannot be established leaves the recorded skip as it
-is. The review names the first reason. The card stays closed.
-
-When every check passes, a confirm opens. Large line: "Run the skipped
-step {id}?" Body: "The current rig, this step's gate, catalogue order,
-and this step's prerequisites were rechecked. Later steps that were
-waiting only on this skip will be offered again. A step that already
-ran is left as it is. Nothing already saved is written again." Focus
-is **Keep it skipped**. **Run it** is the other button. Terminal: the
-review lines stay as they are, and the confirm asks for the words
-`run skipped` or `keep`. Enter means keep.
-
-**Run it** does not send. It shows that step's normal card, which still
-focuses Skip. Start or R is required. At Start, apply the same
-eligibility rules before executing. A prerequisite that can no longer
-be established leaves the original skip in place. The attempt already
-stored stays in the report. Append the new attempt and use its outcome
-for subsequent eligibility checks.
-
-After that result, Continue offers, in catalogue order, each later step
-that has not executed and was held only by this skip. That includes a
-step whose Needs list was waiting on it, and a save that was held
-because an earlier step had not passed, once every earlier applicable
-step passes. Each of those cards focuses Skip. Steps that already
-executed stay recorded. A save or live edit that already sent is left
-recorded. The card that was current when Back was pressed is then shown
-again. If the retry is skipped or it fails, those dependents stay
-blocked and the current card returns.
-
-Practice covers Skip, Back, the confirm left on Keep it skipped, and the
-same pending card, with the simulated message count unchanged. A second
-case revalidates a skipped step whose rig, gate, order, and
-prerequisites still hold, presses Run it, then Start, records both
-attempts, and returns to that same card. A third case leaves the skip
-in place when a prerequisite can no longer be established. A fourth
-covers a skipped live step followed by a failure later in the
-catalogue, and verifies that the live step stays skipped. Back during
-any case sends nothing.
-
-A person-skip still blocks later saves, because a save requires every
-earlier applicable step to pass. It also blocks any later step that
-lists it in Needs. A live step is held back by an earlier failure. A
-person-skip alone does not set that failure. An automatic skip of a
-tested-firmware check still does not block saves. Those are the
-runner's rules on this head, in `precheck`.
+See the [focused Skip recovery design and checklist](../rig-check/skip-recovery.md)
+for the owner review checkpoint, including the keyboard flow and generated
+Practice screens.
 
 ## Resume target, prerequisite, and kept skip
 
