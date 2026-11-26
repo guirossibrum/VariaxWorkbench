@@ -12,6 +12,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 - [x] Rig Check 4.7 handles the optional PODxt Live block-end after a valid addressed tone in the existing read window. Four fake-link tests cover split and coalesced replies, recall and return, unchanged wait budgets, and rejection of malformed or out-of-context frames. Owner Mac verification is pending. [#300](https://github.com/guirossibrum/VariaxWorkbench/issues/300).
 
+- [x] [#118](https://github.com/guirossibrum/VariaxWorkbench/issues/118) traces the directional ALSA rate restriction for the PODxt Live. Two offline fixtures cover the open rate interval and exact prepared-handle admission, including rejection of rounded or missing rates before start. [Source contract and outstanding owner check](hardware-gates/g4-contract.md#exact-rate-request-candidate-118).
+
 - [x] [#147](https://github.com/guirossibrum/VariaxWorkbench/issues/147) drafts the [G4 Linux capture owner card](hardware-gates/g4.md) against the merged source and prepared-PCM contract. Live prerequisite evidence, direct approval and the owner run remain pending.
 
 - [x] [#146](https://github.com/guirossibrum/VariaxWorkbench/issues/146) adds an inactive libasound adapter for a prepared PODxt Live capture handle. Nine fake-PCM lifecycle tests and five native-boundary tests cover route, handle, exact format and clock checks, bounded reads, release and recorder safeguards. Static inspection verified the installed `7.2.15-4-omarchy` module declarations and all 25 required libasound symbol exports. [Implementation and evidence](audio-capture-session.md#inactive-linux-alsa-stream-lifecycle-146).
