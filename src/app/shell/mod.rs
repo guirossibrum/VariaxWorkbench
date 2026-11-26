@@ -80,6 +80,8 @@ impl Workbench {
             recording_close_pending: false,
             #[cfg(test)]
             tab_buttons: HashMap::new(),
+            #[cfg(test)]
+            clear_window_controls: cfg!(target_os = "macos"),
         }
     }
 
@@ -505,22 +507,36 @@ impl Workbench {
         if quit || ctx.input(|i| i.viewport().close_requested()) {
             self.request_close(ctx);
         }
+        // The panel clips to its previous height. The first frame would
+        // otherwise be one control tall and hide the command row.
         egui::TopBottomPanel::top("header")
             .resizable(false)
             .show_separator_line(false)
-            .frame(shell_bar(4))
+            .default_height(220.0)
+            .frame(shell_bar(4, self.clears_window_controls()))
             .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_8, theme::SPACE_4);
+                ui.spacing_mut().button_padding = egui::vec2(theme::SPACE_12, theme::SPACE_4);
+                ui.spacing_mut().interact_size.y = theme::TARGET;
+                // The title stays on its own row. Commands wrap beneath it, and
+                // the frame margin indents every wrapped line.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = theme::SPACE_8;
+                    paint_product_mark(ui);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("Variax Workbench")
+                                .size(theme::SECTION)
+                                .strong()
+                                .color(theme::TEXT),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                    );
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_8, theme::SPACE_4);
                     ui.spacing_mut().button_padding = egui::vec2(theme::SPACE_12, theme::SPACE_4);
                     ui.spacing_mut().interact_size.y = theme::TARGET;
-                    paint_product_mark(ui);
-                    ui.label(
-                        egui::RichText::new("Variax Workbench")
-                            .size(theme::SECTION)
-                            .strong()
-                            .color(theme::TEXT),
-                    );
                     ui.add_enabled_ui(!self.has_prompt(), |ui| {
                         let variax_active = self
                             .tabs
@@ -565,7 +581,21 @@ impl Workbench {
                             {
                                 entry.editor.save_copy(ctx, services);
                             }
-                            ui.add_enabled_ui(enabled, |ui| entry.editor.actions(ui, services));
+                            // Keep the editor menu and its status together on a row
+                            // wide enough for both.
+                            const EDITOR_ACTIONS: f32 = 340.0;
+                            if ui.available_size_before_wrap().x < EDITOR_ACTIONS {
+                                ui.end_row();
+                            }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing =
+                                    egui::vec2(theme::SPACE_8, theme::SPACE_4);
+                                ui.spacing_mut().button_padding =
+                                    egui::vec2(theme::SPACE_12, theme::SPACE_4);
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    entry.editor.actions(ui, services);
+                                });
+                            });
                         });
                     });
                     let response = command_button(ui, "Device check…", true);
@@ -589,7 +619,7 @@ impl Workbench {
         egui::TopBottomPanel::top("tabs")
             .resizable(false)
             .show_separator_line(false)
-            .frame(shell_bar(0))
+            .frame(shell_bar(0, false))
             .show(ctx, |ui| {
                 ui.set_min_height(40.0);
                 self.tab_strip(ui, ctx);
@@ -597,7 +627,7 @@ impl Workbench {
         egui::TopBottomPanel::bottom("status")
             .resizable(false)
             .show_separator_line(false)
-            .frame(shell_bar(0))
+            .frame(shell_bar(0, false))
             .show(ctx, |ui| {
                 let mut guitar_refresh = None;
                 let allow_refresh = !self.has_prompt();
@@ -767,14 +797,17 @@ impl Workbench {
         );
         ui.add_space(theme::SPACE_16);
         ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_16);
+        let columns = start_column_count(ui.available_width(), registry::FAMILIES.len());
         let mut chosen = None;
-        ui.columns(registry::FAMILIES.len(), |columns| {
-            for (column, family) in columns.iter_mut().zip(registry::FAMILIES.iter().copied()) {
-                if start_card(column, family).clicked() {
-                    chosen = Some(family);
+        for row in registry::FAMILIES.chunks(columns) {
+            ui.columns(columns, |columns| {
+                for (column, family) in columns.iter_mut().zip(row.iter().copied()) {
+                    if start_card(column, family).clicked() {
+                        chosen = Some(family);
+                    }
                 }
-            }
-        });
+            });
+        }
         if let Some(family) = chosen {
             self.new_tab(family);
         }
@@ -825,10 +858,37 @@ impl Workbench {
     }
 }
 
-fn shell_bar(vertical: i8) -> egui::Frame {
+/// Points kept clear of the macOS traffic lights. The margin is in points,
+/// so a Retina scale does not shrink the title or the commands.
+const MAC_TRAFFIC_INSET: i8 = 78;
+
+fn shell_bar(vertical: i8, clear_window_controls: bool) -> egui::Frame {
+    let left = if clear_window_controls {
+        MAC_TRAFFIC_INSET
+    } else {
+        16
+    };
     egui::Frame::new()
         .fill(theme::BAR)
-        .inner_margin(egui::Margin::symmetric(16, vertical))
+        .inner_margin(egui::Margin {
+            left,
+            right: 16,
+            top: vertical,
+            bottom: vertical,
+        })
+}
+
+impl Workbench {
+    fn clears_window_controls(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.clear_window_controls
+        }
+        #[cfg(not(test))]
+        {
+            cfg!(target_os = "macos")
+        }
+    }
 }
 
 fn command_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
@@ -864,7 +924,51 @@ fn connection_chip(ui: &mut egui::Ui, text: &str) {
 fn paint_product_mark(ui: &mut egui::Ui) {
     let mark = shell_image(ui.ctx(), "shell/workbench-mark.png");
     let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-    assets::paint(ui, &mark, rect);
+    paint_shell_icon(ui, &mark, rect, "WB");
+}
+
+/// Draw shell art inside `rect`, keeping its aspect. A missing file draws
+/// `fallback` inside the slot. The asset path is not painted.
+pub(super) fn paint_shell_icon(
+    ui: &egui::Ui,
+    image: &assets::UiImage,
+    rect: egui::Rect,
+    fallback: &str,
+) {
+    if image.missing || image.texture.is_none() {
+        paint_mark(ui, rect, fallback);
+    } else {
+        assets::paint(ui, image, rect);
+    }
+}
+
+fn paint_mark(ui: &egui::Ui, rect: egui::Rect, label: &str) {
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        theme::RADIUS_CONTROL,
+        egui::Color32::from_rgb(0x2a, 0x31, 0x38),
+    );
+    painter.rect_stroke(
+        rect,
+        theme::RADIUS_CONTROL,
+        egui::Stroke::new(1.0_f32, theme::LINE),
+        egui::StrokeKind::Inside,
+    );
+    let max_width = (rect.width() - 8.0).max(1.0);
+    let mut size = (rect.height() * 0.42).clamp(9.0, theme::TITLE);
+    let galley = loop {
+        let galley = painter.layout_no_wrap(
+            label.to_owned(),
+            egui::FontId::proportional(size),
+            theme::TEXT,
+        );
+        if galley.size().x <= max_width || size <= 9.0 {
+            break galley;
+        }
+        size -= 1.0;
+    };
+    painter.galley(rect.center() - galley.size() * 0.5, galley, theme::TEXT);
 }
 
 fn chrome_family(id: &str) -> chrome::Family {
@@ -883,6 +987,32 @@ fn card_icon(id: &str) -> Option<&'static str> {
     }
 }
 
+fn card_mark(id: &str) -> &'static str {
+    match id {
+        "variax" => "Variax",
+        "podxt" => "PODxt",
+        _ => "HD",
+    }
+}
+
+/// Minimum card width before the start page uses another row.
+const START_CARD_MIN: f32 = 240.0;
+const START_ICON: f32 = 64.0;
+
+fn start_column_count(width: f32, families: usize) -> usize {
+    if families == 0 || !width.is_finite() || width <= 0.0 {
+        return 1;
+    }
+    let span = START_CARD_MIN + theme::SPACE_16;
+    let count = ((width + theme::SPACE_16) / span).floor();
+    let count = if count.is_finite() && count > 0.0 {
+        count as usize
+    } else {
+        1
+    };
+    count.clamp(1, families)
+}
+
 fn card_blurb(id: &str) -> &'static str {
     match id {
         "variax" => "Open a Variax file or start with your saved library.",
@@ -893,10 +1023,28 @@ fn card_blurb(id: &str) -> &'static str {
 
 fn start_card(ui: &mut egui::Ui, family: &dyn ProductFamily) -> egui::Response {
     let info = family.info();
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 220.0),
-        egui::Sense::click(),
+    let width = ui.available_width();
+    let inner_width = (width - theme::SPACE_16 * 2.0).max(1.0);
+    let title = ui.painter().layout(
+        info.new_label.to_owned(),
+        egui::FontId::proportional(theme::SECTION),
+        theme::TEXT,
+        inner_width,
     );
+    let blurb = ui.painter().layout(
+        card_blurb(info.id).to_owned(),
+        egui::FontId::proportional(theme::BODY),
+        theme::MUTED,
+        inner_width,
+    );
+    let height = theme::SPACE_16
+        + START_ICON
+        + theme::SPACE_8
+        + title.size().y
+        + theme::SPACE_8
+        + blurb.size().y
+        + theme::SPACE_16;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
     let fill = if response.hovered() {
         egui::Color32::from_rgb(0x2c, 0x31, 0x38)
     } else {
@@ -919,39 +1067,18 @@ fn start_card(ui: &mut egui::Ui, family: &dyn ProductFamily) -> egui::Response {
         );
     }
     let content = rect.shrink(theme::SPACE_16);
-    let icon = egui::Rect::from_min_size(content.min, egui::vec2(64.0, 64.0));
+    let icon = egui::Rect::from_min_size(content.min, egui::vec2(START_ICON, START_ICON));
     if let Some(path) = card_icon(info.id) {
         let image = shell_image(ui.ctx(), path);
-        assets::paint(ui, &image, icon);
+        paint_shell_icon(ui, &image, icon, card_mark(info.id));
     } else {
-        painter.rect_filled(
-            icon,
-            theme::RADIUS_PANEL,
-            egui::Color32::from_rgb(0x2a, 0x31, 0x38),
-        );
-        painter.text(
-            icon.center(),
-            egui::Align2::CENTER_CENTER,
-            "HD",
-            egui::FontId::proportional(theme::TITLE),
-            theme::HD,
-        );
+        paint_mark(ui, icon, card_mark(info.id));
     }
-    let title_rect = painter.text(
-        egui::pos2(content.left(), icon.bottom() + theme::SPACE_8),
-        egui::Align2::LEFT_TOP,
-        info.new_label,
-        egui::FontId::proportional(theme::SECTION),
-        theme::TEXT,
-    );
-    let blurb = painter.layout(
-        card_blurb(info.id).to_owned(),
-        egui::FontId::proportional(theme::BODY),
-        theme::MUTED,
-        content.width(),
-    );
+    let title_pos = egui::pos2(content.left(), icon.bottom() + theme::SPACE_8);
+    let title_height = title.size().y;
+    painter.galley(title_pos, title, theme::TEXT);
     painter.galley(
-        egui::pos2(content.left(), title_rect.bottom() + theme::SPACE_8),
+        egui::pos2(content.left(), title_pos.y + title_height + theme::SPACE_8),
         blurb,
         theme::MUTED,
     );
@@ -959,6 +1086,12 @@ fn start_card(ui: &mut egui::Ui, family: &dyn ProductFamily) -> egui::Response {
 }
 
 fn shell_image(ctx: &egui::Context, relative: &'static str) -> assets::UiImage {
+    #[cfg(test)]
+    if ctx.data(|data| data.get_temp::<bool>(egui::Id::new("shell-art-force-missing")))
+        == Some(true)
+    {
+        return assets::UiImage::missing(relative);
+    }
     #[derive(Clone)]
     struct Cached {
         name: String,
@@ -988,4 +1121,9 @@ fn shell_image(ctx: &egui::Context, relative: &'static str) -> assets::UiImage {
         );
     });
     loaded
+}
+
+#[cfg(test)]
+pub(super) fn force_missing_shell_art(ctx: &egui::Context, missing: bool) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("shell-art-force-missing"), missing));
 }

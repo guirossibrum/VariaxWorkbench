@@ -2156,3 +2156,25 @@ fn document_tab_reserves_a_gap_for_the_unsaved_marker() {
     assert!(file.galley.elided);
     assert!(file.pos.x + file.galley.size().x + 6.0 <= marker.pos.x);
 }
+
+#[test]
+fn fitted_stage_keeps_aspect_and_uses_the_tighter_side() {
+    let art = body_canvas::DEFAULT_ART;
+    let height_limited = body_canvas::fitted_stage(art, egui::vec2(800.0, 200.0));
+    assert!((height_limited.y - 200.0).abs() < 1.0e-3);
+    assert!(height_limited.x < 800.0);
+    assert!((height_limited.x / height_limited.y - art.x / art.y).abs() < 1.0e-3);
+
+    let width_limited = body_canvas::fitted_stage(art, egui::vec2(100.0, 400.0));
+    assert!((width_limited.x - 100.0).abs() < 1.0e-3);
+    assert!((width_limited.x / width_limited.y - art.x / art.y).abs() < 1.0e-3);
+
+    assert_eq!(
+        body_canvas::fitted_stage(art, egui::vec2(100_000.0, 100_000.0)),
+        art * 64.0
+    );
+    assert_eq!(
+        body_canvas::fitted_stage(egui::vec2(0.0, 10.0), egui::vec2(50.0, 50.0)),
+        egui::vec2(5.0, 50.0)
+    );
+}
