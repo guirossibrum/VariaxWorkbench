@@ -487,8 +487,15 @@ fn validate_software_shape(
 /// explicit gap; no producer callback blocks or grows memory without a bound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum QueueEvent {
-    Audio(Vec<u8>),
+    Audio(Vec<u8>, ChunkKind),
     Gap(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChunkKind {
+    Whole,
+    #[cfg(target_os = "linux")]
+    CaptureRead,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -644,6 +651,24 @@ impl CaptureSession {
     /// Callback-side operation: bounded copy only, no file I/O, no lock, and
     /// no adapter invocation. Queue ownership is deliberately single-thread.
     pub fn callback_chunk(&mut self, generation: u64, bytes: &[u8]) -> Result<(), CaptureError> {
+        self.queue_chunk(generation, bytes, ChunkKind::Whole)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn callback_capture_read(
+        &mut self,
+        generation: u64,
+        bytes: &[u8],
+    ) -> Result<(), CaptureError> {
+        self.queue_chunk(generation, bytes, ChunkKind::CaptureRead)
+    }
+
+    fn queue_chunk(
+        &mut self,
+        generation: u64,
+        bytes: &[u8],
+        kind: ChunkKind,
+    ) -> Result<(), CaptureError> {
         self.check_callback_admission(generation)?;
         if bytes.is_empty() {
             return self.fail(CaptureError::EmptyChunk);
@@ -700,7 +725,7 @@ impl CaptureSession {
             return self.terminal_failure(CaptureError::QueueFull);
         }
         self.queued_bytes += stereo.len();
-        self.queue.push_back(QueueEvent::Audio(stereo));
+        self.queue.push_back(QueueEvent::Audio(stereo, kind));
         Ok(())
     }
 
@@ -786,7 +811,8 @@ impl CaptureSession {
         }
 
         self.queued_bytes = next_queued_bytes;
-        self.queue.push_back(QueueEvent::Audio(stereo));
+        self.queue
+            .push_back(QueueEvent::Audio(stereo, ChunkKind::Whole));
         let measurement = staged_clock.map(|(clock, measurement)| {
             self.clock = clock;
             measurement
@@ -886,8 +912,13 @@ impl CaptureSession {
         let mut count = 0;
         while let Some(event) = self.queue.front().cloned() {
             match event {
-                QueueEvent::Audio(chunk) => {
-                    let levels = match self.take.push(&chunk) {
+                QueueEvent::Audio(chunk, kind) => {
+                    let recorded = match kind {
+                        ChunkKind::Whole => self.take.push(&chunk),
+                        #[cfg(target_os = "linux")]
+                        ChunkKind::CaptureRead => self.take.push_capture_read(&chunk),
+                    };
+                    let levels = match recorded {
                         Ok(levels) => levels,
                         Err(error) => {
                             return self.drain_failure(CaptureError::Take(error));
@@ -975,7 +1006,7 @@ impl CaptureSession {
             .queue
             .drain(..)
             .map(|event| match event {
-                QueueEvent::Audio(bytes) => PendingCaptureEvent::Audio(bytes),
+                QueueEvent::Audio(bytes, _) => PendingCaptureEvent::Audio(bytes),
                 QueueEvent::Gap(frames) => PendingCaptureEvent::Dropout { frames },
             })
             .collect())

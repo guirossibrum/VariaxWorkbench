@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] Linux guitar-to-DAW and app recording. The fake-tested lifecycle in [#146](https://github.com/guirossibrum/VariaxWorkbench/issues/146) still needs a concrete libasound implementation. [#145](https://github.com/guirossibrum/VariaxWorkbench/issues/145) owes the installed-kernel source contract, capture setup effects, and evidence for the real route, geometry and exact negotiation. In-app acceptance [#128](https://github.com/guirossibrum/VariaxWorkbench/issues/128) and the separate DAW routing/rate procedure remain owner-run. [Route and rate limits](audio-capture-session.md#daw-route-and-in-app-recording).
+
 - [ ] Native Mac acceptance for the private two-app universal DMG with the six-knob sweep, report continuation, the merged layout and the Variax checksum comparison. Gatekeeper review and merge come before building and transferring it. [#298](https://github.com/guirossibrum/VariaxWorkbench/issues/298).
 - [ ] Native Mac verification of Rig Check report creation under `~/Documents/Rig Check` and Browse from the visible folder and Application Support. [#249](https://github.com/guirossibrum/VariaxWorkbench/issues/249#issuecomment-7198373240).
 

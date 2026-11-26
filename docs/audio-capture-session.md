@@ -61,12 +61,11 @@ two-channel three-byte sample format and only copies the returned frame prefix
 into the bounded common queue. A zero-frame result remains a no-op only after
 the common session validates owner, generation, and lifecycle; it adds no PCM
 and changes no meter, clock, or queue state. The borrow ends before the callback
-returns; no native buffer or PCM handle is retained. Negative `-EPIPE` results
-are retained as terminal discontinuities; other negative errno results are
-terminal adapter failures. ALSA read results do not report the exact lost-frame count,
-so the adapter does not invent dropout duration or silence for an xrun. This
-translation has no FFI, endpoint discovery, PCM handle, or production
-initialization route.
+returns. A short read from a valid period can commit whole frames below the
+minimum configured period size. The translator records `-EPIPE` as a terminal
+discontinuity, `-ESTRPIPE` as a terminal suspension, and other negative results
+as terminal adapter failures. ALSA read results give no exact lost-frame count.
+The translator performs no FFI and retains no native buffer or PCM handle.
 
 Native numeric values match the installed ALSA 1.2.16.1
 `/usr/include/alsa/pcm.h`: `SND_PCM_ACCESS_RW_INTERLEAVED` is 3,
@@ -90,6 +89,68 @@ software observations supplied by an adapter. It does not measure device clock
 drift, hardware timestamps, stream latency, or synchronization. Tests inject
 observations and periods directly; they must not enumerate or open audio
 devices. No resampling occurs and no fractional source clock is rounded.
+
+## Inactive Linux ALSA stream lifecycle (#146)
+
+The initial source is Variax 600 → PODxt Live Record Send 1–2 → stock
+`snd-usb-pod`. The stream adapter takes an injected, configured but unstarted
+PCM. The platform must supply independent evidence for that same attachment
+and raw hardware PCM, the guitar and selected send, and channel order. A
+display name, static plan, or matching sample tuple cannot establish the
+route. The adapter admits the already-selected processed or clean instrument
+send and uses the handle for capture.
+
+On that same PCM the platform must report the current negotiated
+RW_INTERLEAVED, packed S24_3LE, two-channel format, and exact `78125/2`
+rate from the rational getter. The adapter also requires whole-frame period
+and buffer geometry within the existing source-declared window, with the
+buffer composed of the reported number of equal periods. These bounds come
+from source. Runtime negotiation remains unverified. The adapter starts the
+PCM only after all checks pass. The same owner
+thread reads a bounded period and feeds the existing translator and common
+session. Stop, cancel, disconnect and terminal read or storage failure
+release the PCM once. The common take preserves accepted audio and any
+pending recovery events. An overrun or suspend ends capture without
+recovery, retries or a guessed lost-frame count. Cleanup errors are
+retained separately from the reason capture stopped.
+
+The platform boundary is exercised with fake ALSA only. A concrete libasound
+implementation, open/configure path and production connection remain
+pending. The source-backed declaration
+and period limits are in [POD USB audio](pod-usb-audio.md). The dedicated
+[#145](https://github.com/guirossibrum/VariaxWorkbench/issues/145) contract
+is still open. The recorded module evidence is for
+`7.2.15-1-omarchy`. The assignment host reports `7.2.15-4-omarchy`.
+The latter build's correspondence to the pinned source and module evidence
+is unverified. The contract must document the effects of open, hw_params,
+prepare, start and cleanup, including any USB interface, altsetting or rate
+request. The existing source notes identify altsetting 1 at probe. The PCM
+open and start effects still need their own source trace. The exact request that negotiates the
+rational clock through stock ALSA, runtime channel order, and how to prove
+the physical Record Send mapping for the selected PCM remain unresolved.
+The owner procedure and approval for in-app live acceptance stay in
+[#128](https://github.com/guirossibrum/VariaxWorkbench/issues/128).
+
+### DAW route and in-app recording
+
+A DAW can select an operating system capture input independently of
+Workbench. The DAW path requires the OS or audio server to expose the
+verified PODxt capture source. A DAW or server fixed to an integer project
+rate such as 44.1 or 48 kHz cannot use the declared `78125/2` clock
+unchanged. A route with conversion requires the server or DAW to open the
+hardware successfully and convert from the source clock to its graph or
+project clock. PipeWire documents resampling between device and graph
+rates. Support for opening this PCM and preserving its channel order on
+the installed ALSA node/profile remains unverified. The chosen server/DAW,
+actual exposed source, and source and graph rates belong in a separate
+owner-run DAW procedure.
+[PipeWire format and resampler properties](https://docs.pipewire.org/page_man_pipewire-props_7.html)
+
+The planned Workbench capture workflow uses a direct hardware PCM and
+requires exact native parameters throughout. Its existing file path rejects
+integer WAV for the rational clock and supports an exact-clock AIFF with
+sidecar for offline takes. The WAV wording in #128 needs reconciliation
+with that requirement before any live acceptance procedure.
 
 ## Unsupported routes and remaining work
 
@@ -160,7 +221,7 @@ counts for criterion 2; it does not imply an adapter or live capability.
 | Criterion | Current implementation or evidence | Status and remaining dependency |
 | --- | --- | --- |
 | 1. Integrate recorder behavior with the common capture API | `ValidatedPlan` and `CaptureSession` own software-file and synthetic Panel sessions; `Take` remains the shared storage/save implementation. The Panel's simulated-callback choice writes generated interleaved S16 into Rust-owned fake halves, submits explicit software notifications to the same `CaptureSession`, and drains into the same `Take`; there is no second queue or Take. An atomic backpressure rejection retains the Panel cursor and permits retrying the same frames; tests verify accepted data and saved WAV chronology. Workflow tests cover both integer clocks, cancellation/restart, exact PCM/WAV payloads, save collision/failure/success, and re-open parsing. | Partial. This adds a portable software workflow only; complete platform/source-planning operations remain outstanding. |
-| 2. Establish each platform adapter contract or record a bounded blocker | Linux ALSA translation is source-qualified and inactive. Windows has the version-pinned ASIO static trace and a Rust-owned offline double-buffer/notification model; the latter tests selector response `1` selection without defining native ABI. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Partial. The offline model does not complete a platform adapter. Windows still lacks the versioned native ABI, physical source channel/rate contract, and interface admission; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
+| 2. Establish each platform adapter contract or record a bounded blocker | Linux ALSA translation is source-qualified. An inactive PCM lifecycle passes fake-boundary tests. Windows has the version-pinned ASIO static trace and a Rust-owned offline double-buffer/notification model; the latter tests selector response `1` selection without defining native ABI. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Partial. Linux still needs a concrete libasound platform implementation and the #145 setup and route evidence. Windows still lacks the versioned native ABI, physical source channel/rate contract, and interface admission; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
 | 3. Admit source records and negotiated format/clock provenance | The frozen registry admits one static Linux PODxt Live declaration. External records remain absent; Windows and macOS facts do not provide an admitted plan or runtime negotiation. | Partial. Requires independently sourced identity/revision, channel map, format, rational clock, backend, and provenance for each additional source. |
 | 4. Preserve bounded queue, chronology, error, recovery, and lifecycle behavior | `CaptureSession` uses bounded chronological audio/dropout events, owner-thread drain, generation checks, terminal errors, recovery events, and stop/cancel ownership. The offline ASIO-style model interleaves borrowed source-order channel buffers, applies the channel map once in `CaptureSession`, and atomically stages only the bounded clock tracker and current chunk. Adapter lifecycle/delivery operations are bound to the exact external session identity and original owner; matching-plan replacement sessions are rejected before state changes. Tests cover bounded staging independent of Take length, malformed foreign-thread notifications, same-thread alternate sessions, fresh foreign-thread sessions, repeated lifecycle, cancel/disconnect/dispose, fresh generations, and late callbacks. | Partial. The offline software tests do not verify native callback ownership, physical stream recovery, or device timing. |
 | 5. Use common controls for admitted native/external plans | Panel offers route, clock, input, and shared start/feed/stop/cancel/save controls; its Linux PODxt test option revalidates the static declaration and routes generated S24 PCM through the ALSA read-result translator and common session. The source-neutral simulated-callback choice is available for 44.1/48 kHz software clocks and uses the common Panel session, Take, and save path. External-plan checks report missing admission fields. | Partial. Both generated-data paths verify offline planning/adapter translation and common Panel lifecycle, but neither negotiates or captures a native stream. An external plan still requires an independently admitted interface record; it cannot be inferred from PODxt, WAV, or synthetic metadata. |
