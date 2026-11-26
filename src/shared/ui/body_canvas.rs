@@ -200,17 +200,23 @@ fn trunc_toward_zero(value: f32) -> f32 {
     (value as i32) as f32
 }
 
-/// New position after a horizontal drag of `art_dx` art pixels.
-///
-/// The divisor is the drawn travel, `x_max − x_min`, which is
-/// `right − left − 120`. Workbench's drag divisor is
-/// `component width − padded image width` instead.
-pub fn move_inches(origin: f32, art_dx: f32, placement: PickupPlacement) -> f32 {
-    let span = placement.x_max - placement.x_min;
-    if !origin.is_finite() || !art_dx.is_finite() || !span.is_finite() || span == 0.0 {
-        return origin.clamp(POSITION_MIN, POSITION_MAX);
+fn drag_divisor(placement: PickupPlacement, source_px: [usize; 2]) -> f32 {
+    // Drawing subtracts the fixed slot from the component width. Dragging
+    // subtracts the square image buffer of the pickup at the press point.
+    let component_width = placement.x_max - placement.x_min + PICKUP_SLOT_PX as f32;
+    component_width - padded_side(source_px[0], source_px[1]) as f32
+}
+
+fn position_after_drag(origin: f32, art_dx: f32, divisor: f32) -> f32 {
+    // An image that fills or exceeds the component has no usable travel.
+    // Returning to the press point also restores the exact starting value.
+    if !divisor.is_finite() || divisor <= 0.0 || !art_dx.is_finite() || art_dx == 0.0 {
+        return origin;
     }
-    (origin + art_dx / span * (POSITION_MAX - POSITION_MIN)).clamp(POSITION_MIN, POSITION_MAX)
+    let span = POSITION_MAX - POSITION_MIN;
+    let normalized_origin = (origin - POSITION_MIN) / span;
+    let normalized = (normalized_origin + art_dx / divisor).clamp(0.0, 1.0);
+    normalized * span + POSITION_MIN
 }
 
 /// New angle after a vertical drag. `screen_dy` is positive downward.
@@ -596,7 +602,7 @@ struct ActiveDrag {
     reported_inches: f32,
     reported_degrees: f32,
     scale: f32,
-    placement: PickupPlacement,
+    drag_divisor: f32,
 }
 
 fn paint_order(pickups: &[PickupSprite<'_>]) -> Vec<usize> {
@@ -908,7 +914,10 @@ fn interact(ui: &mut egui::Ui, gesture: &Gesture<'_>, events: &mut Vec<BodyEvent
                 reported_inches: inches,
                 reported_degrees: degrees,
                 scale,
-                placement,
+                drag_divisor: drag_divisor(
+                    placement,
+                    source_pixels(pickups[index].image, placement),
+                ),
             };
             events.push(BodyEvent::DragStarted { index, kind });
             if let Some(event) = step_drag(&mut drag, now, fine) {
@@ -941,7 +950,7 @@ fn step_drag(drag: &mut ActiveDrag, now: Pos2, fine: bool) -> Option<BodyEvent> 
             } else {
                 total.x / drag.scale
             };
-            let inches = move_inches(drag.origin_inches, art_dx, drag.placement);
+            let inches = position_after_drag(drag.origin_inches, art_dx, drag.drag_divisor);
             if (inches - drag.reported_inches).abs() <= 1.0e-4 {
                 None
             } else {

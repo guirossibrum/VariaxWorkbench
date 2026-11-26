@@ -1,7 +1,7 @@
 use super::{BODY, PICKUP1, TUNING, Tab, egui, tuning_presets::DETUNE};
 use crate::editor::{EditorDefaults, Workbench, registry, tests::app};
 use variax_workbench::ui::{
-    body_canvas::move_inches,
+    body_canvas::{PICKUP_SLOT_PX, POSITION_MAX, POSITION_MIN},
     editor_layout::{
         NECK_MAX, SIDE_MIN_SCALE, TUNING_CHROME_WIDTH, TUNING_TABLE_WIDTH, TWELVE_STRING_COLUMN,
     },
@@ -275,7 +275,15 @@ fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo(
             let center = placement.screen_point(art, pos);
             assert!(editor.pickup_centers[&PICKUP1].distance(center) < 0.1);
             let before = editor.document.as_ref().unwrap().as_bytes().to_vec();
-            let end = center + egui::vec2(36.0 * scale, 0.0);
+            let [width, height] = editor.textures["pickups/strat.png"].handle.size();
+            let padded_width = (width.max(height) as f64 * 1.15) as usize;
+            let component_width = placement.x_max - placement.x_min + PICKUP_SLOT_PX as f32;
+            let divisor = component_width - padded_width as f32;
+            let span = POSITION_MAX - POSITION_MIN;
+            let drag_art_pixels = 36.0;
+            let normalized = (pos - POSITION_MIN) / span + drag_art_pixels / divisor;
+            let expected = normalized.clamp(0.0, 1.0) * span + POSITION_MIN;
+            let end = center + egui::vec2(drag_art_pixels * scale, 0.0);
             let mut frame = |events, modifiers| {
                 render(&mut app, &ctx, size, pixels_per_point, events, modifiers)
             };
@@ -288,7 +296,7 @@ fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo(
             let editor = app.variax();
             assert_eq!(editor.tab, Tab::Pickups);
             let actual = editor.float(PICKUP1, 0x200000).unwrap();
-            assert!((actual - move_inches(pos, 36.0, placement)).abs() < 1e-4);
+            assert!((actual - expected).abs() < 1e-4, "{actual} vs {expected}");
             let command = egui::Modifiers {
                 ctrl: true,
                 command: true,
