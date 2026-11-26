@@ -917,3 +917,6 @@ mod tests {
 
 #[cfg(test)]
 mod direct_usb;
+
+#[cfg(test)]
+mod variax_position;

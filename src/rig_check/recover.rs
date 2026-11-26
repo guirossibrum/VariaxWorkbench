@@ -13,7 +13,8 @@ use super::catalogue::{self, RIG_GUARD};
 use super::guided::{begin_action, missed, watch_variax};
 use super::practice::{Program, UserAction, preset_label};
 use super::procedures::{
-    TONE_POSITION_WORDS, variax_read_preset, with_variax, with_variax_progress,
+    CHECKSUM_WORD, firmware_checksum, neutral_program, variax_read_preset, with_variax,
+    with_variax_progress,
 };
 use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
 use super::runner::{Ctx, Decision, Operator, Progress, ReportSink};
@@ -151,14 +152,15 @@ pub fn vdi_replug(ctx: &mut Ctx<'_>) -> Result<(), String> {
 
 // ------------------------------------------------------------------ crash restore
 
-/// The program with the tone-position words zeroed, so a knob move does not
-/// change the hash.
-pub fn match_hash(words: &Program) -> String {
-    let mut copy = *words;
-    for word in TONE_POSITION_WORDS {
-        copy[word] = 0;
-    }
-    sha256_hex(&super::procedures::program_bytes(&copy))
+const VARIAX_HASH_SCHEME: &str = "tone-position-v2:";
+
+/// Hash a checksum-verified program, excluding only the live tone position
+/// and the verified checksum. The prefix distinguishes older state files
+/// whose hash also discarded neighboring settings.
+pub fn match_hash(words: &Program) -> Option<String> {
+    let neutral = neutral_program(words).ok()?;
+    let hash = sha256_hex(&super::procedures::program_bytes(&neutral));
+    Some(format!("{VARIAX_HASH_SCHEME}{hash}"))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -181,7 +183,7 @@ impl RigState {
             podxt_channel: data.start_channel.map(|c| c.index()),
             podxt_tone_sha256: data.start_tone.as_ref().map(|t| sha256_hex(&t.raw)),
             variax_preset: data.start_preset.map(|p| (p.bank(), p.slot())),
-            variax_match_sha256: data.start_program.as_ref().map(match_hash),
+            variax_match_sha256: data.start_program.as_ref().and_then(match_hash),
             finished: run.finished,
         }
     }
@@ -291,6 +293,18 @@ const RESTORE_OPS: &[Operation] = &[
 ];
 
 fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
+    let variax = state
+        .preset()
+        .map(|preset| {
+            let hash = state.variax_match_sha256.as_deref().filter(|hash| {
+                hash.strip_prefix(VARIAX_HASH_SCHEME).is_some_and(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            });
+            hash.map(|hash| (preset, hash))
+                .ok_or("This state file has no usable Variax recovery hash. Keep the earlier report and verify the rig manually before continuing.")
+        })
+        .transpose()?;
     let mut problems = Vec::new();
     if let Some(channel) = state.channel() {
         let tone = super::procedures::with_podxt(ctx, RESTORE_OPS, |session| {
@@ -310,7 +324,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
             ));
         }
     }
-    if let Some(preset) = state.preset() {
+    if let Some((preset, expected_hash)) = variax {
         if state.channel().is_none() {
             super::procedures::with_podxt(ctx, RESTORE_OPS, |session| {
                 podxt::identify_podxt_live(session).map(|_| ())
@@ -326,16 +340,27 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
                 "Verifying the return to your starting preset",
             )
         })?;
-        if Some(match_hash(&read.words)) == state.variax_match_sha256 {
-            ctx.rec.show(format!(
+        match match_hash(&read.words) {
+            Some(actual) if actual == expected_hash => ctx.rec.show(format!(
                 "Rig: the Variax is back on {} and its program matches the start.",
                 preset_label(preset)
-            ));
-        } else {
-            problems.push(format!(
+            )),
+            Some(_) => problems.push(format!(
                 "The Variax is on {}, but its program differs from the start.",
                 preset_label(preset)
-            ));
+            )),
+            None => {
+                let reason = "The Variax recovery read failed its firmware checksum check.";
+                ctx.rec.difference(
+                    super::differences::Severity::Stop,
+                    reason,
+                    vec![super::differences::checksum_line(
+                        firmware_checksum(&read.words),
+                        read.words[CHECKSUM_WORD],
+                    )],
+                );
+                problems.push(reason.into());
+            }
         }
     }
     if !ctx.port.direct_usb() && ctx.port.variax_claimed() {

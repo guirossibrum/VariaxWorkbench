@@ -634,16 +634,15 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
         variax_full_read(session, stopping, progress, "Current program")
     })?;
     let image = shared_variax::pack(&read.words);
-    let mut checked = image;
-    shared_variax::set_firmware_checksum(&mut checked);
-    if image != checked {
-        super::differences::program(
-            ctx.rec,
+    let checksum = procedures::firmware_checksum(&read.words);
+    if read.words[procedures::CHECKSUM_WORD] != checksum {
+        ctx.rec.difference(
+            Severity::Stop,
             "Variax checksum",
-            &procedures::unpack_program(&checked),
-            &read.words,
-            super::differences::Severity::Stop,
-            false,
+            vec![differences::checksum_line(
+                checksum,
+                read.words[procedures::CHECKSUM_WORD],
+            )],
         );
         return Err("The Variax current program failed the firmware checksum check.".into());
     }
@@ -940,7 +939,17 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
             procedures::drain(session)?;
             variax_full_read(session, stopping, progress, "Checking the starting program")
         })?;
-        if same_program(&now.words, &start) {
+        if now.words[procedures::CHECKSUM_WORD] != procedures::firmware_checksum(&now.words) {
+            differences::program(
+                ctx.rec,
+                "Variax starting program",
+                &start,
+                &now.words,
+                Severity::Stop,
+                true,
+            );
+            problems.push("The Variax return check failed the firmware checksum.".into());
+        } else if same_program(&now.words, &start) {
             differences::program(
                 ctx.rec,
                 "Variax starting program",
@@ -957,6 +966,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 .exercise_program()
                 .ok_or("The starting Variax preset is missing from the backup.")?;
             let preset = ctx.data.start_preset.expect("checked starting preset");
+            let mut mismatched_slot = None;
             let restore = with_variax_progress(
                 ctx,
                 super::variax_live::VARIAX_LIVE,
@@ -970,6 +980,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                         "Selecting the verified starting slot",
                     )?;
                     if !same_program(&selected.words, &stored) {
+                        mismatched_slot = Some(selected.words);
                         return Err("Saved starting slot differs from the verified backup. The captured edits were not sent.".into());
                     }
                     let bytes = shared_variax::pack(&start);
@@ -988,6 +999,16 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                     )
                 },
             );
+            if let Some(selected) = mismatched_slot {
+                differences::program(
+                    ctx.rec,
+                    "Saved starting slot before restoring captured edits",
+                    &stored,
+                    &selected,
+                    Severity::Stop,
+                    true,
+                );
+            }
             match restore {
                 Ok(back)
                     if super::differences::program(
