@@ -3,7 +3,8 @@ use std::sync::Arc;
 use variax_workbench::ui::{
     assets::UiImage,
     body_canvas::{
-        BodyCanvas, BodyEvent, DragKind, PickupPlacement, PickupSprite, placement_for_body,
+        BodyCanvas, BodyEvent, DragKind, PickupPlacement, PickupSprite, outline_rect,
+        paint_body_outline, placement_for_body, wireframe_path,
     },
 };
 
@@ -39,6 +40,25 @@ pub(super) struct BundledArtwork {
 }
 
 impl VariaxEditor {
+    pub(super) fn body_outline(&mut self, ui: &mut egui::Ui) {
+        let Some(model_id) = self.model_id(BODY) else {
+            return;
+        };
+        let path = wireframe_path(model_id);
+        let image = match self.texture(ui.ctx(), path) {
+            Some(texture) => UiImage {
+                name: path.into(),
+                pixels: texture.size(),
+                texture: Some(texture),
+                missing: false,
+            },
+            None => UiImage::missing(path),
+        };
+        let extent = outline_rect(egui::Pos2::ZERO, &image, 1.0).max.to_vec2();
+        let (panel, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
+        paint_body_outline(ui, &image, panel.min, 1.0);
+    }
+
     fn canvas_image(
         &mut self,
         ctx: &egui::Context,

@@ -8,6 +8,7 @@ use variax_workbench::ui::{
 };
 
 const SIZES: [egui::Vec2; 2] = [egui::vec2(1120.0, 760.0), egui::vec2(960.0, 680.0)];
+const OUTLINE_TEST_SIZE: egui::Vec2 = egui::vec2(1120.0, 900.0);
 
 fn render(
     app: &mut Workbench,
@@ -66,6 +67,133 @@ fn assert_footer(output: &egui::FullOutput, size: egui::Vec2, tuning: egui::Rect
     );
     assert!(footer.right() > size.x - 30.0 && footer.right() <= size.x);
     assert!(footer.bottom() <= size.y);
+}
+
+fn body_tab_app(artwork: &std::path::Path) -> (egui::Context, Workbench) {
+    let (ctx, mut app) = app();
+    app.clear_window_controls = true;
+    let editor = app.variax_mut();
+    editor.open_example();
+    editor.choose_artwork(artwork.into());
+    editor.tab = Tab::Body;
+    (ctx, app)
+}
+
+fn render_body_tab(app: &mut Workbench, ctx: &egui::Context) -> egui::FullOutput {
+    render(
+        app,
+        ctx,
+        OUTLINE_TEST_SIZE,
+        1.0,
+        vec![],
+        egui::Modifiers::NONE,
+    )
+}
+
+#[test]
+fn body_tab_paints_the_selected_models_private_outline_at_native_size() {
+    let artwork = tempfile::tempdir().unwrap();
+    let directory = artwork.path().join("bodies/wireframe");
+    std::fs::create_dir_all(&directory).unwrap();
+    let (ctx, mut app) = body_tab_app(artwork.path());
+    let outline_bounds = |output: &egui::FullOutput, texture| {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                let bounds = mesh.calc_bounds();
+                assert!(shape.clip_rect.contains_rect(bounds));
+                Some(bounds)
+            }
+            _ => None,
+        })
+    };
+
+    let mut previous_texture = None;
+    for (model, file, width, height) in [
+        (0x0310_0003, "strat.png", 117, 61),
+        (0x0310_0002, "thinline.png", 138, 70),
+    ] {
+        image::RgbaImage::from_pixel(width, height, image::Rgba([200, 220, 255, 255]))
+            .save(directory.join(file))
+            .unwrap();
+        app.variax_mut()
+            .change(|preset| preset.select_model(BODY, model));
+        render_body_tab(&mut app, &ctx);
+        let output = render_body_tab(&mut app, &ctx);
+        let editor = app.variax();
+        let path = format!("bodies/wireframe/{file}");
+        let texture = editor.textures[&path].handle.id();
+        let bounds = outline_bounds(&output, texture).expect("selected outline");
+        assert_eq!(bounds.size(), egui::vec2(width as f32, height as f32));
+        let (photo, inspector) = editor.workspace_cards.unwrap();
+        assert!(inspector.contains_rect(bounds));
+        assert!(!photo.intersects(bounds));
+        assert!(text_rect(&output, &path).is_none());
+        if let Some(previous) = previous_texture {
+            assert!(outline_bounds(&output, previous).is_none());
+        }
+        previous_texture = Some(texture);
+    }
+
+    app.variax_mut().tab = Tab::Pickups;
+    let output = render_body_tab(&mut app, &ctx);
+    assert!(outline_bounds(&output, previous_texture.unwrap()).is_none());
+}
+
+#[test]
+fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
+    let artwork = tempfile::tempdir().unwrap();
+    let (ctx, mut app) = body_tab_app(artwork.path());
+    app.variax_mut()
+        .change(|preset| preset.select_model(BODY, 0x0310_0004));
+    render_body_tab(&mut app, &ctx);
+    let output = render_body_tab(&mut app, &ctx);
+    let path = "bodies/wireframe/lespaul.png";
+    let label = text_rect(&output, path).expect("mapped placeholder before scrolling");
+    let (photo, inspector) = app.variax().workspace_cards.unwrap();
+    render(
+        &mut app,
+        &ctx,
+        OUTLINE_TEST_SIZE,
+        1.0,
+        vec![
+            egui::Event::PointerMoved(label.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -400.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        egui::Modifiers::NONE,
+    );
+    for _ in 0..20 {
+        render_body_tab(&mut app, &ctx);
+    }
+    let output = render_body_tab(&mut app, &ctx);
+    let label = text_rect(&output, path).expect("mapped placeholder after scrolling");
+    let slot = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if rect.rect.size() == egui::vec2(238.0, 148.0)
+                    && rect.rect.contains_rect(label) =>
+            {
+                assert!(
+                    shape.clip_rect.contains_rect(rect.rect),
+                    "outline {:?} vs clip {:?}",
+                    rect.rect,
+                    shape.clip_rect
+                );
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .expect("original missing-outline slot");
+    assert!(inspector.contains_rect(slot));
+    assert!(!photo.intersects(slot));
+
+    app.variax_mut().tab = Tab::Controls;
+    assert!(text_rect(&render_body_tab(&mut app, &ctx), path).is_none());
 }
 
 #[test]

@@ -1018,6 +1018,7 @@ impl VariaxEditor {
                 Tab::Body => {
                     ui.strong("Guitar body");
                     self.model_control(ui, BODY, "body");
+                    self.body_outline(ui);
                 }
                 Tab::Pickups => {
                     ui.columns(2, |columns| {
