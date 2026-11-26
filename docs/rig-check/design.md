@@ -12,13 +12,13 @@ and the remaining review gaps.
 | Screen | File |
 | --- | --- |
 | Choose Practice or Real rig | [01-choose-mode.png](mockups/01-choose-mode.png) |
-| Start risk notice: Quit (focused) / Accept and continue | [02-start-notice.png](mockups/02-start-notice.png) |
+| Start risk notice: Quit / Accept and continue | [02-start-notice.png](mockups/02-start-notice.png) |
 | Step card, read step: What it does / What you'll see and hear / Risk | [03-step-card-read.png](mockups/03-step-card-read.png) |
 | Step card, live step (real rig) | [04-step-card-live.png](mockups/04-step-card-live.png) |
 | Running, with the current read, progress bar, elapsed time and Stop | [05-running.png](mockups/05-running.png) |
 | Get-ready countdown before a physical action | [06-listening.png](mockups/06-listening.png) |
-| Didn't see it: Skip (focused) / Try again | [07-not-seen.png](mockups/07-not-seen.png) |
-| Listening question: Yes / No / Not sure (focused) and a note, with what the byte checks proved | [08-listening-question.png](mockups/08-listening-question.png) |
+| Didn't see it: Skip / Try again | [07-not-seen.png](mockups/07-not-seen.png) |
+| Listening question: Yes / No / Not sure and a note, with what the byte checks proved | [08-listening-question.png](mockups/08-listening-question.png) |
 | Save notice naming the slot and the backup; Save stays disabled until the confirmation is typed exactly | [09-save-notice.png](mockups/09-save-notice.png) |
 | Summary with rig state, results preview and Save report | [10-summary-preview.png](mockups/10-summary-preview.png) |
 | Step result with the channel name, a display check, Continue and Stop | [11-step-result.png](mockups/11-step-result.png) |
@@ -51,13 +51,24 @@ The Retina PNGs are rendered at 2 pixels per point (2240×1520 pixels).
 | VDI Get ready before unplugging | Step 16 of 35 | Catalogue ID 6.1 | [Laptop](mockups/laptop-vdi-get-ready.png) | [Retina](mockups/retina-vdi-get-ready.png) |
 | PODxt expression-pedal sweep | Step 21 of 35 | Catalogue ID 7.4 | [Laptop](mockups/laptop-expression-pedal.png) | [Retina](mockups/retina-expression-pedal.png) |
 | PODxt channel recall and return | Step 29 of 35 | Catalogue ID 4.7 | [Laptop](mockups/laptop-podxt-channel-recall.png) | [Retina](mockups/retina-podxt-channel-recall.png) |
+| USB devices and drivers | Step 2 of 37 | Catalogue ID 0.2 | [Card](mockups/laptop-usb-inventory-card.png) · [Result](mockups/laptop-usb-inventory-result.png) | [Card](mockups/retina-usb-inventory-card.png) · [Result](mockups/retina-usb-inventory-result.png) |
+| Open and give back the guitar interface | Step 6 of 36 | Catalogue ID 1.2 | [Card](mockups/laptop-guitar-interface-card.png) · [Result](mockups/laptop-guitar-interface-result.png) | [Card](mockups/retina-guitar-interface-card.png) · [Result](mockups/retina-guitar-interface-result.png) |
+| Rig back to its starting state and connections released | Step 35 of 35 | Catalogue ID 6.2 | [Card](mockups/laptop-rig-guard-card.png) · [Result](mockups/laptop-rig-guard-result.png) | [Card](mockups/retina-rig-guard-card.png) · [Result](mockups/retina-rig-guard-result.png) |
 
 **Step X of Y** follows the runner's visit order. The sidebar follows that
 same order and prefixes each row with its catalogue ID. The catalogue ID is
 the stable reference used in the report and by Resume. The examples show
 catalogue ID 7.4 at Step 21, then catalogue ID 4.7 later at Step 29.
-The fixture includes the expected firmware skips for PODxt Live
-3.01 (2.7) and Variax 3.10 (3.7), which do not take run positions.
+The total drops as the run records the expected firmware skips for PODxt
+Live 3.01 (2.7) and Variax 3.10 (3.7). The 0.2 fixture is before both
+decisions, the 1.2 fixture is after 2.7, and the 6.2 fixture is after both.
+
+The three paired Practice results show a synthetic USB list, a successful
+release with the Linux guitar driver back in place, and matching starting
+buffers with the guitar interface released. All three cards show Skip
+focused, and all three results show Continue focused. At both scales the
+central panels and actions fit. Some sidebar titles are shortened, and
+the 6.2 row is below the initial sidebar viewport.
 
 The 6.1 card describes listening for disconnect and reconnect through the
 PODxt Live and verifying the returning identity against 3.1. Get ready

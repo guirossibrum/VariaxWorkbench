@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Rig Check #248 adds headless Practice cards and results for 0.2, 1.2 and 6.2 at laptop 1× and Retina 2×. Two software draws produced 34 byte-identical PNGs. Keyboard checks confirmed Skip on the new cards and Continue on their results at both scales. The central panels fit, and the 6.2 sidebar row requires scrolling. [Owner review checklist](design/rig-check-wizard-review.md).
+
 - [x] Rig Check 4.7 handles the optional PODxt Live block-end after a valid addressed tone in the existing read window. Four fake-link tests cover split and coalesced replies, recall and return, unchanged wait budgets, and rejection of malformed or out-of-context frames. Owner Mac verification is pending. [#300](https://github.com/guirossibrum/VariaxWorkbench/issues/300).
 
 - [x] [#118](https://github.com/guirossibrum/VariaxWorkbench/issues/118) traces the directional ALSA rate restriction for the PODxt Live. Two offline fixtures cover the open rate interval and exact prepared-handle admission, including rejection of rounded or missing rates before start. [Source contract and outstanding owner check](hardware-gates/g4-contract.md#exact-rate-request-candidate-118).

@@ -8,11 +8,10 @@ and the [guided prompts proposal](rig-check-guided-prompts.md) during review.
 ## Generated evidence
 
 The mockups were redrawn on 2026-11-26 on Linux x86_64 with rustc 1.99.1
-(58cf8f9c3 2026-10-13). They draw the wizard from master
-`8988335d342fe961c60f8815090d1bb867deebbd` with this checkpoint's renderer
-and fixture changes. That base contains the run-position merge
-`c2b9caf` and the VDI replug merge `35102eb`. The fixtures use generated
-Practice records and demo strings, including the Real rig card example.
+(58cf8f9c3 2026-10-13), from master
+`b3354b46bc8ad683c144f48aa9442e7ec76a85c7` with the #248 fixture additions.
+The fixtures use generated Practice records and demo strings, including the
+Real rig card example.
 
 Reproduce with the USB feature off, using an empty output directory:
 
@@ -24,24 +23,24 @@ cargo build --locked --offline --no-default-features --features gui --bin rig-ch
 `--mockups` renders through egui on the CPU and exits during option parsing,
 before the program constructs a real port or opens a native window. The
 software renderer lays out logical points at each scale and rasterizes the
-resulting meshes in physical pixels. All 22 PNGs are 8-bit RGBA.
+resulting meshes in physical pixels. All 34 PNGs are 8-bit RGBA.
 
 | Set | Count | Logical size | Scale | PNG size |
 | --- | --- | --- | --- | --- |
 | Numbered screens 01–14 | 14 | 1180×800 | 1× | 1180×800 |
-| Laptop examples | 4 | 1120×760 | 1× | 1120×760 |
-| Retina examples | 4 | 1120×760 | 2× | 2240×1520 |
+| Laptop examples | 10 | 1120×760 | 1× | 1120×760 |
+| Retina examples | 10 | 1120×760 | 2× | 2240×1520 |
 
-Two draws produced identical PNGs. Ten numbered images changed from the
-previous set and four matched byte for byte. The SHA-256 of the
-filename-sorted `sha256sum *.png` output from the image directory is
-`096aa0c9f73b2d34342abdc22b39161b5f4c74b6fe991a7da831582984a85bf7`.
+Two draws produced identical PNGs, including all 22 previously generated
+images. The SHA-256 of `LC_ALL=C sha256sum *.png` run in a fresh
+`--mockups` output directory is
+`c13dadf2dc705aa2753fae585a3148ae44aee5d4eb857b48e6ac159ad562bd8c`.
 
 The clocks in 05 and 06 start immediately before rendering. The stills
 show the start of the read and the selector countdown, respectively.
 Laptop and Retina fixtures show the VDI card and its first Get ready
-prompt, and two later cards in the same demo visit order. The run heading
-shows both progress and the catalogue reference on all eight images.
+prompt, two later cards, and paired cards and passing results for 0.2,
+1.2 and 6.2. Each screen shows its run position and catalogue ID.
 
 ## Checklist
 
@@ -64,22 +63,30 @@ Keep owner screenshots private.
 | 12 | Progress and stable references | 03, 05, 10 and 11 show the progress list. The paired fixtures show Step 21 of 35 / Catalogue ID 7.4 and Step 29 of 35 / Catalogue ID 4.7 at both scales. | Review progress-list placement and the run heading alongside the report IDs. | |
 | 13 | Summary and report | 10 shows the rig state, counts, a demo preview line and Save report…. | Review a completed Practice summary and whether to offer Open folder. | |
 | 14 | Back and Return | 12 and 13 show review of an earlier result and the accepted start notice. Keyboard tests cover returning to the pending card. | Review focus and wording in native Practice. | |
-| 15 | Narrow laptop view | Four samples at 1120×760 show the existing headings and controls. | Review native window layout and any states outside the sample. | |
-| 16 | Retina view | The same four samples render at 2 pixels per point. | Review native scaling and focus on a Retina display. | |
-| 17 | Screenshots of wizard states | The 14 numbered images cover the existing review set. Eight additional images cover the four narrower fixtures. | Keep native screenshots privately, including focus states. | |
+| 15 | Narrow laptop view | Ten samples at 1120×760 show the headings and controls. The sidebar shortens longer titles, and the 6.2 row needs scrolling. | Review the native layout and whether the sidebar should follow the active step. | |
+| 16 | Retina view | The same ten samples render at 2 pixels per point. | Review native scaling and focus on a Retina display. | |
+| 17 | Screenshots of wizard states | The 14 numbered images and 20 narrow images cover the generated review set. The new cards focus Skip and their results focus Continue. | Keep native screenshots privately, including focus states. | |
 
-The Mac and Windows choose-mode copy, individual cards 0.2, 1.2 and 6.2,
-and the #297 continuation screens are outside this image set. The
-revised VDI Get ready example covers the unplug phase. Reconnect and
-identity-check states remain for native review. The owner questions about
-progress-list placement, the evidence line, Open folder, Practice focus
-and Get ready focus remain open.
+The Mac and Windows choose-mode copy and the #297 continuation screens
+are outside this image set. The VDI Get ready example covers the unplug
+phase. Reconnect and identity-check states remain for native review. The
+owner questions about progress-list placement, the evidence line, Open
+folder, Practice focus and Get ready focus remain open.
+
+The new central panels and focused controls fit at both scales.
+The 6.2 sidebar starts at the top and omits the active row from the
+initial view. The older 01, 02, 07 and 08 fixtures render with focus
+disarmed, so their images do not show the keyboard defaults listed in
+the checklist. Those defaults remain part of native review.
 
 ## Rendering checks
 
 `mockups_render_headless` covers the numbered fixture set and a software
 raster frame. `laptop_mockups_show_run_position_and_catalogue_id_at_both_scales`
-checks the heading, stable ID and primary action at 1× and 2× for all four
-narrow fixtures and checks the 2× raster dimensions. Existing headless
-tests cover skip, run and stop shortcuts, notice defaults, history and
-run ordinals across retries.
+checks the heading, stable ID and primary action at 1× and 2× for all ten
+narrow fixtures and checks the 2× raster dimensions.
+`inventory_interface_and_guard_mockups_have_evidence_and_safe_defaults`
+checks representative text and confirms that Enter selects Skip on each
+new card and Continue on each matching result at both scales. Existing
+headless tests cover run and stop shortcuts, notice defaults, history
+and run ordinals across retries.
