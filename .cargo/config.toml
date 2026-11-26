@@ -1,0 +1,8 @@
+# Routine development and test builds retain source locations for backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+# Opt in when a debugger needs types and local variables.
+[profile.debugging]
+inherits = "dev"
+debug = "full"

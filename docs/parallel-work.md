@@ -37,8 +37,8 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   Use `git show origin/master:AGENTS.md` and
   `git show origin/master:docs/parallel-work.md` when the lane branch is older.
   Repeat the final report requirements in delivery and review follow-up prompts.
-- Start every lane reply with `Lane #<number>` on its own line, such as
-  `Lane #3`. This applies to deliveries, status updates, and blockers.
+- Start every lane reply with the Markdown heading `## Lane #<number>`, such
+  as `## Lane #3`. This applies to deliveries, status updates, and blockers.
 - One worktree and branch per issue, created from `origin/master` under the
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).
@@ -75,21 +75,21 @@ appropriate. Use bullets, tables, and fenced command blocks within sections
 when they help. Put recommendations under Remaining work.
 
 ```markdown
-Lane #<number>
+## Lane #<number>
 
-## Result
+### Result
 
 - Issue, branch, commit, and what changed or what is blocked.
 
-## Verification
+### Verification
 
 - Checks performed, results and test counts, and any device activity.
 
-## Remaining work
+### Remaining work
 
 - Pending verification, blockers, or recommendations.
 
-## Worktree handoff
+### Worktree handoff
 
 - Absolute worktree path.
 - Confirmation that you left it and stopped worktree-local jobs, or why you could not.
@@ -142,6 +142,9 @@ Cargo. Never copy a cache between worktrees or build into another issue
 worktree. Report legacy cache dependencies so they can be moved after their
 users have stopped.
 
+Routine development and test builds use line-table debug information for
+source locations in backtraces. Use `cargo build --profile debugging` or
+`cargo test --profile debugging` for a debugger that needs full symbols.
 Gatekeeper merge checks use `target/shared-builds/gatekeeper` with
 `CARGO_INCREMENTAL=0`. Lane builds may keep incremental compilation for
 repeated local work. Keep owner-run executables and required reports in an
