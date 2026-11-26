@@ -2,7 +2,7 @@
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,7 +46,7 @@ impl Drop for LocalLease {
 pub struct DeviceLock {
     // The OS releases the lock when the last clone of this handle closes.
     _file: File,
-    _active: File,
+    _active: Option<File>,
     _local: Option<LocalLease>,
 }
 
@@ -149,17 +149,31 @@ fn active_file(path: &Path) -> Result<File, LockError> {
 fn acquire_tracked(path: &Path) -> Result<DeviceLock, LockError> {
     let local = LocalLease::acquire(&ACTIVE_HERE)?;
     let passive_was_local = PASSIVE_HERE.load(Ordering::Acquire);
-    let mut guard = acquire_at(path).map_err(|error| match error {
-        LockError::Busy if passive_was_local || PASSIVE_HERE.load(Ordering::Acquire) => {
-            LockError::BusyHere
-        }
-        other => other,
-    })?;
+    let mut guard =
+        acquire_at_with_handoff(path, Some(&FOLLOW_HANDOFF)).map_err(|error| match error {
+            LockError::Busy
+                if passive_was_local
+                    || PASSIVE_HERE.load(Ordering::Acquire)
+                    || FOLLOW_HANDOFF.held.load(Ordering::Acquire) =>
+            {
+                LockError::BusyHere
+            }
+            other => other,
+        })?;
     guard._local = Some(local);
     Ok(guard)
 }
 
+#[cfg(all(test, target_os = "linux"))]
 fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
+    acquire_at_with_handoff(path, None)
+}
+
+fn acquire_at_with_handoff(
+    path: &Path,
+    handoff: Option<&FollowHandoff>,
+) -> Result<DeviceLock, LockError> {
+    let failures_before = handoff.map(|state| state.failures.load(Ordering::Acquire));
     let active = active_file(path)?;
     // The monitor may be in its brief try/unlock check when active work arrives.
     match lock(&active) {
@@ -170,13 +184,24 @@ fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
         result => result?,
     }
     let file = open_lock_file(path)?;
-    let deadline = Instant::now() + Duration::from_millis(100);
+    // Follow may be finishing an identity exchange or returning the driver.
+    let wait = if handoff.is_some_and(|state| state.held.load(Ordering::Acquire)) {
+        Duration::from_secs(10)
+    } else {
+        Duration::from_millis(100)
+    };
+    let deadline = Instant::now() + wait;
     loop {
         match lock(&file) {
             Ok(()) => {
+                if handoff.map(|state| state.failures.load(Ordering::Acquire)) != failures_before {
+                    return Err(unavailable(
+                        "Variax Follow could not cleanly release the rig",
+                    ));
+                }
                 return Ok(DeviceLock {
                     _file: file,
-                    _active: active,
+                    _active: Some(active),
                     _local: None,
                 });
             }
@@ -186,6 +211,87 @@ fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
             Err(error) => return Err(error),
         }
     }
+}
+
+struct FollowHandoff {
+    held: AtomicBool,
+    failures: AtomicUsize,
+}
+
+impl FollowHandoff {
+    const fn new() -> Self {
+        Self {
+            held: AtomicBool::new(false),
+            failures: AtomicUsize::new(0),
+        }
+    }
+}
+
+static FOLLOW_HANDOFF: FollowHandoff = FollowHandoff::new();
+
+/// A yieldable rig lease for Follow. Hold it through protocol cleanup and
+/// driver return. A foreground device lock takes precedence.
+pub struct FollowDeviceLock<'a> {
+    rig: DeviceLock,
+    active: File,
+    handoff: &'a FollowHandoff,
+}
+
+impl FollowDeviceLock<'static> {
+    pub fn acquire() -> Result<Self, LockError> {
+        if ACTIVE_HERE.load(Ordering::Acquire) {
+            return Err(LockError::BusyHere);
+        }
+        Self::acquire_at(
+            &lock_path(std::env::var_os("XDG_RUNTIME_DIR")),
+            &FOLLOW_HANDOFF,
+        )
+    }
+}
+
+impl<'a> FollowDeviceLock<'a> {
+    fn acquire_at(path: &Path, handoff: &'a FollowHandoff) -> Result<Self, LockError> {
+        let active = active_file(path)?;
+        lock(&active)?;
+        let file = open_lock_file(path)?;
+        lock(&file)?;
+        handoff.held.store(true, Ordering::Release);
+        let lease = Self {
+            rig: DeviceLock {
+                _file: file,
+                _active: None,
+                _local: None,
+            },
+            active,
+            handoff,
+        };
+        lease.active.unlock().map_err(unavailable)?;
+        Ok(lease)
+    }
+
+    pub fn rig(&self) -> &DeviceLock {
+        &self.rig
+    }
+
+    /// Once a handoff is requested, finish the current session before yielding.
+    pub fn yield_requested(&self) -> bool {
+        active_requested(&self.active)
+    }
+
+    /// Reject a concurrent foreground acquisition if the handoff failed.
+    pub fn cleanup_failed(&self) {
+        self.handoff.failures.fetch_add(1, Ordering::Release);
+    }
+}
+
+impl Drop for FollowDeviceLock<'_> {
+    fn drop(&mut self) {
+        self.handoff.held.store(false, Ordering::Release);
+    }
+}
+
+fn active_requested(active: &File) -> bool {
+    lock(active).is_err() || active.unlock().is_err()
 }
 
 /// An interruptible lease on the normal rig lock for passive input only.
@@ -204,10 +310,12 @@ impl PassiveDeviceLock {
     }
 
     fn acquire_at(path: &Path) -> Result<Self, LockError> {
-        let active = active_file(path)?;
-        lock(&active)?;
         let file = open_lock_file(path)?;
         lock(&file)?;
+        // A passive attempt must not look like active intent to a Follow
+        // lease that already owns the rig.
+        let active = active_file(path)?;
+        lock(&active)?;
         active.unlock().map_err(unavailable)?;
         Ok(Self {
             _file: file,
@@ -218,7 +326,7 @@ impl PassiveDeviceLock {
 
     /// Call before each bounded read. Any failure also ends the lease.
     pub fn yield_requested(&self) -> bool {
-        lock(&self.active).is_err() || self.active.unlock().is_err()
+        active_requested(&self.active)
     }
 }
 
@@ -308,6 +416,148 @@ mod linux {
         ));
         drop(active);
         assert!(PassiveDeviceLock::acquire_at(&path).is_ok());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn follow_releases_the_session_before_foreground_work_and_reverifies_after_it() {
+        use crate::family::variax::{FollowUpdate, follow};
+        use crate::identity::{REQUEST as IDENTITY, tests::VARIAX_600};
+        use crate::session::{
+            Path as LinkPath, Quiet, Session,
+            testing::{AllowAll, Fake, packets},
+        };
+        use std::sync::mpsc;
+
+        const BRIDGE_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7];
+        const SESSION_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0, 0x2a, 1, 0xf7];
+        const SESSION_OFF: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0, 0x2a, 0, 0xf7];
+        const BRIDGE_OFF: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7];
+        let mut reply = VARIAX_600;
+        reply[12..16].copy_from_slice(b"0310");
+        let fake_link = || {
+            Fake::from_bytes(
+                LinkPath::VariaxViaPodxt,
+                vec![
+                    (IDENTITY.into(), packets(&reply)),
+                    (BRIDGE_ON.into(), vec![]),
+                    (SESSION_ON.into(), vec![vec![0xb0, 7, 42]]),
+                    (SESSION_OFF.into(), vec![]),
+                    (BRIDGE_OFF.into(), vec![]),
+                ],
+            )
+        };
+        let folder =
+            std::env::temp_dir().join(format!("variax-follow-handoff-{}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+
+        for (operation, fails) in [
+            ("device-check", false),
+            ("live-edit", false),
+            ("store", false),
+            ("foreground-error", true),
+        ] {
+            let path = folder.join(operation);
+            let handoff = FollowHandoff::new();
+            let lease = FollowDeviceLock::acquire_at(&path, &handoff).unwrap();
+            let (start, ready) = mpsc::channel();
+            let (returned, driver_return) = mpsc::channel();
+            let (finished, finish) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let path_ref = &path;
+                let handoff_ref = &handoff;
+                let worker = scope.spawn(move || {
+                    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+                    let _foreground = acquire_at_with_handoff(path_ref, Some(handoff_ref)).unwrap();
+                    assert!(
+                        driver_return.try_recv().is_ok(),
+                        "{operation} ran before cleanup"
+                    );
+                    assert!(matches!(
+                        FollowDeviceLock::acquire_at(path_ref, handoff_ref),
+                        Err(LockError::Busy)
+                    ));
+                    finished.send(()).unwrap();
+                    if fails {
+                        Err("injected operation failure")
+                    } else {
+                        Ok(())
+                    }
+                });
+                let mut log = Quiet;
+                let mut session = Session::new(fake_link(), &AllowAll, &mut log);
+                follow(
+                    lease.rig(),
+                    &mut session,
+                    || lease.yield_requested(),
+                    |event| {
+                        assert_eq!(event, FollowUpdate::Volume(42));
+                        start.send(()).unwrap();
+                        let deadline = Instant::now() + Duration::from_secs(2);
+                        while !lease.yield_requested() {
+                            assert!(Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    },
+                )
+                .unwrap();
+                session.link.assert_finished();
+                assert_eq!(
+                    session.link.writes,
+                    [
+                        &IDENTITY[..],
+                        BRIDGE_ON,
+                        SESSION_ON,
+                        SESSION_OFF,
+                        BRIDGE_OFF
+                    ]
+                );
+                assert!(finish.try_recv().is_err(), "lease must cover driver return");
+                returned.send(()).unwrap();
+                drop(lease);
+                finish.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(worker.join().unwrap().is_err(), fails);
+            });
+
+            let resumed = FollowDeviceLock::acquire_at(&path, &handoff).unwrap();
+            let stop = std::cell::Cell::new(false);
+            let mut log = Quiet;
+            let mut session = Session::new(fake_link(), &AllowAll, &mut log);
+            follow(
+                resumed.rig(),
+                &mut session,
+                || stop.get(),
+                |_| stop.set(true),
+            )
+            .unwrap();
+            assert_eq!(session.link.writes.first().unwrap(), &IDENTITY);
+            session.link.assert_finished();
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn failed_follow_cleanup_refuses_the_waiting_foreground_acquisition() {
+        let folder =
+            std::env::temp_dir().join(format!("variax-follow-failed-{}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("rig");
+        let handoff = FollowHandoff::new();
+        let lease = FollowDeviceLock::acquire_at(&path, &handoff).unwrap();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| acquire_at_with_handoff(&path, Some(&handoff)));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !lease.yield_requested() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            lease.cleanup_failed();
+            drop(lease);
+            assert!(matches!(
+                worker.join().unwrap(),
+                Err(LockError::Unavailable(message)) if message.contains("could not cleanly release")
+            ));
+        });
         std::fs::remove_dir_all(folder).unwrap();
     }
 

@@ -106,10 +106,7 @@ impl VariaxEditor {
 
     pub(super) fn download_button(&mut self, ui: &mut egui::Ui) {
         let button = ui.add_enabled(
-            cfg!(target_os = "linux")
-                && self.download_target_ready()
-                && !self.refresh.busy()
-                && !self.follow.busy(),
+            cfg!(target_os = "linux") && self.download_target_ready() && !self.refresh.busy(),
             egui::Button::new("Download from guitar…")
                 .min_size(egui::vec2(0.0, super::theme::TARGET)),
         );
@@ -120,7 +117,6 @@ impl VariaxEditor {
 
     fn request_refresh(&mut self, read: ReadLibrary) {
         if self.is_reading()
-            || self.follow.busy()
             || self.live_edit.busy()
             || self.follow.disconnected()
             || self.blocking_prompt()
@@ -180,7 +176,6 @@ impl VariaxEditor {
         if !cfg!(target_os = "linux")
             || !self.download_target_ready()
             || self.is_reading()
-            || self.follow.busy()
             || self.live_edit.busy()
             || self.blocking_prompt()
             || self.dirty()

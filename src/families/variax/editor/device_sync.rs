@@ -153,7 +153,6 @@ impl VariaxEditor {
             && self.device_sync.attachment.is_some()
             && !self.device_sync.unsafe_store
             && !self.follow.disconnected()
-            && !self.follow.busy()
             && !self.live_edit.busy()
             && !self.is_reading()
             && !self.opening_file
@@ -300,6 +299,22 @@ impl VariaxEditor {
             thread,
         });
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_fake_store(&mut self, report: Report) -> mpsc::Sender<()> {
+        let (finish, wait) = mpsc::channel();
+        let (_progress, status) = mpsc::channel();
+        self.device_sync.worker = Some(Worker {
+            action: Action::WriteSelected,
+            cancel: Arc::new(AtomicBool::new(false)),
+            status,
+            thread: std::thread::spawn(move || {
+                let _ = wait.recv();
+                report
+            }),
+        });
+        finish
     }
 
     pub(super) fn poll_device_sync(&mut self, ctx: &egui::Context) {

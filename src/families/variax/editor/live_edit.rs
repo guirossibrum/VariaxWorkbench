@@ -274,7 +274,6 @@ impl VariaxEditor {
         }
         let free = !self.device_sync.stopped_after_store()
             && !self.is_reading()
-            && !self.follow.busy()
             && !self.follow.disconnected()
             && !self.blocking_prompt();
         let has_model = self
@@ -329,7 +328,6 @@ impl VariaxEditor {
     pub(super) fn get_edit_buffer(&mut self) {
         if !self.device_sync.stopped_after_store()
             && !self.is_reading()
-            && !self.follow.busy()
             && !self.follow.disconnected()
         {
             self.start_edit_buffer(Action::Get, self.live_model());
@@ -351,6 +349,24 @@ impl VariaxEditor {
                 self.error = Some(error);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_fake_edit(&mut self) -> std::sync::mpsc::Sender<()> {
+        let (finish, wait) = std::sync::mpsc::channel();
+        self.live_edit.worker = Some(Work {
+            action: Action::Send,
+            model: self.live_model(),
+            generation: self.live_edit.generation,
+            cancel: Arc::new(AtomicBool::new(false)),
+            thread: std::thread::spawn(move || {
+                let _ = wait.recv();
+                Ok(Reply::Verified(Box::new(
+                    [0; line6_devices::family::variax::procedures::PROGRAM_BYTES],
+                )))
+            }),
+        });
+        finish
     }
 
     pub(super) fn poll_edit_buffer(&mut self, ctx: &egui::Context) {
@@ -383,7 +399,6 @@ impl VariaxEditor {
         }
         if !self.live_edit.enabled()
             || self.is_reading()
-            || self.follow.busy()
             || self.opening_file
             || self.blocking_prompt()
         {
