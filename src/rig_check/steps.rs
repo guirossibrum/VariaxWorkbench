@@ -107,7 +107,6 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (3, 3) => variax_current_program(ctx),
         (3, 4) => variax_all_presets(ctx),
         (3, 5) => super::variax_reads::one_preset(ctx),
-        (3, 6) => super::variax_reads::one_bank(ctx),
         (3, 7) => super::variax_evidence::read(ctx),
         (4, 1) => super::live::podxt_stomp(ctx),
         (4, 2) => super::variax_live::variax_own_bytes(ctx),

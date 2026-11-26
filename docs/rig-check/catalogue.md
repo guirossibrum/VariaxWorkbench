@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.3 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.4 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -115,8 +115,7 @@ owner-rig issue or card that proved the procedure.
 | 3.2 | Variax current settings | 3.1 | G3 | Read | #176, #225 |
 | 3.3 | Variax full current program (35 reads) | 3.1 | G3 | Read | #234, [full-read card](../reso5-full-read-test-card.md) |
 | 3.4 | Variax all 60 presets (backup), and back | 3.3 | G5 | Read (switches preset and back) | #236, [backup card](../variax-backup-test-card.md) |
-| 3.5 | Variax one stored preset, and back | 3.4 | G5 | Read (switches preset and back) | #238, [selection card](../variax-any-selection-test-card.md) |
-| 3.6 | Variax one bank (5 presets), and back | 3.5 | G5 | Read (switches preset and back) | #236 |
+| 3.5 | Editor: Read unmodified from device | 3.4 | G5 | Read (switches preset and back) | #238, [selection card](../variax-any-selection-test-card.md) |
 | 3.7 | Compatibility check for other firmware versions (Variax) | 2.1 | G1, G2, G3 | Read | #271 |
 | 4.1 | PODxt Live: change one control, read back, undo | 2.2 | G6 | Live | #221, [edit card](../podxt-live-edit-test-card.md) |
 | 4.2 | Variax: send the current preset's own bytes to the working buffer | 3.3 | G6 | Live (no audible change) | #176, [Reso-5 card](../reso5-test-card.md) |
@@ -309,23 +308,19 @@ firmware, and step 3.1 checks the Variax firmware.
   returned to its starting preset.
 - **Risk:** Read. **Evidence:** 60 SHA-256 values, manifest, the starting
   preset, return check.
-- The full backup comes first (before 3.5 and 3.6) because a single preset
+- The full backup comes first (before 3.5) because a single preset
   read can only switch back once the starting preset is known.
 
-### 3.5 Variax one stored preset, and back
-- **What it does:** Switches the guitar to one other stored preset, reads
-  it, compares it with the backup, switches back to the starting preset and
-  checks all 1,092 words.
+### 3.5 Editor: Read unmodified from device
+- **What it does:** Uses the same shared read as the Variax editor's Read
+  unmodified from device and Sync revert. It selects one other stored
+  preset, compares all 1,092 words with the 3.4 backup, and checks the return
+  to the starting preset.
 - **HEAR:** the sound changes for a few seconds and comes back.
 - **SEE:** Which preset was read, whether it matches the backup, and whether
   the guitar returned to its starting preset.
 - **Risk:** Read (preset switch and back). **Evidence:** program, backup
   comparison, return check.
-
-### 3.6 Variax one bank (5 presets), and back
-- Same as 3.5 for the five presets of one bank. **HEAR:** five short changes.
-- **SEE:** The number of presets read out of five and whether the guitar
-  returned to its starting preset.
 
 ### 3.7 Compatibility check for other firmware versions
 
@@ -465,7 +460,7 @@ return to your starting preset.
 | 3.1 | #213 identity, G2 owner run (build 12) |
 | 3.2 | #176 / #225 current-buffer reads |
 | 3.3 | #234 35-chunk full read |
-| 3.4–3.6 | #236 full backup, #238 program-change verification and switch-back |
+| 3.4–3.5 | #236 full backup, #238 program-change verification and switch-back |
 | 4.1 | #221 PODxt live edit with undo, first G6 write (stomp CC 25) |
 | 4.2 | #176 Reso-5 own program to the edit buffer |
 | 4.3 | #238 listen-list A–D (passed 2026-11-25) |
@@ -475,6 +470,7 @@ return to your starting preset.
 
 ## Changes
 
+- 1.4 (2026-11-25): named the editor read in 3.5 and removed the repeated bank sweep (3.6).
 - 1.3 (2026-11-25): clarified where firmware is checked and added result navigation (#276).
 - 1.2 (2026-11-25): added app-message and Follow coverage and strict save prerequisites.
 - 1.1 (2026-11-25): added the conditional Variax firmware evidence step (#271).

@@ -6,7 +6,7 @@
 use crate::hardware_gates::Gate;
 use std::fmt;
 
-pub const CATALOGUE_VERSION: &str = "1.3";
+pub const CATALOGUE_VERSION: &str = "1.4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepId(pub u8, pub u8);
@@ -221,14 +221,10 @@ pub static STEPS: &[Step] = &[
         does: "Reads all 60 stored presets (1,092 words each) into the evidence folder, finds the one you started on, switches back to it and checks all words. Start on a saved preset without unsaved changes: the first preset switch discards unsaved guitar edits.",
         you_do: "Nothing. Takes about 4 minutes.", see: "The number of presets read out of 60 and whether the guitar returned to its starting preset.", hear: "The sound changes 60 times, then comes back.",
         evidence: "60 SHA-256 values, manifest, the starting preset, return check.", proof: "#236, variax-backup-test-card.md"),
-    step!((3, 5), "Variax one stored preset, and back", Device, [(3, 4), (2, 1)], [G5], Read,
-        does: "Switches the guitar to one other stored preset, reads it, compares it with the backup from 3.4, switches back to the starting preset and checks all 1,092 words.",
+    step!((3, 5), "Editor: Read unmodified from device", Device, [(3, 4), (2, 1)], [G5], Read,
+        does: "Tests the same read the Variax editor uses for Read unmodified from device and Sync revert. It selects one other stored preset, compares all 1,092 words with the backup from 3.4, then returns to your starting preset and verifies it.",
         you_do: "Nothing.", see: "Which preset was read, whether it matches the backup, and whether the guitar returned to its starting preset.", hear: "The sound changes for a few seconds and comes back.",
         evidence: "Program SHA-256, backup comparison, return check.", proof: "#238, variax-any-selection-test-card.md"),
-    step!((3, 6), "Variax one bank (5 presets), and back", Device, [(3, 5), (2, 1)], [G5], Read,
-        does: "Reads the five presets of one bank the same way, compares them with the backup and switches back.",
-        you_do: "Nothing.", see: "The number of presets read out of five and whether the guitar returned to its starting preset.", hear: "Five short sound changes, then the start sound.",
-        evidence: "Five SHA-256 values, backup comparison, return check.", proof: "#236"),
     step!((3, 7), "Compatibility check for other firmware versions", Device, [(2, 1)], [G1, G2, G3], Read,
         does: "Records identity, current settings and 35 current-program replies. The guitar stays on the same preset. If the PODxt Live firmware is unverified, this is the only Variax step offered because the relay was verified on 3.01.",
         you_do: "Keep the guitar connected and leave the selector and knobs alone.",
@@ -357,7 +353,6 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(3, 3),
     StepId(3, 4),
     StepId(3, 5),
-    StepId(3, 6),
     StepId(6, 1),
     StepId(7, 1),
     StepId(7, 2),

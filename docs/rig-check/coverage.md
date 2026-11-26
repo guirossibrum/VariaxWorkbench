@@ -12,7 +12,7 @@ exercise full program payloads.
 | Variax live difference | `3B`, acknowledgement, full read-back with retained checksum | 4.4 |
 | Variax alternate-tuning Enable transition | Muted `3B`, acknowledgement, unmuted `43`, full read-back | 4.5 |
 | Variax Write to device (including Paste staged for Sync) | `43`, 100 ms, one `61`, one acknowledgement wait and verified reload | 5.1, 5.3 |
-| Variax Read unmodified / Sync revert | Program change, full stored-program read, verified return | 3.5, 3.6 |
+| Variax Read unmodified / Sync revert | Program change, full stored-program read, verified return | 3.5 |
 | Variax Sync batch store | Two verified slot writes with the same shared store-and-reload operation, then verified return | 5.4 |
 | Variax Refresh library and Device Check Variax backup | Shared selection and return sweep, split metadata, twelve `6D` bank names and optional 35-chunk full programs | 3.4 |
 | Variax identity, settings read and unverified-firmware evidence | Universal identity with bridge retry, two metadata blocks, or the separately gated evidence read | 3.1, 3.2, 3.7 |

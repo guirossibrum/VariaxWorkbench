@@ -1,4 +1,4 @@
-//! Variax read steps 3.2, 3.5 and 3.6 (#255), plus byte-loss accounting for
+//! Variax read steps 3.2 and 3.5 (#255), plus byte-loss accounting for
 //! the 35-chunk reads. Steps 3.1, 3.3 and 3.4 are in `steps.rs`.
 
 use super::practice::{Program, preset_label};
@@ -92,74 +92,70 @@ fn backup_of(ctx: &Ctx<'_>, preset: Preset) -> Option<Program> {
         .map(|(_, w)| *w)
 }
 
-/// Read presets, compare each with the backup, then return to the start.
-fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> {
+/// Read a saved preset with the editor's procedure and verify the return.
+pub fn one_preset(ctx: &mut Ctx<'_>) -> Result<(), String> {
     flag_unverified(ctx);
     let start = ctx
         .data
         .start_preset
         .ok_or("The starting preset is unknown (3.4).")?;
     let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
+    let preset = other_preset(start);
+    let label = preset_label(preset);
     let mut problems = Vec::new();
-    let mut read_count = 0;
-    for (index, &preset) in presets.iter().enumerate() {
-        if ctx.stopping() {
-            problems.push("Stopped by you.".to_string());
-            break;
-        }
+    let count = if ctx.stopping() {
+        problems.push("Stopped by you.".to_string());
+        0
+    } else {
         ctx.op.progress(Progress::counted(
-            format!("Reading {}", preset_label(preset)),
-            index,
-            presets.len(),
+            format!("Reading {label}"),
+            0,
+            1,
             "presets",
         ));
-        let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-            shared_variax::read_unmodified(session, preset, stopping, |_| Ok(()))
+        let read = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
+            variax_read_preset(
+                session,
+                preset,
+                stopping,
+                progress,
+                &format!("Reading {label}"),
+            )
         });
         match read {
-            Ok(words) => {
-                read_count += 1;
+            Ok(read) => {
                 let hash = ctx.rec.checksum(
-                    format!("Variax {} (1,092 words)", preset_label(preset)),
-                    &program_bytes(&words),
+                    format!("Variax {label} (1,092 words)"),
+                    &program_bytes(&read.words),
                 );
-                let matches = backup_of(ctx, preset).is_some_and(|b| b == words);
-                ctx.rec.result.push(format!(
-                    "Read {}: {}.",
-                    preset_label(preset),
-                    if matches {
-                        "matches the backup"
-                    } else {
-                        "differs from the backup"
-                    }
-                ));
+                let matches = backup_of(ctx, preset).is_some_and(|b| b == read.words);
+                let observation = if matches {
+                    "matches the backup"
+                } else {
+                    "differs from the backup"
+                };
+                ctx.rec.result.push(format!("Read {label}: {observation}."));
                 ctx.rec.note(format!(
-                    "{}: SHA-256 {}, {}",
-                    preset_label(preset),
+                    "{label}: SHA-256 {}, {observation}{}",
                     &hash[..16],
-                    if matches {
-                        "matches the backup word for word"
-                    } else {
-                        "DIFFERS from the backup"
-                    }
+                    if matches { " word for word" } else { "" }
                 ));
                 if !matches {
-                    problems.push(format!("{} differs from the backup.", preset_label(preset)));
+                    problems.push(format!("{label} differs from the backup."));
                 }
+                1
             }
             Err(error) => {
-                problems.push(format!("{}: {error}", preset_label(preset)));
-                break;
+                problems.push(format!("{label}: {error}"));
+                0
             }
         }
-    }
-    ctx.rec
-        .result
-        .push(format!("Read {read_count} of {} presets.", presets.len()));
+    };
+    ctx.rec.result.push(format!("Read {count} of 1 presets."));
     ctx.op.progress(Progress::counted(
         format!("Returning to {}", preset_label(start)),
-        read_count,
-        presets.len(),
+        count,
+        1,
         "presets",
     ));
     let back = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
@@ -200,25 +196,6 @@ fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> 
 /// The preset read by 3.5: the next one in the starting preset's bank.
 pub fn other_preset(start: Preset) -> Preset {
     Preset::new(start.bank(), (start.slot() + 1) % 5).expect("valid slot")
-}
-
-pub fn one_preset(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let start = ctx
-        .data
-        .start_preset
-        .ok_or("The starting preset is unknown (3.4).")?;
-    read_and_return(ctx, &[other_preset(start)])
-}
-
-pub fn one_bank(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let start = ctx
-        .data
-        .start_preset
-        .ok_or("The starting preset is unknown (3.4).")?;
-    let bank: Vec<Preset> = (0..5)
-        .map(|slot| Preset::new(start.bank(), slot).expect("valid slot"))
-        .collect();
-    read_and_return(ctx, &bank)
 }
 
 #[cfg(test)]
@@ -274,8 +251,6 @@ mod tests {
                 .iter()
                 .any(|l| l == "Back on Spank 1: all 1,092 words match the start.")
         );
-        let bank = run.step(StepId(3, 6));
-        assert_eq!(bank.checksums.len(), 5);
         let all = run.step(StepId(3, 4));
         assert!(
             all.retries >= 1,

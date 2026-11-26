@@ -321,7 +321,6 @@ mod tests {
             (StepId(2, 5), "entries", 299),
             (StepId(3, 4), "presets", 60),
             (StepId(3, 5), "presets", 1),
-            (StepId(3, 6), "presets", 5),
             (StepId(5, 4), "slots", 2),
         ] {
             assert_progress(&person, id, units, total);
@@ -329,6 +328,7 @@ mod tests {
         for id in [
             StepId(3, 3),
             StepId(3, 4),
+            StepId(3, 5),
             StepId(4, 2),
             StepId(4, 3),
             StepId(4, 4),

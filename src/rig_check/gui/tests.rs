@@ -192,7 +192,6 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     StepId(3, 3) => &["Progress 35 of 35 chunks", "checksum OK"],
                     StepId(3, 4) => &["Read 60 of 60 presets", "Back on Spank 1"],
                     StepId(3, 5) => &["Read Spank 2: matches the backup", "Back on Spank 1"],
-                    StepId(3, 6) => &["Read 5 of 5 presets", "Back on Spank 1"],
                     StepId(4, 1) => &[
                         "Stomp off to on: read back as sent",
                         "The whole tone matches the start",
@@ -268,9 +267,9 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
     }
     drop(to_runner);
     let passed = worker.join().unwrap();
-    assert_eq!(passed, 37);
-    assert_eq!(cards, 37);
-    assert_eq!(results, 37);
+    assert_eq!(passed, 36);
+    assert_eq!(cards, 36);
+    assert_eq!(results, 36);
 }
 
 #[test]
