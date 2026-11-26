@@ -2,6 +2,7 @@
 """Build, verify and package the unsigned Windows x64 offline alpha."""
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ ROOT = HERE.parent.parent
 TARGET = "x86_64-pc-windows-msvc"
 TOOLCHAIN = "1.99.1"
 FEATURES = "gui,portable-math"
+WINDOWS_CONNECTION = "The Windows connection isn't available in this version yet."
 
 
 def run(*args, env, cwd=ROOT, input_text=None):
@@ -61,14 +63,36 @@ def smoke(extracted, scratch, env):
     report, = local.glob("*.txt")
     computer = report.read_text(encoding="utf-8")
     require(computer, "Operating system: Windows", "Synthetic preset (full pipeline)",
-            "The Windows connection isn't available in this version yet.")
+            WINDOWS_CONNECTION)
     if re.search(r"Windows version: \d+(?:\.\d+){2,3}", computer) is None:
         raise ValueError("Computer smoke check did not report the Windows version")
-    outcomes = re.findall(
-        r"^\[(?:[1-7]\.\d+|8\.[2-5])\].* — ([^\n]+)$", computer, re.M
-    )
-    if not outcomes or set(outcomes) != {"NOT AVAILABLE"}:
-        raise ValueError(f"Unexpected device outcomes in Windows computer mode: {outcomes}")
+    # The detail section omits steps that never started, including refusals.
+    _, begin, data = computer.partition("\nBEGIN RIG CHECK JSON\n")
+    data, end, _ = data.partition("\nEND RIG CHECK JSON")
+    if not begin or not end:
+        raise ValueError("Missing Rig Check JSON report")
+    record = json.loads(data)
+    if not record["finished"]:
+        raise ValueError("Windows computer smoke check did not finish")
+    steps = {step["id"]: step for step in record["steps"]}
+    expected_computer = {
+        "0.1": "passed",
+        "0.2": "skipped",
+        "0.3": "passed",
+        "2.7": "skipped_needs",  # Offline comparison requires an identity from 2.1.
+        "8.1": "skipped",
+    }
+    outcomes = {step: steps.get(step, {}).get("outcome") for step in expected_computer}
+    if outcomes != expected_computer:
+        raise ValueError(f"Unexpected computer outcomes in Windows computer mode: {outcomes}")
+    device_steps = [step for key, step in steps.items() if key not in expected_computer]
+    unexpected = [
+        step["id"] for step in device_steps
+        if (step["outcome"], step["reason"], step["messages"])
+        != ("not_available", WINDOWS_CONNECTION, 0)
+    ]
+    if not device_steps or unexpected:
+        raise ValueError(f"Unexpected device outcomes in Windows computer mode: {unexpected}")
     return (
         f"{version}\nRig Check catalogue loaded.\n"
         "Practice report includes simulated USB recognition.\n"
