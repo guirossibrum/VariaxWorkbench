@@ -56,10 +56,11 @@ watcher batches fresh reports by repository. Saved reports survive a restart.
   `journalctl --user -u herdr-completion-handoff`. The private `state.json`
   shows discovery events and queued lane reports. Keep pane text, local
   configuration, and owner feedback private.
-- The watcher accepts literal Markdown and rendered headings such as Grok's
-  timestamped lane title and plain section labels. If a fresh report is
-  unavailable in pane history, read its source directly. Reconcile uncertain
-  batches using the runbook before any retry.
+- The watcher accepts literal Markdown and rendered reports with Grok's
+  timestamped lane title, plain section labels and closed box-drawn tables.
+  An unread completion stays held at the same sequence across restart.
+  Recover it manually from its exact source, since a changed terminal view
+  can show an older report. Reconcile uncertain batches before any retry.
 
 A Gatekeeper still checks the current issue, exact commit, branch,
 worktree, and verification evidence. The watcher does not merge code,

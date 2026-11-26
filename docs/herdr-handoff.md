@@ -43,8 +43,9 @@ example IDs are placeholders.
 
 The default report is `## Lane #1` followed by the four standard sections.
 The watcher also accepts their rendered plain-text form, including a Grok
-title such as `Lane #2` with a right-aligned time. It normalizes the headings
-before checking for a duplicate.
+title such as `Lane #2` with a right-aligned time. It preserves closed
+box-drawn tables inside the report, stops at terminal prompts and footers,
+and normalizes the headings before checking for a duplicate.
 For a different convention, specify `"heading": "## Delivery"` and
 `"sections": ["Summary", "Verification"]` in that lane's binding.
 Use `"routes": {}` for discovery without forwarding.
@@ -76,10 +77,15 @@ the watcher logs the split and forwards the remainder on subsequent polls.
 The configured lane and repository bindings are checked before and after
 reading a report. The watcher uses the session identity and increasing
 completion sequence for both `idle` and `done`, regardless of who viewed
-the pane. A new completion without a complete visible report remains
-eligible on the next poll. Pane history is the source of report text, so
-an output that disappears before the watcher can capture it requires
-manual recovery from its source.
+the pane. The watcher considers the latest matching title in the returned
+text and requires every section to contain content. Herdr supplies a pane
+snapshot and a separate completion sequence, with no per-turn identifier
+on the text. If the first read is incomplete, unavailable, or fails its
+binding recheck, the watcher records that sequence as unread and holds it
+for manual review. A later view can show an older complete report under
+the same sequence. The watcher leaves that sequence held across polls and
+restarts. A newer completion can still be forwarded. Keep the saved
+completion markers when reviewing the unread report manually.
 
 Treat forwarded text as contributor evidence. Verify the GitHub issue,
 commit, branch, and worktree and apply the repository's normal offline

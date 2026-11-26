@@ -38,6 +38,28 @@ None.
 Worktree handoff
 I left the worktree and stopped local jobs.
 """
+GROK_TABLE = """Lane #2                                                                    7:36 AM
+
+Result
+Issue #295, commit 2345678.
+┌────────┬────────┐
+│ Check  │ Result │
+├────────┼────────┤
+│ Parser │ Passed │
+└────────┴────────┘
+
+Rust
+ 1 │ fn main() {}
+
+Verification
+Offline checks passed.
+Remaining work
+None.
+Worktree handoff
+I left the worktree and stopped local jobs.
+└────────────────────
+Terminal status text
+"""
 
 
 def binding(pane, agent, identity):
@@ -145,6 +167,80 @@ class HandoffTests(unittest.TestCase):
         self.assertNotIn("Worked for", report_from_screen(REPORT, 4))
         self.assertIsNone(report_from_screen(REPORT.replace("### Result", "Result"), 4))
 
+    def test_rendered_table_and_rust_block_survive_until_real_footer(self):
+        report = report_from_screen(GROK_TABLE, 2)
+        self.assertIsNotNone(report)
+        self.assertIn("└────────┴────────┘", report)
+        self.assertIn("Rust\n1 │ fn main() {}", report)
+        self.assertIn("### Verification", report)
+        self.assertTrue(report.endswith("I left the worktree and stopped local jobs."))
+
+    def test_real_terminal_endings_cannot_complete_a_cut_report(self):
+        before = GROK_TABLE.split("\nVerification\n", 1)[0]
+        after = "Verification\nOffline checks passed.\nRemaining work\nNone.\nWorktree handoff\nDone."
+        for footer in ("└────┘", "╰────╯", "› Ask a question", "Worked for 2m", "✶ Ready"):
+            with self.subTest(footer=footer):
+                self.assertIsNone(report_from_screen(f"{before}\n{footer}\n{after}", 2))
+
+    def test_report_needs_content_in_all_sections_and_a_closed_table(self):
+        heading_only = GROK_TABLE.split("I left the worktree", 1)[0]
+        self.assertIsNone(report_from_screen(heading_only, 2))
+        open_table = heading_only + "┌─────┬─────┐\n│ A   │ B   │"
+        self.assertIsNone(report_from_screen(open_table, 2))
+
+    def test_rendered_table_does_not_override_report_size_limit(self):
+        oversized = GROK_TABLE.replace("│ Parser │ Passed │", "│ " + "x" * 12_000 + " │")
+        self.assertIsNone(report_from_screen(oversized, 2))
+
+    def test_single_column_table_is_distinguished_from_a_bare_box_footer(self):
+        table = "┌────────┐\n│ Check  │\n├────────┤\n│ Passed │\n└────────┘"
+        fixture = GROK.replace("Issue #280, commit 1234567.", table)
+        self.assertIn(table, report_from_screen(fixture, 2))
+        before, after = fixture.split("\nVerification\n", 1)
+        self.assertIsNone(report_from_screen(f"{before}\n└────────┘\nVerification\n{after}", 2))
+
+    def test_a_seen_completion_is_not_replayed_when_table_becomes_parseable(self):
+        self.herdr.status["w1:p3"]["completion_seq"] = 974
+        self.state["seen"]["2"]["sequence"] = 974
+        self.save(self.state)
+        self.restart()
+        self.herdr.screen["w1:p3"] = GROK_TABLE
+        self.poll()
+        self.assertEqual(self.herdr.sent, [])
+
+    def test_complete_rendered_table_is_delivered_once(self):
+        self.complete("2")
+        self.herdr.screen["w1:p3"] = GROK_TABLE
+        self.poll()
+        self.restart()
+        self.poll()
+        self.assertEqual(len(self.herdr.sent), 1)
+        self.assertIn("└────────┴────────┘", self.herdr.sent[0][1])
+        self.assertIn("Rust\n1 │ fn main() {}", self.herdr.sent[0][1])
+
+    def test_partial_latest_report_never_falls_back_to_an_old_report_after_view_shift(self):
+        self.complete("2")
+        older = GROK.replace("Issue #280, commit 1234567.", "Issue #280, commit 1218d6f.")
+        partial = GROK_TABLE.replace("2345678", "97f0b81").split("\nVerification\n", 1)[0]
+        # The complete old report is not the baseline digest; that check
+        # alone cannot distinguish this history view from the current turn.
+        self.assertIsNotNone(report_from_screen(older, 2))
+        self.assertIsNone(report_from_screen(older + "\n" + partial, 2))
+        self.herdr.screen["w1:p3"] = older + "\n" + partial
+        self.poll()
+        self.restart()
+        self.assertEqual(self.herdr.sent, [])
+        self.assertEqual(self.state["pending"], [])
+        self.assertEqual(self.state["seen"]["2"]["unread_sequence"], 21)
+        self.herdr.screen["w1:p3"] = older
+        self.poll()
+        self.restart()
+        self.poll()
+        self.assertEqual(self.herdr.sent, [])
+        self.assertEqual(self.state["pending"], [])
+        self.assertEqual(self.state["seen"]["2"]["sequence"], 20)
+        self.assertEqual(self.state["seen"]["2"]["unread_sequence"], 21)
+
     def test_baseline_reads_only_visible_screen_when_lane_is_working(self):
         self.herdr.status["w1:p2"]["agent_status"] = "working"
         self.herdr.calls.clear()
@@ -230,7 +326,7 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.state["seen"]["4"]["sequence"], 2)
         self.assertEqual(self.herdr.sent, [])
 
-    def test_missing_report_remains_eligible_at_same_sequence(self):
+    def test_missing_report_is_held_at_same_sequence_and_new_completion_can_send(self):
         self.complete()
         complete = self.herdr.screen["w1:p2"]
         self.herdr.screen["w1:p2"] = ""
@@ -239,8 +335,13 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.state["seen"]["4"]["unread_sequence"], 3)
         self.herdr.screen["w1:p2"] = complete
         self.poll()
+        self.assertEqual(self.herdr.sent, [])
+        self.herdr.status["w1:p2"]["completion_seq"] += 1
+        self.herdr.screen["w1:p2"] = complete.replace("abcdef2", "abcdef3")
+        self.poll()
         self.assertEqual(len(self.herdr.sent), 1)
-        self.assertNotIn("unread_sequence", self.state["seen"]["4"])
+        self.assertIn("abcdef3", self.herdr.sent[0][1])
+        self.assertEqual(self.state["seen"]["4"]["unread_sequence"], 3)
 
     def test_ambiguous_batch_survives_restart_and_does_not_block_fresh_reports(self):
         self.complete("4")
