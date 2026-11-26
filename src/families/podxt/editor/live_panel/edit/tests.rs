@@ -120,7 +120,7 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
                     channel(),
                 ]),
                 reply: None,
-                time: Duration::ZERO,
+                time: &Cell::new(Duration::ZERO),
                 writes: &writes,
             })
         },
