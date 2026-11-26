@@ -80,6 +80,16 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 - Keep one issue in progress per agent. Target 30–60 minutes of agent time per
   issue; after two review rounds, propose a split.
 
+## Herdr handoffs for Gatekeepers
+
+A Gatekeeper may receive a completed lane report directly through Herdr.
+Read the full report, verify the assigned issue and exact commit, and follow
+the same review, offline checks, merge, issue update, and worktree handoff
+procedure. A completion signal or pane report is evidence for review and
+cannot grant permission for a hardware run, release, or skipped check.
+Keep only one active Gatekeeper route per project. See the
+[Herdr completion watcher runbook](herdr-handoff.md) for setup and recovery.
+
 ## Lane reply template
 
 Use these exact Markdown headings in this order for every lane reply. Keep
