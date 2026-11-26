@@ -328,6 +328,8 @@ pub struct RunRecord {
     pub prior_attempts: Vec<StepRecord>,
     pub continued_from: Option<String>,
     pub continuation: Vec<String>,
+    pub pre_write_recovery: bool,
+    pub continuation_pending: bool,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
     pub rig_description: String,
@@ -359,6 +361,8 @@ impl RunRecord {
             prior_attempts: Vec::new(),
             continued_from: None,
             continuation: Vec::new(),
+            pre_write_recovery: false,
+            continuation_pending: false,
             rig_state: "Not checked yet.".into(),
             rig_description: "Rig not identified yet".into(),
             finished: false,

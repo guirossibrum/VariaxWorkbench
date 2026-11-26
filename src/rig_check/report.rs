@@ -252,7 +252,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
     let steps = run.steps.iter().map(json_step).collect::<Vec<_>>();
     let prior = run.prior_attempts.iter().map(json_step).collect::<Vec<_>>();
     format!(
-        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"continued_from\":{},\"continuation\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
+        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"continued_from\":{},\"continuation\":{},\"pre_write_recovery\":{},\"continuation_pending\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
         json_string(run.app_version),
         run.git_commit.map_or("null".into(), json_string),
         json_string(run.catalogue_version),
@@ -266,6 +266,8 @@ pub fn json(run: &RunRecord, written: &str) -> String {
             .as_deref()
             .map_or("null".into(), json_string),
         json_list(&run.continuation),
+        run.pre_write_recovery,
+        run.continuation_pending,
         json_string(&run.rig_state),
         json_string(&run.rig_description),
         json_pairs(&run.computer),
@@ -325,15 +327,28 @@ pub struct ReportFile {
 impl ReportFile {
     /// Reserve `rig-check-<UTC>.txt` (or `-2`, `-3`, ...) in `dir`.
     pub fn create(dir: &Path, redactor: Redactor) -> Result<Self, String> {
+        Self::create_at(dir, redactor, unix_now())
+    }
+
+    fn create_at(dir: &Path, redactor: Redactor, seconds: u64) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let stamp = utc_stamp(unix_now());
+        let stamp = utc_stamp(seconds);
         for n in 1..1000 {
-            let name = if n == 1 {
-                format!("rig-check-{stamp}.txt")
+            let stem = if n == 1 {
+                format!("rig-check-{stamp}")
             } else {
-                format!("rig-check-{stamp}-{n}.txt")
+                format!("rig-check-{stamp}-{n}")
             };
-            let path = dir.join(name);
+            let path = dir.join(format!("{stem}.txt"));
+            // A collected report can be renamed while its original evidence,
+            // checkpoint, or continuation still owns this basename.
+            if dir.join(format!("{stem}-evidence")).exists()
+                || ["state", "run-lock", "continuation"]
+                    .iter()
+                    .any(|extension| path.with_extension(extension).exists())
+            {
+                continue;
+            }
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -392,6 +407,23 @@ pub fn json_block(text: &str) -> Option<&str> {
     let end = text.rfind("\nEND RIG CHECK JSON")?;
     let start = text[..end].rfind("\nBEGIN RIG CHECK JSON\n")? + JSON_BEGIN.len() + 1;
     Some(text[start..end].trim())
+}
+
+/// Read just the header to distinguish practice and real crash reports.
+pub(super) fn saved_mode(path: &Path) -> Option<super::record::Mode> {
+    use super::record::Mode;
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(8)
+        .filter_map(Result::ok)
+        .find_map(|line| {
+            let label = line.strip_prefix("Mode: ")?;
+            [Mode::Practice, Mode::Real]
+                .into_iter()
+                .find(|mode| mode.label() == label)
+        })
 }
 
 /// Which step was running when the report was last written, if any (used to
@@ -503,6 +535,18 @@ mod tests {
                 && text.contains("~/rig-check-output")
         );
         assert!(text.contains(&Redactor::serial_tag("SN0042XYZ")));
+    }
+
+    #[test]
+    fn orphaned_companions_reserve_the_original_report_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let seconds = 1_764_000_000;
+        let stem = format!("rig-check-{}", utc_stamp(seconds));
+        std::fs::create_dir(dir.path().join(format!("{stem}-evidence"))).unwrap();
+        std::fs::write(dir.path().join(format!("{stem}-2.state")), "").unwrap();
+        let report = ReportFile::create_at(dir.path(), Redactor::default(), seconds).unwrap();
+        assert_eq!(report.path, dir.path().join(format!("{stem}-3.txt")));
+        assert!(!dir.path().join(format!("{stem}.txt")).exists());
     }
 
     #[test]

@@ -305,7 +305,13 @@ impl<'a> Runner<'a> {
                 if self.persistence_failed {
                     return Err("The verified continuation checkpoint could not be saved.".into());
                 }
-                plan.reserve_successor(self.state_file.as_deref().expect("checkpoint path"))
+                plan.reserve_successor(self.state_file.as_deref().expect("checkpoint path"))?;
+                plan.commit_reuse(&mut self.run);
+                self.write_report();
+                if self.persistence_failed {
+                    return Err("Could not record the validated continuation. Verify the rig by hand before choosing Start new.".into());
+                }
+                Ok(())
             });
             if let Err(error) = result {
                 self.run.continuation.push(error.clone());
@@ -315,6 +321,18 @@ impl<'a> Runner<'a> {
                 self.write_report();
                 return (self.run, self.data);
             }
+        }
+        if plan.is_none()
+            && !self.persistence_failed
+            && self.run.mode == Mode::Real
+            && crate::offline_device_notice().is_none()
+            && let Some(dir) = self.state_file.as_deref().and_then(std::path::Path::parent)
+            && let Err(error) = super::recover::before_new_run(self.port, self.op, dir)
+        {
+            self.run.rig_state = error;
+            self.run.finished = true;
+            self.write_report();
+            return (self.run, self.data);
         }
         let mut stopped = false;
         for &id in RUN_ORDER.iter().filter(|id| **id != RIG_GUARD) {
@@ -581,6 +599,11 @@ impl<'a> Runner<'a> {
         }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
+        }
+        if self.run.pre_write_recovery && matches!(step.risk, Risk::Live | Risk::Save) {
+            return Some(Outcome::NotAuthorized(
+                "Live edit checks and stores are unavailable in the stopped-guard recovery.".into(),
+            ));
         }
         if step.id == PODXT_COMPATIBILITY {
             if self.data.no_podxt {

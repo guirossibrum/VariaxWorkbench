@@ -49,6 +49,7 @@ pub struct RunData {
     pub touched_variax: bool,
     pub store_state_unknown: bool,
     pub read_only: bool,
+    pub pre_write_recovery: bool,
     /// The USB view from step 0.2.
     pub usb: Option<UsbView>,
     /// The 2.5 backup folder in the shared library's format (used by 5.2).
@@ -66,6 +67,18 @@ pub struct RunData {
 }
 
 impl RunData {
+    pub(super) fn same_starting_pod_tone(
+        &self,
+        expected: &EditBuffer,
+        actual: &EditBuffer,
+    ) -> bool {
+        differences::same_podxt_tone(&expected.raw, &actual.raw)
+            && (!self.pre_write_recovery
+                || super::guided::PODXT_KNOBS
+                    .iter()
+                    .all(|(cc, _)| expected.cc(*cc) == actual.cc(*cc)))
+    }
+
     // Tests that recall a slot use its stored program. The 6.2 guard retains
     // the original captured buffer separately, including unsaved edits.
     pub fn exercise_program(&self) -> Option<Program> {
@@ -890,7 +903,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
             let now = podxt::read_current(session)?.tone;
             Ok((now, podxt::playing_channel(session)?))
         })?;
-        let stable = differences::same_podxt_tone(&start.raw, &now.raw);
+        let stable = ctx.data.same_starting_pod_tone(&start, &now);
         if Some(channel) == ctx.data.start_channel && stable {
             super::differences::tone(
                 ctx.rec,

@@ -237,7 +237,8 @@ fn automatic_recovery_refuses_legacy_hash_before_selecting_and_rejects_damaged_r
         if !passed {
             assert_eq!(saved, state);
         } else {
-            assert!(saved.finished);
+            assert!(saved.recovery_completed);
+            assert_eq!(saved.finished, state.finished);
         }
         if legacy {
             assert!(rig.borrow().written.is_empty());

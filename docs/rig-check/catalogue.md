@@ -61,16 +61,28 @@ with its source, reused results and earlier attempts.
 Rig Check compares the supported identities and the required starting tone,
 channel and guitar program with the saved run. A changed tone or program stops
 continuation before live or save checks. Return to the starting settings using
-the original report, then reopen it. Rig Check refuses a stopped final guard
-or an unresolved prior edit or store. A completed store is reused and its
+the original report, then reopen it. Rig Check generally refuses a stopped
+final guard. An interrupted guard, failed cleanup or unresolved prior edit or
+store requires manual verification before a new run. A completed store is reused and its
 command is never replayed. New saves still require the usual approvals,
 prerequisite checks and typed confirmations.
 
-The f13eaf7 Mac build used catalogue 1.5 and checked Drive alone. Rig Check
-checks that build's original step IDs and backup evidence before reusing its
-results. The old Drive failure stays in the earlier attempts. A resumed run
-retries 7.5 with the six-knob sweep and runs the footswitch return before live
-work. A complete verified library does not require another full backup.
+The f13eaf7 Mac build used catalogue 1.5 and checked Drive alone. A
+finished report with both historical 7.5 failures, no live or store test started,
+and a clean USB release after Stop before 6.2 can preview that specific
+recovery. The stopped guard and both failures stay in Earlier Attempts.
+After explicit confirmation, Rig Check checks the original PODxt channel
+and knob settings, the Variax program and both identities. It then retries
+7.5, runs the footswitch return and offers a fresh final guard. The approved
+return can restore the captured PODxt working buffer. Live edit checks and
+all stores are blocked throughout that continuation. Keep both original
+backups because this recovery requires their complete, verified evidence.
+
+**Start new** checks for a pending crash report before the first card.
+A compatible checkpoint can offer separately confirmed recovery after
+checking the rig identities. If the checkpoint, cleanup or an earlier write
+is uncertain, the app asks for manual verification before starting a fresh
+run.
 
 ## Risk levels
 

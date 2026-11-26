@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 const FIRST_SAVE: StepId = StepId(5, 1);
 const NEXT_SAVE: StepId = StepId(5, 2);
-const OLD_FAILURE: &str = "The Drive value read back differs from the Follow update.";
+const OLD_FAILURE: &str = LEGACY_DRIVE_FAILURE;
 
 struct Fixture {
     sink: ReportFile,
@@ -21,11 +21,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::from_rig(&SimRig::shared(Faults::default()))
+    }
+
+    fn from_rig(rig: &Rc<RefCell<SimRig>>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut sink = ReportFile::create(dir.path(), Redactor::default()).unwrap();
         let data = report_data(&sink);
-        let (run, data, _) = crate::rig_check::run_practice(
-            Faults::default(),
+        let (run, data) = crate::rig_check::run_on(
+            &mut PracticePort::new(rig.clone()),
             &mut Script::run_all(),
             &mut sink,
             data,
@@ -82,8 +86,14 @@ impl Fixture {
 
     fn legacy_failure() -> Self {
         let mut fixture = Self::new();
-        fixture.stop_after(KNOBS, true);
-        let step = fixture.run.step_mut(KNOBS);
+        fixture.mark_legacy_failure();
+        fixture.save(true);
+        fixture
+    }
+
+    fn mark_legacy_failure(&mut self) {
+        self.stop_after(KNOBS, true);
+        let step = self.run.step_mut(KNOBS);
         step.title = "Turn the PODxt Live Drive knob".into();
         step.outcome = Outcome::Failed(OLD_FAILURE.into());
         step.evidence = vec!["Synthetic legacy mismatch: observed 92, read 86.".into()];
@@ -91,7 +101,29 @@ impl Fixture {
         let mut first = step.clone();
         first.attempt = Some(1);
         first.evidence = vec!["Synthetic legacy mismatch: observed 118, read 115.".into()];
-        fixture.run.prior_attempts.push(first);
+        self.run.prior_attempts.push(first);
+    }
+
+    fn stopped_owner_pattern(rig: &Rc<RefCell<SimRig>>) -> Self {
+        let mut fixture = Self::from_rig(rig);
+        let computer_audio = fixture.run.step(StepId(8, 1)).clone();
+        fixture.mark_legacy_failure();
+        *fixture.run.step_mut(StepId(8, 1)) = computer_audio;
+        for id in RUN_ORDER.iter().copied() {
+            let definition = catalogue::step(id).unwrap();
+            if definition.not_in_this_version.is_some() {
+                fixture.run.step_mut(id).outcome =
+                    Outcome::NotAvailable("Synthetic audio refusal.".into());
+            } else if matches!(definition.risk, Risk::Live | Risk::Save) {
+                fixture.run.step_mut(id).outcome =
+                    Outcome::SkippedNeeds("read-only from here: step 7.5 failed".into());
+            }
+        }
+        let mut guard = StepRecord::new(RIG_GUARD);
+        guard.outcome = Outcome::Stopped(LEGACY_GUARD_STOP.into());
+        *fixture.run.step_mut(RIG_GUARD) = guard;
+        fixture.run.stopped_at = Some(RIG_GUARD);
+        fixture.run.rig_state = LEGACY_CLEAN_RELEASE.into();
         fixture.save(true);
         fixture
     }
@@ -290,6 +322,7 @@ fn incompatible_checkpoint_stopped_guard_and_uncertain_stores_are_refused_offlin
     fixture.save(false);
     assert!(error(&fixture.sink.path).contains("unresolved outcome"));
     fixture.run.step_mut(RIG_GUARD).outcome = Outcome::Stopped("Synthetic guard stop.".into());
+    *fixture.run.step_mut(FIRST_SAVE) = StepRecord::new(FIRST_SAVE);
     fixture.save(false);
     assert!(error(&fixture.sink.path).contains("guard was stopped"));
     fixture.run.catalogue_version = "0.0";
@@ -380,5 +413,172 @@ fn a_running_checkpoint_and_a_stale_preview_are_refused_before_device_access() {
     fixture.save(false);
     let (run, _) = fixture.continue_run(plan, &rig, &mut Script::run_all());
     assert!(run.rig_state.contains("changed after preview"));
+    assert!(rig.borrow().written.is_empty());
+}
+
+#[test]
+fn collected_legacy_report_with_stopped_guard_runs_only_guided_checks_and_a_fresh_guard() {
+    let rig = SimRig::shared(Faults::default());
+    let presence = rig.borrow().podxt.playing[32 + 21] ^ 5;
+    rig.borrow_mut().podxt.playing[32 + 21] = presence;
+    let fixture = Fixture::stopped_owner_pattern(&rig);
+    let alias = fixture.dir.path().join("latest.txt");
+    std::fs::rename(&fixture.sink.path, &alias).unwrap();
+    std::fs::rename(
+        fixture.sink.path.with_extension("state"),
+        alias.with_extension("state"),
+    )
+    .unwrap();
+    let plan = open(&alias).unwrap();
+    assert_eq!(plan.target, KNOBS);
+    assert!(plan.pre_write_recovery && plan.skips(POD_BACKUP) && plan.skips(GUITAR_BACKUP));
+    assert!(plan.restored.podxt_unsaved);
+    assert!(!plan.skips(RIG_GUARD));
+    let mut person = Script::run_all();
+    let wrong_rig = SimRig::shared(Faults::default());
+    let (refused, refused_report) = fixture.continue_run(plan, &wrong_rig, &mut person);
+    assert!(
+        refused.rig_state.contains("tone differs"),
+        "{}",
+        refused.rig_state
+    );
+    assert!(person.cards.is_empty());
+    assert!(!refused.step(POD_BACKUP).reused);
+    assert!(error(&refused_report.path).contains("never finished verifying"));
+    only_reads(&wrong_rig);
+
+    let rig = SimRig::shared(Faults::default());
+    rig.borrow_mut().podxt.playing[32 + 21] = presence;
+    let mut person = Script::run_all();
+    let (run, sink) = fixture.continue_run(open(&alias).unwrap(), &rig, &mut person);
+    assert_eq!(person.cards.first(), Some(&KNOBS));
+    assert_eq!(person.cards.last(), Some(&RIG_GUARD));
+    assert!(run.step(KNOBS).outcome.passed());
+    assert!(run.step(POD_BACKUP).reused && run.step(GUITAR_BACKUP).reused);
+    assert!(
+        run.step(RIG_GUARD).outcome.passed(),
+        "{:?}",
+        run.step(RIG_GUARD)
+    );
+    assert!(
+        run.prior_attempts
+            .iter()
+            .any(|attempt| attempt.id == RIG_GUARD
+                && attempt.outcome == Outcome::Stopped(LEGACY_GUARD_STOP.into()))
+    );
+    assert!(
+        run.prior_attempts
+            .iter()
+            .filter(|attempt| attempt.id == KNOBS)
+            .count()
+            >= 2
+    );
+    assert!(person.saves.is_empty());
+    assert_eq!(rig.borrow().podxt.stores, 0);
+    assert_eq!(rig.borrow().variax.stores, 0);
+    assert_eq!(rig.borrow().podxt.playing[32 + 21], presence);
+    assert!(matches!(
+        run.step(FIRST_SAVE).outcome,
+        Outcome::NotAuthorized(_)
+    ));
+    assert!(error(&alias).contains("already has a continuation"));
+    assert!(sink.last.contains("pre_write_recovery\":true"));
+}
+
+#[test]
+fn the_stopped_guard_exception_refuses_interruption_failed_cleanup_and_missing_evidence() {
+    let rig = SimRig::shared(Faults::default());
+    let mut fixture = Fixture::stopped_owner_pattern(&rig);
+    fixture.run.rig_state = "Not checked yet. USB cleanup failed: synthetic failure.".into();
+    fixture.save(true);
+    assert!(error(&fixture.sink.path).contains("could not release the rig"));
+    fixture.run.rig_state = LEGACY_CLEAN_RELEASE.into();
+    fixture.run.finished = false;
+    fixture.run.current = Some(RIG_GUARD);
+    fixture.save(true);
+    assert!(error(&fixture.sink.path).contains("guard was stopped"));
+    fixture.run.finished = true;
+    fixture.run.current = None;
+    fixture.run.step_mut(FIRST_SAVE).outcome = Outcome::Failed("Synthetic uncertain store.".into());
+    fixture.run.step_mut(FIRST_SAVE).started = Some(utc_now());
+    fixture.save(true);
+    assert!(error(&fixture.sink.path).contains("unresolved outcome"));
+    *fixture.run.step_mut(FIRST_SAVE) = StepRecord::new(FIRST_SAVE);
+    fixture.save(true);
+    std::fs::rename(
+        fixture
+            .data
+            .evidence_dir
+            .as_ref()
+            .unwrap()
+            .join("podxt-library"),
+        fixture.dir.path().join("missing"),
+    )
+    .unwrap();
+    assert!(error(&fixture.sink.path).contains("Backup 2.5 cannot be verified"));
+}
+
+#[test]
+fn start_new_offers_safe_pending_recovery_and_requires_manual_confirmation_for_an_uncertain_store()
+{
+    let mut fixture = Fixture::new();
+    fixture.stop_after(KNOBS, false);
+    fixture.run.finished = false;
+    fixture.run.current = Some(KNOBS);
+    *fixture.run.step_mut(KNOBS) = StepRecord::new(KNOBS);
+    *fixture.run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    fixture.save(false);
+    let rig = SimRig::shared(Faults::default());
+    rig.borrow_mut().user_acts(
+        crate::rig_check::practice::UserAction::PodxtFootswitch(3),
+        std::time::Duration::ZERO,
+    );
+    let mut person = Script::run_all();
+    let lock = recover::lock_checkpoint(&fixture.sink.path).unwrap();
+    assert!(
+        recover::before_new_run(
+            &mut PracticePort::new(rig.clone()),
+            &mut person,
+            fixture.dir.path()
+        )
+        .is_err()
+    );
+    assert!(rig.borrow().written.is_empty());
+    assert!(person.cards.is_empty());
+    drop(lock);
+    let result = recover::before_new_run(
+        &mut PracticePort::new(rig.clone()),
+        &mut person,
+        fixture.dir.path(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(person.cards, [RIG_GUARD]);
+    assert_eq!(
+        rig.borrow().podxt.channel,
+        fixture.data.start_channel.map(|ch| ch.index())
+    );
+    assert!(recover::pending(fixture.dir.path()).is_empty());
+    assert!(open(&fixture.sink.path).is_ok());
+
+    fixture.run.current = Some(FIRST_SAVE);
+    fixture.save(false);
+    let rig = SimRig::shared(Faults::default());
+    person = Script::run_all();
+    person.accept = false;
+    assert!(
+        recover::before_new_run(
+            &mut PracticePort::new(rig.clone()),
+            &mut person,
+            fixture.dir.path()
+        )
+        .is_err()
+    );
+    assert!(
+        person
+            .notices
+            .iter()
+            .any(|notice| notice.contains("verify the affected slot"))
+    );
+    assert!(person.cards.is_empty());
     assert!(rig.borrow().written.is_empty());
 }
