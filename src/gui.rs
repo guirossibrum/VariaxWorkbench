@@ -206,13 +206,18 @@ enum DeviceOperationEvent<T> {
     Finished(Result<T, String>),
 }
 
-fn backup_offered() -> bool {
+fn backup_offered(choice: BackupChoice) -> bool {
     #[cfg(feature = "usb")]
     {
-        variax_workbench::library_backup::offered()
+        use variax_workbench::library_backup::{Which, offered_for};
+        offered_for(match choice {
+            BackupChoice::Podxt => Which::Podxt,
+            BackupChoice::Variax | BackupChoice::VariaxFull => Which::Variax,
+        })
     }
     #[cfg(not(feature = "usb"))]
     {
+        let _ = choice;
         false
     }
 }
@@ -773,11 +778,11 @@ impl Workbench {
                 "Each step asks first, the answer is No unless you choose Yes, and a passed \
                      step never starts the next one.",
             );
-            ui.label(device_probe::STEP_TWO_PREFLIGHT);
+            ui.label(device_probe::step_two_preflight());
             ui.label(device_probe::CANCEL_LIMIT);
             visible.push_str(&format!(
                 "\n{}\n{}",
-                device_probe::STEP_TWO_PREFLIGHT,
+                device_probe::step_two_preflight(),
                 device_probe::CANCEL_LIMIT
             ));
             for notice in &notices {
@@ -885,7 +890,7 @@ impl Workbench {
                 ui.label(&outcome);
                 visible.push_str(&format!("\n{outcome}"));
             }
-            if backup_offered() {
+            if backup_offered(BackupChoice::Podxt) || backup_offered(BackupChoice::Variax) {
                 ui.separator();
                 ui.heading("Backup");
                 ui.label(BACKUP_INTRO);
@@ -928,7 +933,7 @@ impl Workbench {
                     visible.push_str(yes);
                 } else {
                     ui.horizontal(|ui| {
-                        if !variax_backup_blocked {
+                        if backup_offered(BackupChoice::Variax) && !variax_backup_blocked {
                             visible.push_str(BACKUP_VARIAX);
                             if self
                                 .device_check_button(ui, "backup-variax", BACKUP_VARIAX)
@@ -937,7 +942,7 @@ impl Workbench {
                                 self.backup_choice = Some(BackupChoice::Variax);
                             }
                         }
-                        if !pod_unverified {
+                        if backup_offered(BackupChoice::Podxt) && !pod_unverified {
                             visible.push_str(BACKUP_PODXT);
                             if self
                                 .device_check_button(ui, "backup-podxt", BACKUP_PODXT)
@@ -947,7 +952,10 @@ impl Workbench {
                             }
                         }
                     });
-                    if !variax_backup_blocked && self.verified_backup_guitar().is_some() {
+                    if backup_offered(BackupChoice::VariaxFull)
+                        && !variax_backup_blocked
+                        && self.verified_backup_guitar().is_some()
+                    {
                         if self
                             .device_check_button(ui, "backup-variax-full", BACKUP_VARIAX_FULL)
                             .clicked()

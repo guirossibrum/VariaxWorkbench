@@ -50,6 +50,16 @@ pub const CANCEL_LIMIT: &str = "Close stops the step before it starts. Once Yes 
 /// The app's one request, kept separate from the kernel driver's own startup.
 pub const APP_REQUEST_VERSUS_LINUX: &str = "The app sends one identity request. After the driver is given back, Linux's own snd-usb-variax startup can send that same kind of question by itself. That later traffic is Linux, not a second request from this app.";
 pub const STEP_TWO_PREFLIGHT: &str = "Step 2 is offered only after this session's step 1 shows one PODxt Live, snd-usb-pod on interface 0, and snd-usb-variax on interface 1.";
+const MAC_STEP_TWO_PREFLIGHT: &str =
+    "Step 2 uses the one PODxt Live attachment selected by this session's step 1.";
+
+pub fn step_two_preflight() -> &'static str {
+    if crate::macos_usb_available() {
+        MAC_STEP_TWO_PREFLIGHT
+    } else {
+        STEP_TWO_PREFLIGHT
+    }
+}
 pub const STEP_TWO_YES: &str = "Yes, send one Variax identity request";
 pub const STEP_TWO_YES_SIMULATION: &str = "Yes, rehearse one Variax identity request (simulation)";
 pub const SAVE_THEN_CHECK_AGAIN: &str = "Save the step 2 report, then run step 1 again";
@@ -113,6 +123,17 @@ impl Stage {
 
     /// Exact plain-language description of what the stage does.
     pub const fn action(self) -> &'static str {
+        if crate::macos_usb_available() {
+            match self {
+                Self::UsbRecognition => {
+                    return "Look for the PODxt Live in the Mac USB attachment list. This step sends no MIDI and claims no interface.";
+                }
+                Self::Identification => {
+                    return "Send one Variax identity request through the PODxt Live selected in step 1. The app releases the interface afterwards. It stops if another application or driver holds the connection.";
+                }
+                _ => {}
+            }
+        }
         match self {
             Self::UsbRecognition => {
                 "Look at what Linux already knows about connected USB devices: vendor and product numbers, the description Linux saved when the device was plugged in, which Linux driver owns each part of it, and the list of sound cards. The app sends nothing to the PODxt Live or the guitar."
@@ -133,6 +154,17 @@ impl Stage {
 
     /// Exact plain-language risk text shown before consent.
     pub const fn risk(self) -> &'static str {
+        if crate::macos_usb_available() {
+            match self {
+                Self::UsbRecognition => {
+                    return "Low risk. If there is no PODxt Live or more than one, the check stops.";
+                }
+                Self::Identification => {
+                    return "Medium risk. This asks only for the guitar's identity. It leaves presets and settings alone.";
+                }
+                _ => {}
+            }
+        }
         match self {
             Self::UsbRecognition => {
                 "Low risk. The app only reads information Linux keeps. When the PODxt Live was plugged in, Linux's own drivers already talked to it (for example the Variax driver asks for a version); that happens without this app. If no device, several devices or unreadable information is found, the check stops instead of guessing."
@@ -635,6 +667,9 @@ impl Recognition {
                 device,
                 sound_cards,
             } => {
+                if crate::macos_usb_available() {
+                    return format!("PODxt Live found at USB {}.", device.sysfs_name);
+                }
                 let interfaces = device
                     .interfaces
                     .iter()
@@ -786,7 +821,13 @@ pub trait ProbeBackend {
     fn recognise_usb(&mut self) -> Result<Recognition, String> {
         Ok(recognise(self.os_metadata()))
     }
+    fn identification_ready(&self, device: &UsbDevice) -> bool {
+        expected_driver_binding(device)
+    }
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError>;
+    fn identity_open_error(&self) -> Option<&str> {
+        None
+    }
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String>;
     /// Extra words for a live settings read. Simulation leaves this empty.
     fn firmware_notice(&self) -> Option<FirmwareNotice> {
@@ -998,6 +1039,10 @@ pub struct HostRig<S: OsMetadataSource> {
     /// Plain text from the last live settings read, when one finished.
     settings_note: Option<String>,
     firmware_notice: Option<FirmwareNotice>,
+    #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+    mac_attachment: Option<line6_devices::transport::usb::macos::Attachment>,
+    #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+    mac_open_error: Option<String>,
 }
 
 impl<S: OsMetadataSource> HostRig<S> {
@@ -1008,6 +1053,10 @@ impl<S: OsMetadataSource> HostRig<S> {
             calls: BackendCalls::default(),
             settings_note: None,
             firmware_notice: None,
+            #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+            mac_attachment: None,
+            #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+            mac_open_error: None,
         }
     }
 
@@ -1049,18 +1098,77 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
     }
 
     fn recognise_usb(&mut self) -> Result<Recognition, String> {
-        // Follow has to give interface 1 back before checking its binding.
-        let _rig = (cfg!(target_os = "linux") && self.lock_recognition)
-            .then(line6_devices::device_lock::DeviceLock::acquire)
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        Ok(recognise(self.os_metadata()))
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        {
+            use line6_devices::{device_lock::DeviceLock, transport::usb::macos};
+
+            self.calls.os_reads += 1;
+            self.mac_attachment = None;
+            return hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+                let _rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
+                let attachments = macos::attachments()?;
+                match attachments.as_slice() {
+                    [] => Ok(Recognition::Absent),
+                    [attachment] => {
+                        self.mac_attachment = Some(attachment.clone());
+                        Ok(Recognition::Recognised {
+                            device: UsbDevice {
+                                sysfs_name: attachment.path.clone(),
+                                vendor_id: PODXT_LIVE_USB.0,
+                                product_id: PODXT_LIVE_USB.1,
+                                product: Some("PODxt Live".into()),
+                                bcd_device: None,
+                                interfaces: Vec::new(),
+                            },
+                            sound_cards: Vec::new(),
+                        })
+                    }
+                    _ => Ok(Recognition::Several(attachments.len())),
+                }
+            });
+        }
+        #[cfg(not(all(target_os = "macos", feature = "usb", not(test))))]
+        {
+            // Follow has to give interface 1 back before checking its binding.
+            let _rig = (cfg!(target_os = "linux") && self.lock_recognition)
+                .then(line6_devices::device_lock::DeviceLock::acquire)
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            Ok(recognise(self.os_metadata()))
+        }
+    }
+
+    fn identification_ready(&self, device: &UsbDevice) -> bool {
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        return self
+            .mac_attachment
+            .as_ref()
+            .is_some_and(|attachment| attachment.path == device.sysfs_name);
+        #[cfg(not(all(target_os = "macos", feature = "usb", not(test))))]
+        expected_driver_binding(device)
     }
 
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
         self.calls.identity_requests += 1;
         // This path enforces the single-request G2 exchange before any USB open.
-        #[cfg(feature = "usb")]
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        {
+            use line6_devices::device_lock::{DeviceLock, LockError};
+            self.mac_open_error = None;
+            let attachment = self.mac_attachment.as_ref().ok_or(IdentifyError::Locked)?;
+            let rig = DeviceLock::acquire().map_err(|error| {
+                crate::usb::open_stopped(match error {
+                    LockError::Busy | LockError::BusyHere => IdentityFailure::RigBusy,
+                    LockError::Unavailable(_) => IdentityFailure::LockUnavailable,
+                })
+            })?;
+            crate::usb::read_macos_identity(
+                &rig,
+                (&attachment.path, attachment.address),
+                &mut self.mac_open_error,
+            )
+        }
+        #[cfg(all(feature = "usb", not(all(target_os = "macos", not(test)))))]
         {
             crate::usb::read_identity(&AtomicBool::new(false))
         }
@@ -1068,6 +1176,13 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         {
             Err(IdentifyError::Locked)
         }
+    }
+
+    fn identity_open_error(&self) -> Option<&str> {
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        return self.mac_open_error.as_deref();
+        #[cfg(not(all(target_os = "macos", feature = "usb", not(test))))]
+        None
     }
 
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String> {
@@ -1078,6 +1193,14 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         }
         #[cfg(feature = "usb")]
         {
+            #[cfg(all(target_os = "macos", not(test)))]
+            let both = {
+                let attachment = self.mac_attachment.as_ref().ok_or_else(host_refusal)?;
+                let rig = line6_devices::device_lock::DeviceLock::acquire()
+                    .map_err(|error| error.to_string())?;
+                crate::live_families::read_both_on(&attachment.path, attachment.address, &rig)?
+            };
+            #[cfg(not(all(target_os = "macos", not(test))))]
             let both = crate::live_families::read_both()?;
             self.firmware_notice = both.firmware_notice;
             if let Some(notice) = both.firmware_notice {
@@ -1149,6 +1272,20 @@ impl ProbeBackend for RigBackend {
         match self {
             Self::Simulated(rig) => rig.identify(),
             Self::ThisComputer(rig) => rig.identify(),
+        }
+    }
+
+    fn identification_ready(&self, device: &UsbDevice) -> bool {
+        match self {
+            Self::Simulated(rig) => rig.identification_ready(device),
+            Self::ThisComputer(rig) => rig.identification_ready(device),
+        }
+    }
+
+    fn identity_open_error(&self) -> Option<&str> {
+        match self {
+            Self::Simulated(rig) => rig.identity_open_error(),
+            Self::ThisComputer(rig) => rig.identity_open_error(),
         }
     }
 
@@ -1368,10 +1505,11 @@ impl<B: ProbeBackend> ProbeSession<B> {
         }
         if stage == Stage::Identification && !self.g1_expected_binding {
             self.statuses[index] = StageStatus::Stopped;
-            self.details[index] = Some(
-                "Step 2 needs a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and snd-usb-variax on interface 1. Nothing was sent."
-                    .into(),
-            );
+            self.details[index] = Some(if crate::macos_usb_available() {
+                format!("{MAC_STEP_TWO_PREFLIGHT} Nothing was sent.")
+            } else {
+                "Step 2 needs a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and snd-usb-variax on interface 1. Nothing was sent.".into()
+            });
             self.stop = Some((stage, StopReason::Failed));
             return;
         }
@@ -1395,7 +1533,9 @@ impl<B: ProbeBackend> ProbeSession<B> {
                 let recognition = self.backend.recognise_usb()?;
                 let summary = recognition.summary();
                 let binding = match &recognition {
-                    Recognition::Recognised { device, .. } => expected_driver_binding(device),
+                    Recognition::Recognised { device, .. } => {
+                        self.backend.identification_ready(device)
+                    }
                     _ => false,
                 };
                 self.g1_expected_binding = binding;
@@ -1403,7 +1543,8 @@ impl<B: ProbeBackend> ProbeSession<B> {
                     Ok(summary)
                 } else if recognition.passed() {
                     Err(format!(
-                        "{summary} {STEP_TWO_PREFLIGHT} Step 2 is not offered."
+                        "{summary} {} Step 2 is not offered.",
+                        step_two_preflight()
                     ))
                 } else {
                     Err(summary)
@@ -1422,7 +1563,12 @@ impl<B: ProbeBackend> ProbeSession<B> {
                 Err(IdentifyError::Failed(stop)) => {
                     self.cleanup_ran = stop.cleanup_ran;
                     self.remember_identity(stop.bridge, stop.guitar, Some(stop));
-                    Err(identity_detail(&stop))
+                    let mut detail = identity_detail(&stop);
+                    if let Some(error) = self.backend.identity_open_error() {
+                        detail.push(' ');
+                        detail.push_str(error);
+                    }
+                    Err(detail)
                 }
             },
             Stage::SettingsRead => {
@@ -1621,7 +1767,7 @@ impl<B: ProbeBackend> ProbeSession<B> {
 /// PODxt Live when `usb` is on. Step 4 is not offered. Other platforms do
 /// not offer a real reader.
 pub fn live_stage_available(stage: Stage) -> bool {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(target_os = "linux") && !crate::macos_usb_available() {
         return false;
     }
     // Step 3 has its own Device check gate. Step 4 has no host procedure.
@@ -1742,6 +1888,18 @@ pub fn reports_panel_note() -> &'static str {
 
 pub fn this_computer_label() -> &'static str {
     use crate::probe_report::OpenGates;
+    if crate::macos_usb_available() {
+        match open_gates() {
+            OpenGates::G1ThroughG3 => {
+                return "This computer (G1–G3) — check the Mac USB attachment, ask for Variax identity, then read the guitar settings and PODxt Live tone.";
+            }
+            OpenGates::G1AndG2 => {
+                return "This computer (G1 and G2) — check the Mac USB attachment and ask for Variax identity.";
+            }
+            OpenGates::G1 => return "This computer (G1) — check the Mac USB attachment list.",
+            OpenGates::G2 | OpenGates::None => {}
+        }
+    }
     match open_gates() {
         OpenGates::G1AndG2 => {
             "This computer (G1 and G2) — step 1 reads Linux metadata and step 2 asks for Variax identity."

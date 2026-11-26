@@ -322,12 +322,13 @@ fn with_matching_attachment<T>(
             device.device_descriptor().is_ok_and(|descriptor| {
                 descriptor.vendor_id() == spec.vendor && descriptor.product_id() == spec.product
             }) && device.port_numbers().is_ok_and(|ports| {
-                matches_attachment(
-                    (path, address),
-                    device.bus_number(),
-                    &ports,
-                    device.address(),
-                )
+                (!cfg!(target_os = "macos") || !ports.is_empty())
+                    && matches_attachment(
+                        (path, address),
+                        device.bus_number(),
+                        &ports,
+                        device.address(),
+                    )
             })
         },
         open,

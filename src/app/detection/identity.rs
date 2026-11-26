@@ -153,9 +153,7 @@ pub(super) fn platform() -> Option<Identify> {
 
 #[cfg(all(feature = "usb", target_os = "macos", not(test)))]
 pub(super) fn platform() -> Option<Identify> {
-    variax_workbench::offline_device_notice()
-        .is_none()
-        .then_some(macos::identify)
+    variax_workbench::macos_usb_available().then_some(macos::identify)
 }
 
 #[cfg(all(feature = "usb", target_os = "macos", not(test)))]
@@ -187,7 +185,7 @@ mod macos {
         let result = run_if_unlocked(Gate::OsDiscovery, || {
             run_if_unlocked(Gate::IdentityRequest, || {
                 run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, || {
-                    identify_on(path, address, cancel)
+                    identify_on(job.kind, path, address, cancel)
                 })
             })
         });
@@ -197,7 +195,12 @@ mod macos {
         })
     }
 
-    fn identify_on(path: &str, address: u8, cancel: &AtomicBool) -> Result<Outcome, String> {
+    fn identify_on(
+        kind: JobKind,
+        path: &str,
+        address: u8,
+        cancel: &AtomicBool,
+    ) -> Result<Outcome, String> {
         let rig = match DeviceLock::acquire() {
             Ok(rig) => rig,
             Err(LockError::Busy) => return Ok(Outcome::OtherProcessBusy),
@@ -207,7 +210,7 @@ mod macos {
         if cancel.load(Ordering::Relaxed) {
             return Ok(Outcome::Deferred);
         }
-        {
+        let pod_firmware = if kind == JobKind::Initial {
             let mut link = UsbInterfaceLink::open_attachment_borrowed(
                 line6_devices::transport::usb::macos::PODXT_MIDI,
                 path,
@@ -219,7 +222,10 @@ mod macos {
             if let Some(notice) = pod? {
                 return Ok(Outcome::UnverifiedPod(notice));
             }
-        }
+            Some(BRIDGE_VERSION)
+        } else {
+            None
+        };
         if cancel.load(Ordering::Relaxed) {
             return Ok(Outcome::Deferred);
         }
@@ -234,7 +240,10 @@ mod macos {
             let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
             session.require_expected_sysex();
             let reply = variax::identify_if_present(&mut session);
-            link.finish()?;
+            if let Err(error) = link.finish() {
+                eprintln!("PODxt Live interface 1 cleanup: {error}");
+                return Ok(Guitar::CleanupFailed);
+            }
             match reply? {
                 Some(reply) if variax::procedures::check_identity(&reply.identity).is_ok() => {
                     Ok(Guitar::Verified(GUITAR_VERSION))
@@ -246,7 +255,7 @@ mod macos {
             }
         })();
         Ok(Outcome::Finished {
-            pod_firmware: Some(BRIDGE_VERSION),
+            pod_firmware,
             guitar: result.unwrap_or_else(Guitar::Unavailable),
         })
     }

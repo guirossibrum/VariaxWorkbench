@@ -410,7 +410,7 @@ pub(crate) fn decode_interrupt_packet(
     decoder.feed(&normalized)
 }
 
-fn open_stopped(failure: IdentityFailure) -> identity_stage::IdentifyError {
+pub(crate) fn open_stopped(failure: IdentityFailure) -> identity_stage::IdentifyError {
     identity_stage::IdentifyError::Failed(identity_stage::IdentifyStop {
         failure,
         cleanup: None,
@@ -434,6 +434,142 @@ fn identity_on<T: IdentityTransport>(
     }
     let mut session = open().map_err(|error| open_stopped(open_failure_kind(&error)))?;
     Ok(exchange(&mut session, cancel))
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn read_macos_identity(
+    rig: &DeviceLock,
+    (path, address): (&str, u8),
+    open_error: &mut Option<String>,
+) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
+    let cancel = AtomicBool::new(false);
+    hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+        hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
+            Ok(identity_on(
+                || {
+                    UsbInterfaceLink::open_attachment_borrowed(USB, path, address, rig)
+                        .map(|link| MacIdentity::new(link, UsbInterfaceLink::finish))
+                        .inspect_err(|error| *open_error = Some(error.clone()))
+                },
+                &cancel,
+                identity_stage::run_identity_exchange,
+            )
+            .and_then(identity_stage::exchange_result))
+        })
+    })
+    .unwrap_or(Err(identity_stage::IdentifyError::Locked))
+}
+
+#[cfg(any(test, target_os = "macos"))]
+struct MacIdentity<L> {
+    link: L,
+    finish: fn(&mut L) -> Result<(), String>,
+    decoder: SysexDecoder,
+    queued: VecDeque<Vec<u8>>,
+    deadline: Duration,
+    release_attempted: bool,
+    release_failed: bool,
+}
+
+#[cfg(any(test, target_os = "macos"))]
+impl<L> MacIdentity<L> {
+    fn new(link: L, finish: fn(&mut L) -> Result<(), String>) -> Self {
+        Self {
+            link,
+            finish,
+            decoder: SysexDecoder::default(),
+            queued: VecDeque::new(),
+            deadline: Duration::ZERO,
+            release_attempted: false,
+            release_failed: false,
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+impl<L: line6_devices::session::Link> IdentityTransport for MacIdentity<L> {
+    // The matched opener already checked both drivers, claimed interface 1
+    // and selected its alternate setting.
+    fn detach_if_active(&mut self) -> Result<(), IdentityFailure> {
+        Ok(())
+    }
+    fn claim_interface(&mut self) -> Result<(), IdentityFailure> {
+        Ok(())
+    }
+    fn set_alternate(&mut self) -> Result<(), IdentityFailure> {
+        Ok(())
+    }
+    fn detach_succeeded(&self) -> bool {
+        false
+    }
+    fn claim_succeeded(&self) -> bool {
+        true
+    }
+
+    fn send_identity_request(&mut self) -> Result<(), IdentityFailure> {
+        self.link
+            .write(&read_session::IDENTITY_REQUEST)
+            .map_err(|_| IdentityFailure::SendFailed)?;
+        self.deadline = self.link.elapsed() + identity_stage::REPLY_TIMEOUT;
+        Ok(())
+    }
+
+    fn poll_reply(&mut self, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, IdentityFailure> {
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(IdentityFailure::Cancelled);
+            }
+            if let Some(frame) = self.queued.pop_front() {
+                return Ok(Some(frame));
+            }
+            let remaining = self.deadline.saturating_sub(self.link.elapsed());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            if let Some(packet) = self
+                .link
+                .read(remaining.min(identity_stage::READ_POLL))
+                .map_err(|_| IdentityFailure::ReadFailed)?
+            {
+                self.queued.extend(
+                    decode_interrupt_packet(&mut self.decoder, &packet)
+                        .map_err(|_| IdentityFailure::ReadFailed)?,
+                );
+            }
+        }
+    }
+
+    fn take_orphan_end(&mut self) -> bool {
+        false
+    }
+    fn take_scripted_cancel(&mut self) -> bool {
+        false
+    }
+    fn release_interface(&mut self) -> Result<(), IdentityFailure> {
+        self.release_attempted = true;
+        (self.finish)(&mut self.link).map_err(|_| {
+            self.release_failed = true;
+            IdentityFailure::CleanupFailed
+        })
+    }
+    fn needs_driver_return(&self) -> bool {
+        false
+    }
+    fn reattach_driver(&mut self) -> Result<(), IdentityFailure> {
+        Ok(())
+    }
+    fn release_attempted(&self) -> bool {
+        self.release_attempted
+    }
+    fn reattach_attempted(&self) -> bool {
+        false
+    }
+    fn release_failed(&self) -> bool {
+        self.release_failed
+    }
+    fn reattach_failed(&self) -> bool {
+        false
+    }
 }
 
 /// One Variax identity request. Gate G2 only: this does not require the
@@ -555,6 +691,86 @@ pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
 
 #[cfg(test)]
 mod tests {
+    #[derive(Default)]
+    struct MacFake {
+        packets: std::collections::VecDeque<Vec<u8>>,
+        written: Vec<Vec<u8>>,
+        elapsed: super::Duration,
+        released: usize,
+        fail_release: bool,
+    }
+
+    impl line6_devices::session::Link for MacFake {
+        fn path(&self) -> line6_devices::session::Path {
+            line6_devices::session::Path::VariaxViaPodxt
+        }
+        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.written.push(bytes.to_vec());
+            Ok(())
+        }
+        fn read(&mut self, wait: super::Duration) -> Result<Option<Vec<u8>>, String> {
+            let packet = self.packets.pop_front();
+            if packet.is_none() {
+                self.elapsed += wait;
+            }
+            Ok(packet)
+        }
+        fn elapsed(&self) -> super::Duration {
+            self.elapsed
+        }
+        fn pause(&mut self, duration: super::Duration) {
+            self.elapsed += duration;
+        }
+    }
+
+    #[test]
+    fn mac_device_check_keeps_one_request_ambiguity_and_cleanup_rules() {
+        use super::*;
+
+        let reply = identity_stage::guitar_reply();
+        for (packets, fail_release, failure) in [
+            (
+                vec![reply[..16].to_vec(), reply[16..].to_vec()],
+                false,
+                None,
+            ),
+            (vec![vec![0xf7]], false, Some(IdentityFailure::TimedOut)),
+            (
+                vec![reply.clone(), reply.clone()],
+                false,
+                Some(IdentityFailure::Ambiguous),
+            ),
+            (
+                vec![reply.clone()],
+                true,
+                Some(IdentityFailure::CleanupFailed),
+            ),
+        ] {
+            let fake = MacFake {
+                packets: packets.into(),
+                fail_release,
+                ..Default::default()
+            };
+            let mut adapter = MacIdentity::new(fake, |wire| {
+                wire.released += 1;
+                if wire.fail_release {
+                    Err("fake release failure".into())
+                } else {
+                    Ok(())
+                }
+            });
+            let result =
+                identity_stage::run_identity_exchange(&mut adapter, &AtomicBool::new(false));
+            assert_eq!(result.failure, failure);
+            assert_eq!(
+                adapter.link.written,
+                [read_session::IDENTITY_REQUEST.to_vec()]
+            );
+            assert_eq!(adapter.link.released, 1);
+            assert!(!result.reattach_attempted);
+        }
+    }
+
     use super::*;
     #[test]
     fn a_test_build_stops_before_usb_enumeration_or_open() {

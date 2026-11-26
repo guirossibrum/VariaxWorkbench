@@ -23,6 +23,9 @@ pub fn attachments() -> Result<Vec<Attachment>, String> {
         })
         .map(|device| {
             let ports = device.port_numbers().map_err(open_error)?;
+            if ports.is_empty() {
+                return Err("The PODxt Live physical USB port could not be identified.".into());
+            }
             Ok(Attachment {
                 path: attachment_path(device.bus_number(), &ports),
                 address: device.address(),

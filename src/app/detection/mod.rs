@@ -349,8 +349,7 @@ impl DetectionService {
         }
         #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
         {
-            variax_workbench::offline_device_notice()
-                .is_none()
+            variax_workbench::macos_usb_available()
                 .then(|| Self::new(Box::new(MacUsbPresence::default())))
         }
         #[cfg(not(any(
