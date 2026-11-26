@@ -1,5 +1,9 @@
-use super::{BODY, EditorServices, PICKUP2, Path, PickRequest, VariaxEditor, egui, tabs};
-use variax_workbench::body::{BODY_DEFINITION_BYTES, BodyDefinition};
+use super::{BODY, EditorServices, PICKUP2, Path, VariaxEditor, egui, tabs};
+use variax_workbench::{
+    body::{BODY_DEFINITION_BYTES, BodyDefinition},
+    edit::model_allowed,
+    host::ModelLibrary,
+};
 
 fn resource(body: u32) -> Option<&'static str> {
     // Workbench 1.75 coefeng/data/definitions.xml, in asset-ID order.
@@ -43,17 +47,20 @@ struct Position {
     degrees: f32,
 }
 
-fn positions(folder: &Path, body: u32) -> Result<Vec<Position>, String> {
+fn override_definition(folder: &Path, body: u32) -> Result<BodyDefinition, String> {
     let resource = resource(body).ok_or("This body has no standard pickup positions.")?;
     let path = folder.join(resource);
     let bytes = tabs::open_candidate(&path, BODY_DEFINITION_BYTES as u64)?;
-    let body = BodyDefinition::parse(&bytes)?;
+    BodyDefinition::parse(&bytes)
+}
+
+fn positions(body: &BodyDefinition) -> Result<Vec<Position>, String> {
     // The original JNI adapter sets Bridge/Neck true for a loaded body and
     // uses the resource's presence flag for Middle. The UI multiplies by 45.
     let mut positions = Vec::new();
     for (index, (label, defaults)) in ["Bridge", "Middle", "Neck"]
         .into_iter()
-        .zip(body.pickup_defaults)
+        .zip(&body.pickup_defaults)
         .enumerate()
     {
         if index == 1 && !body.has_middle {
@@ -80,15 +87,14 @@ pub(super) struct PickupPositionDialog {
 }
 
 impl VariaxEditor {
-    pub(super) fn standard_pickup_positions(
-        &mut self,
-        ui: &mut egui::Ui,
-        slot: u32,
-        services: &mut EditorServices<'_>,
-    ) {
+    pub(super) fn standard_pickup_positions(&mut self, ui: &mut egui::Ui, slot: u32) {
         let available = self.can_edit(slot, Some(0x200000))
             && self.can_edit(slot, Some(0x200001))
-            && self.model_id(BODY).and_then(resource).is_some();
+            && self.float(slot, 0x200000).is_some()
+            && self.float(slot, 0x200001).is_some()
+            && self
+                .model_id(BODY)
+                .is_some_and(|body| model_allowed(BODY, body));
         let response = ui
             .add_enabled(available, egui::Button::new("Standard positions…"))
             .on_hover_text("Load a standard pickup position and angle for this body.");
@@ -96,38 +102,29 @@ impl VariaxEditor {
         self.pickup_controls
             .insert((slot, "standard"), response.rect);
         if response.clicked() {
-            if self.body_definitions.is_none() {
-                self.choose_body_definitions(ui.ctx(), services, Some(slot));
-            } else {
-                self.open_pickup_positions(slot);
-            }
+            self.open_pickup_positions(slot);
         }
     }
 
-    pub(super) fn choose_body_definitions(
-        &mut self,
-        ctx: &egui::Context,
-        services: &mut EditorServices<'_>,
-        pickup: Option<u32>,
-    ) {
-        services.request_picker::<Self>(ctx, PickRequest::Folder, move |editor, path, _| {
-            let Some(path) = path else { return };
-            if let Err(error) = editor.remember_body_definitions(&path) {
-                editor.error = Some(error);
-                return;
-            }
-            if let Some(slot) = pickup {
-                editor.open_pickup_positions(slot);
-            }
-        });
-    }
-
     fn open_pickup_positions(&mut self, slot: u32) {
-        let (Some(folder), Some(body)) = (self.body_definitions.as_deref(), self.model_id(BODY))
-        else {
+        let Some(body) = self.model_id(BODY) else {
             return;
         };
-        match positions(folder, body) {
+        let choices = if let Some(folder) = self.body_definitions.as_deref() {
+            override_definition(folder, body)
+                .and_then(|definition| positions(&definition))
+                .map_err(|error| format!("Could not load Workbench body definitions: {error}"))
+        } else {
+            ModelLibrary::built_in()
+                .and_then(|models| {
+                    models
+                        .bodies
+                        .get(&body)
+                        .ok_or_else(|| "This body has no standard pickup positions.".into())
+                })
+                .and_then(positions)
+        };
+        match choices {
             Ok(positions) => {
                 self.error = None;
                 self.pickup_position_dialog = Some(PickupPositionDialog {
@@ -141,11 +138,7 @@ impl VariaxEditor {
                     positions,
                 });
             }
-            Err(error) => {
-                self.error = Some(format!(
-                    "Could not load Workbench body definitions: {error}"
-                ))
-            }
+            Err(error) => self.error = Some(error),
         }
     }
 
@@ -202,13 +195,26 @@ impl VariaxEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{PICKUP1, Tab};
+    use super::super::{EditorDefaults, EditorDocument, FAMILY, PICKUP1, PresetFile};
     use super::*;
-    use crate::editor::{
-        FakeDialogs, Workbench,
-        tests::{app, click_prompt},
-    };
-    use std::fs;
+    use crate::editor::{Workbench, tests::click_prompt};
+    use std::{fs, time::Instant};
+
+    fn startup(preferences: &Path) -> (egui::Context, Workbench) {
+        let ctx = egui::Context::default();
+        let mut app = Workbench::new(
+            &ctx,
+            EditorDefaults {
+                artwork: preferences.with_file_name("artwork"),
+                preferences: Some(preferences.to_owned()),
+                startup_panel: None,
+            },
+        );
+        app.theme_polled = Instant::now();
+        app.new_tab(&FAMILY);
+        app.variax_mut().open_example();
+        (ctx, app)
+    }
 
     fn definition(has_middle: bool) -> Vec<u8> {
         let mut bytes = vec![0; BODY_DEFINITION_BYTES];
@@ -261,18 +267,107 @@ mod tests {
     }
 
     #[test]
-    fn standard_position_buttons_load_private_definitions_and_group_angle_and_position() {
-        let (ctx, mut app) = app();
-        app.variax_mut().open_example();
-        app.variax_mut().tab = Tab::Pickups;
+    fn clean_startup_uses_bundled_positions_without_a_folder_picker() {
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("strat.bin");
+        let preferences = directory.path().join("editor-preferences.txt");
+        let (ctx, mut app) = startup(&preferences);
+        assert!(app.variax().body_definitions.is_none());
+        assert_eq!(app.variax().model_id(BODY), Some(0x0310_0003));
+        let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+
+        open(&ctx, &mut app, PICKUP1);
+        let dialog = app.variax().pickup_position_dialog.as_ref().unwrap();
+        assert_eq!(
+            dialog
+                .positions
+                .iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            ["Bridge", "Middle", "Neck"]
+        );
+        assert_eq!(dialog.selected, 0);
+        click_prompt(&ctx, &mut app, "confirm-pickup-position");
+        assert!((app.variax().float(PICKUP1, 0x200000).unwrap() - 1.803_116).abs() < 1e-6);
+        assert!((app.variax().float(PICKUP1, 0x200001).unwrap() - 8.775).abs() < 1e-6);
+        assert!(app.variax().document.as_ref().unwrap().can_undo());
+        app.variax_mut().undo();
+        let document = app.variax().document.as_ref().unwrap();
+        assert_eq!(document.as_bytes(), before);
+        assert!(!document.can_undo());
+
+        app.variax_mut()
+            .change(|preset| preset.select_model(BODY, 0x0310_0001));
+        open(&ctx, &mut app, PICKUP2);
+        let dialog = app.variax().pickup_position_dialog.as_ref().unwrap();
+        assert_eq!(
+            dialog
+                .positions
+                .iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            ["Bridge", "Neck"]
+        );
+        assert_eq!(dialog.selected, 1);
+        click_prompt(&ctx, &mut app, "cancel-pickup-position");
+    }
+
+    #[test]
+    fn acoustic_body_refuses_standard_positions_for_both_pickups() {
+        let directory = tempfile::tempdir().unwrap();
+        let (ctx, mut app) = startup(&directory.path().join("editor-preferences.txt"));
+        app.variax_mut()
+            .change(|preset| preset.select_model(BODY, 0x0310_0012));
+        let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+
+        for pickup in [PICKUP1, PICKUP2] {
+            open(&ctx, &mut app, pickup);
+            assert!(app.variax().pickup_position_dialog.is_none());
+        }
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+    }
+
+    #[test]
+    fn missing_pickup_slot_refuses_standard_positions() {
+        let directory = tempfile::tempdir().unwrap();
+        let (ctx, mut app) = startup(&directory.path().join("editor-preferences.txt"));
+        let mut bytes =
+            include_bytes!("../../../../tests/fixtures/synthetic-host-preset.vwm").to_vec();
+        let pattern = [0x0311_0001_u32.to_be_bytes(), PICKUP1.to_be_bytes()].concat();
+        let model = bytes
+            .windows(pattern.len())
+            .position(|window| window == pattern)
+            .unwrap();
+        bytes[model + 4..model + 8].copy_from_slice(&0x0201_0101_u32.to_be_bytes());
+        app.variax_mut().document = Some(EditorDocument::from_preset(
+            PresetFile::parse(bytes.clone()).unwrap(),
+            "missing-pickup.vwm".into(),
+        ));
+        assert_eq!(app.variax().model_id(PICKUP1), None);
+
+        open(&ctx, &mut app, PICKUP1);
+        assert!(app.variax().pickup_position_dialog.is_none());
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), bytes);
+    }
+
+    #[test]
+    fn remembered_override_loads_private_definitions_and_groups_angle_and_position() {
+        let directory = tempfile::tempdir().unwrap();
+        let preferences = directory.path().join("editor-preferences.txt");
+        let override_folder = directory.path().join("override");
+        fs::create_dir(&override_folder).unwrap();
+        let file = override_folder.join("strat.bin");
         let bytes = definition(true);
         fs::write(&file, &bytes).unwrap();
-        app.dialogs = Box::new(FakeDialogs {
-            folder: [Some(directory.path().to_owned())].into(),
-            ..Default::default()
-        });
+        let (_, mut app) = startup(&preferences);
+        app.variax_mut()
+            .remember_body_definitions(&override_folder)
+            .unwrap();
+        drop(app);
+        let (ctx, mut app) = startup(&preferences);
+        assert_eq!(
+            app.variax().body_definitions.as_deref(),
+            Some(override_folder.as_path())
+        );
         let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
         open(&ctx, &mut app, PICKUP1);
         let dialog = app.variax_mut().pickup_position_dialog.as_mut().unwrap();

@@ -1,4 +1,4 @@
-use super::{EditorDefaults, EditorServices, Path, PathBuf, VariaxEditor, egui};
+use super::{EditorDefaults, EditorServices, Path, PathBuf, PickRequest, VariaxEditor, egui};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io::Write};
 use variax_workbench::preset::legacy_text_issue;
@@ -189,10 +189,16 @@ impl VariaxEditor {
             }
             if ui
                 .button("Body definitions folder…")
-                .on_hover_text("Select the extracted Workbench 1.75 coefeng/data/bodies folder.")
+                .on_hover_text("Override the bundled pickup positions with an extracted Workbench 1.75 coefeng/data/bodies folder.")
                 .clicked()
             {
-                self.choose_body_definitions(ctx, services, None);
+                services.request_picker::<Self>(ctx, PickRequest::Folder, |editor, path, _| {
+                    if let Some(path) = path
+                        && let Err(error) = editor.remember_body_definitions(&path)
+                    {
+                        editor.error = Some(error);
+                    }
+                });
             }
             ui.label("Default author for new models");
             let field = ui.text_edit_singleline(&mut draft.value);
