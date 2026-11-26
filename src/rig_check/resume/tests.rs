@@ -1,10 +1,10 @@
 use super::*;
-use crate::rig_check::port::PracticePort;
+use crate::rig_check::port::{PracticePort, RigPort};
 use crate::rig_check::practice::{Faults, SimRig};
 use crate::rig_check::redact::Redactor;
 use crate::rig_check::report::ReportFile;
 use crate::rig_check::runner::{Decision, ReportSink, Runner};
-use crate::rig_check::testing::Script;
+use crate::rig_check::testing::{Script, direct_usb};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -143,21 +143,28 @@ fn continue_in(
     legacy: Option<PathBuf>,
     plan: Plan,
     rig: &Rc<RefCell<SimRig>>,
-    person: &mut Script,
+    person: &mut dyn Operator,
+) -> (RunRecord, ReportFile) {
+    continue_with_port(
+        out,
+        legacy,
+        plan,
+        &mut PracticePort::new(rig.clone()),
+        person,
+    )
+}
+
+fn continue_with_port(
+    out: &Path,
+    legacy: Option<PathBuf>,
+    plan: Plan,
+    port: &mut dyn RigPort,
+    person: &mut dyn Operator,
 ) -> (RunRecord, ReportFile) {
     let mut sink = ReportFile::create(out, Redactor::default()).unwrap();
     let data = report_data(&sink);
     let path = sink.path.with_extension("state");
-    let run = crate::rig_check::continue_on(
-        &mut PracticePort::new(rig.clone()),
-        person,
-        &mut sink,
-        data,
-        path,
-        plan,
-        legacy,
-    )
-    .0;
+    let run = crate::rig_check::continue_on(port, person, &mut sink, data, path, plan, legacy).0;
     (run, sink)
 }
 
@@ -351,7 +358,7 @@ fn another_mac_root_with_an_uncertain_store_requires_manual_verification() {
         Mode::Practice,
         &plan,
         selected.dir.path(),
-        legacy.dir.path(),
+        Some(legacy.dir.path()),
     );
     assert!(result.is_err());
     assert_eq!(std::fs::read(state).unwrap(), original);
@@ -430,6 +437,209 @@ fn same_root_interrupted_store_blocks_resume_before_revalidation() {
         std::fs::read_to_string(&source.sink.path).unwrap(),
         source.sink.last
     );
+}
+
+#[test]
+fn linked_model_byte_blocks_resume_at_22_until_the_saved_state_matches() {
+    const LINKED_MODEL_PAYLOAD_OFFSET: usize = 159 - 7;
+    let initial_rig = SimRig::shared(Faults::default());
+    {
+        let mut sim = initial_rig.borrow_mut();
+        let slot = usize::from(sim.podxt.channel.unwrap());
+        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+        sim.podxt.stored[slot][LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+    }
+    let mut source = Fixture::from_rig(&initial_rig);
+    source.stop_after(GUITAR_START, true);
+    source.run.step_mut(GUITAR_START).outcome =
+        Outcome::Failed("Synthetic comparison failure".into());
+    source.save(true);
+    let source_files = [
+        source.sink.path.clone(),
+        source.sink.path.with_extension("state"),
+        source
+            .data
+            .evidence_dir
+            .as_ref()
+            .unwrap()
+            .join("podxt-start/edit-buffer.bin"),
+    ];
+    let original = source_files
+        .each_ref()
+        .map(|path| std::fs::read(path).unwrap());
+    let initial_tone = &original[2];
+    assert_eq!(initial_tone.len(), 168);
+    assert_eq!(initial_tone[159], 20);
+
+    let plan = open(&source.sink.path).unwrap();
+    assert_eq!(plan.target, GUITAR_START);
+    assert!(plan.skips(POD_BACKUP));
+    let rig = SimRig::shared(Faults::default());
+    {
+        let mut sim = rig.borrow_mut();
+        let slot = usize::from(sim.podxt.channel.unwrap());
+        sim.podxt.stored[slot][LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 21;
+    }
+    let mut transcript = Vec::new();
+    let mut terminal = super::super::cli::Terminal::new(&b"accept\naccept\n"[..], &mut transcript);
+    let (run, sink) = continue_with_port(
+        source.dir.path(),
+        None,
+        plan,
+        &mut direct_usb::Port::with_rig(rig.clone()),
+        &mut terminal,
+    );
+    let transcript = String::from_utf8(transcript).unwrap();
+    let blocked = run.blocked_resume.as_ref().unwrap();
+    assert_eq!((blocked.target, blocked.check), (GUITAR_START, POD_START));
+    assert_eq!(blocked.details.len(), 2);
+    for evidence in [
+        BlockedResume::TITLE,
+        "Selected target 3.3",
+        "Blocking check 2.2",
+        "expected 5B · observed 5B",
+        "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15",
+    ] {
+        assert!(sink.last.contains(evidence), "{evidence}");
+        assert!(transcript.contains(evidence), "{transcript}");
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(super::super::report::json_block(&sink.last).unwrap()).unwrap();
+    assert_eq!(json["blocked_resume"]["target"], "3.3");
+    assert_eq!(json["blocked_resume"]["check"], "2.2");
+    assert_eq!(json["resume_cleanup"]["status"], "released");
+    assert!(matches!(run.resume_cleanup, Some(ResumeCleanup::Released)));
+    assert!(recover::pending(source.dir.path()).is_empty());
+    assert!(run.continuation_pending);
+    assert!(run.steps.iter().all(|step| step.started.is_none()));
+    assert_eq!(run.step(GUITAR_START).outcome, Outcome::NotReached);
+    assert!(matches!(
+        run.step(RIG_GUARD).outcome,
+        Outcome::NotAvailable(_)
+    ));
+    let rechecks = &run.prior_attempts[run.prior_attempts.len() - 2..];
+    assert_eq!([rechecks[0].id, rechecks[1].id], [POD_ID, POD_START]);
+    assert!(rechecks[0].outcome.passed());
+    assert!(matches!(rechecks[1].outcome, Outcome::Failed(_)));
+    assert_eq!(rechecks[1].comparisons.len(), 1);
+    assert!(!source.sink.path.with_extension("continuation").exists());
+    assert!(error(&sink.path).contains("Open its source report"));
+    assert_eq!(
+        source_files
+            .each_ref()
+            .map(|path| std::fs::read(path).unwrap()),
+        original
+    );
+    only_reads(&rig);
+
+    // The same source remains usable after the working tone is back in sync.
+    let plan = open(&source.sink.path).unwrap();
+    rig.borrow_mut().podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+    let mut person = Script::run_all();
+    person.overrides.push((GUITAR_BACKUP, Decision::Stop));
+    let (run, _) = source.continue_run(plan, &rig, &mut person);
+    assert!(run.blocked_resume.is_none(), "{}", run.rig_state);
+    assert!(!run.continuation_pending);
+    assert!(run.step(POD_BACKUP).reused);
+    assert!(run.step(GUITAR_START).outcome.passed(), "{}", run.rig_state);
+    assert_eq!(run.step(GUITAR_START).attempt, Some(2));
+    assert_eq!(
+        person.cards.first_chunk::<2>(),
+        Some(&[SETTINGS, GUITAR_START])
+    );
+    assert_eq!(
+        source_files
+            .each_ref()
+            .map(|path| std::fs::read(path).unwrap()),
+        original
+    );
+}
+
+#[test]
+fn failed_usb_release_preserves_manual_recovery_before_any_follow_up_device_access() {
+    let mut source = Fixture::new();
+    source.stop_after(GUITAR_START, false);
+    source.run.step_mut(GUITAR_START).outcome =
+        Outcome::Failed("Synthetic comparison failure".into());
+    source.save(false);
+    let source_paths = [
+        source.sink.path.clone(),
+        source.sink.path.with_extension("state"),
+    ];
+    let snapshot = || {
+        source_paths
+            .each_ref()
+            .map(|path| std::fs::read(path).unwrap())
+    };
+    let original = snapshot();
+
+    let rig = SimRig::shared(Faults::default());
+    rig.borrow_mut().podxt.playing[159 - 7] ^= 1;
+    let mut failing_port = direct_usb::Port::with_rig(rig.clone());
+    failing_port.fail_podxt_release();
+    let mut transcript = Vec::new();
+    let mut terminal = super::super::cli::Terminal::new(&b"accept\naccept\n"[..], &mut transcript);
+    let (run, sink) = continue_with_port(
+        source.dir.path(),
+        None,
+        open(&source.sink.path).unwrap(),
+        &mut failing_port,
+        &mut terminal,
+    );
+    assert!(run.finished);
+    assert!(run.continuation_pending);
+    assert_eq!(run.blocked_resume.as_ref().unwrap().check, POD_START);
+    assert_eq!(run.step(GUITAR_START).outcome, Outcome::NotReached);
+    let cleanup_error = "PODxt Live interface 0 release failed: simulated USB release error";
+    assert_eq!(run.resume_cleanup_error(), Some(cleanup_error));
+    assert!(failing_port.direct_usb_release_failed());
+    let transcript = String::from_utf8(transcript).unwrap();
+    for line in [cleanup_error, VERIFY_USB_CLEANUP] {
+        assert!(sink.last.contains(line));
+        assert!(transcript.contains(line));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(super::super::report::json_block(&sink.last).unwrap()).unwrap();
+    assert_eq!(json["resume_cleanup"]["status"], "failed");
+    assert_eq!(json["resume_cleanup"]["error"], cleanup_error);
+    assert!(open(&sink.path).is_err());
+    only_reads(&rig);
+
+    let checkpoint = sink.path.with_extension("state");
+    let state_bytes = std::fs::read(&checkpoint).unwrap();
+    let pending = recover::pending(source.dir.path());
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0, checkpoint);
+    assert!(pending[0].1.finished);
+    assert!(pending[0].1.channel().is_none());
+    assert!(pending[0].1.preset().is_none());
+
+    // A fresh port can only proceed after the existing manual confirmation.
+    let fresh = SimRig::shared(Faults::default());
+    let mut fresh_port = direct_usb::Port::with_rig(fresh.clone());
+    for accept in [false, true] {
+        let mut person = Script::run_all();
+        person.accept = accept;
+        let result = recover::before_new_run(&mut fresh_port, &mut person, source.dir.path(), None);
+        assert_eq!(result.is_ok(), accept);
+        assert_eq!(person.notices.len(), 1);
+        assert!(person.notices[0].contains(VERIFY_USB_CLEANUP));
+        assert!(person.notices[0].contains(&*sink.path.to_string_lossy()));
+        assert!(person.cards.is_empty());
+    }
+    // Retrying the original report also requires the confirmation before any read.
+    let mut person = Script::run_all();
+    person.start_decisions = [true, false].into();
+    let (retry, _) = source.continue_run(open(&source.sink.path).unwrap(), &fresh, &mut person);
+    assert!(retry.rig_state.contains("pending rig recovery"));
+    assert!(person.notices[1].contains(VERIFY_USB_CLEANUP));
+    assert!(person.cards.is_empty());
+    assert!(fresh.borrow().written.is_empty());
+    assert_eq!(snapshot(), original);
+    assert_eq!(std::fs::read(checkpoint).unwrap(), state_bytes);
+    assert_eq!(std::fs::read_to_string(&sink.path).unwrap(), sink.last);
+    assert!(!source.sink.path.with_extension("continuation").exists());
 }
 
 #[test]

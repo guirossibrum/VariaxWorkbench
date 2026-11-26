@@ -109,7 +109,7 @@ impl Drop for FakeHandle {
     }
 }
 
-struct Port {
+pub(in crate::rig_check) struct Port {
     practice: PracticePort,
     rig: Rc<RefCell<SimRig>>,
     bus: Rc<RefCell<Bus>>,
@@ -119,7 +119,10 @@ struct Port {
 
 impl Port {
     fn new(faults: Faults) -> Self {
-        let rig = SimRig::shared(faults);
+        Self::with_rig(SimRig::shared(faults))
+    }
+
+    pub(in crate::rig_check) fn with_rig(rig: Rc<RefCell<SimRig>>) -> Self {
         Self {
             practice: PracticePort::new(rig.clone()),
             rig,
@@ -127,6 +130,10 @@ impl Port {
             usb: DirectUsb::default(),
             inventory_errors: 0,
         }
+    }
+
+    pub(in crate::rig_check) fn fail_podxt_release(&mut self) {
+        self.bus.borrow_mut().fail_release = Some(Interface::Podxt);
     }
 
     fn link(&mut self, side: Interface, step: StepId) -> Result<&mut dyn Link, String> {

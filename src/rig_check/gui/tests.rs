@@ -719,3 +719,146 @@ fn startup_opens_saved_reports_without_starting_a_run() {
     assert!(!text.iter().any(|line| line == "Resume…"));
     assert_eq!(app.wizard.mode, None);
 }
+
+#[test]
+fn blocked_resume_offers_safe_report_focus_and_a_fresh_start_without_a_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("rig-check-source.txt");
+    std::fs::write(&source, "Synthetic source report").unwrap();
+    let (started, starts) = channel();
+    let mut app = App::new(dir.path().to_owned(), None, None, move |mode, plan, _| {
+        started.send((mode, plan.is_none())).unwrap();
+    });
+    let ctx = egui::Context::default();
+    let blocked_attempt = || {
+        let mut run = RunRecord::new(Mode::Practice, "synthetic".into());
+        run.finished = true;
+        run.resume_cleanup = Some(ResumeCleanup::Released);
+        run.blocked_resume = Some(BlockedResume {
+            target: StepId(3, 3),
+            check: StepId(2, 2),
+            reason: "The working tone differs.".into(),
+            details: vec![
+                "PODxt Live channel · expected 5B · observed 5B".into(),
+                "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15".into(),
+            ],
+        });
+        Prompt::Done {
+            run: Box::new(run),
+            report: String::new(),
+            path: "synthetic-attempt.txt".into(),
+        }
+    };
+    let show_blocked = |wizard: &mut Wizard| {
+        let (to_ui, from_runner) = channel();
+        wizard.mode = Some(Mode::Practice);
+        wizard.focus_armed = false;
+        wizard.from_runner = Some(from_runner);
+        to_ui.send(blocked_attempt()).unwrap();
+    };
+    app.wizard.launch.as_mut().unwrap().open(source.clone());
+    show_blocked(&mut app.wizard);
+    let text = frame(&ctx, &mut app.wizard, Vec::new());
+    for expected in [
+        "Resume blocked",
+        "Selected target 3.3",
+        "Blocking check 2.2",
+        "expected 5B · observed 5B",
+        "byte 159 (linked Variax model (CC 120))",
+        "Open report",
+        "Start fresh",
+    ] {
+        assert!(
+            text.iter().any(|label| label.contains(expected)),
+            "{text:?}"
+        );
+    }
+    assert!(!app.wizard.can_review());
+    frame(&ctx, &mut app.wizard, vec![key(Key::Enter)]);
+    app.start_if_ready(&ctx);
+    assert_eq!(app.wizard.mode, None);
+    assert!(matches!(
+        starts.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    let launch = app.wizard.launch.as_ref().unwrap();
+    assert_eq!(launch.report.as_ref(), Some(&source));
+    assert!(
+        launch
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("No complete Rig Check report")
+    );
+
+    show_blocked(&mut app.wizard);
+    frame(&ctx, &mut app.wizard, Vec::new());
+    frame(&ctx, &mut app.wizard, vec![key(Key::Tab)]);
+    frame(&ctx, &mut app.wizard, vec![key(Key::Enter)]);
+    app.start_if_ready(&ctx);
+    assert_eq!(
+        starts.recv_timeout(Duration::from_secs(1)).unwrap(),
+        (Mode::Practice, true)
+    );
+}
+
+#[test]
+fn failed_release_opens_only_the_attempt_report_and_never_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (starts, started) = channel();
+    let mut app = App::new(dir.path().to_owned(), None, None, move |_, _, _| {
+        starts.send(()).unwrap();
+    });
+    let ctx = egui::Context::default();
+    let mut run = RunRecord::new(Mode::Practice, "synthetic".into());
+    run.finished = true;
+    run.blocked_resume = Some(BlockedResume {
+        target: StepId(3, 3),
+        check: StepId(2, 2),
+        reason: "The working tone differs.".into(),
+        details: Vec::new(),
+    });
+    let error = "PODxt Live interface 0 release failed: simulated USB release error";
+    run.resume_cleanup = Some(ResumeCleanup::Failed(error.into()));
+    let (to_runner, replies) = channel();
+    let (to_ui, from_runner) = channel();
+    app.wizard.mode = Some(Mode::Practice);
+    app.wizard.to_runner = Some(to_runner);
+    app.wizard.from_runner = Some(from_runner);
+    app.wizard.focus_armed = false;
+    to_ui
+        .send(Prompt::Done {
+            run: Box::new(run),
+            report: "Synthetic failed attempt report".into(),
+            path: "synthetic-attempt.txt".into(),
+        })
+        .unwrap();
+
+    let labels = frame(&ctx, &mut app.wizard, Vec::new());
+    for expected in [error, VERIFY_USB_CLEANUP, "Open report"] {
+        assert!(
+            labels.iter().any(|text| text.contains(expected)),
+            "{labels:?}"
+        );
+    }
+    assert!(!labels.iter().any(|text| text.contains("Start fresh")));
+    frame(&ctx, &mut app.wizard, vec![key(Key::Enter)]);
+    let labels = frame(&ctx, &mut app.wizard, Vec::new());
+    assert!(
+        labels
+            .iter()
+            .any(|text| text == "Synthetic failed attempt report")
+    );
+    assert!(!labels.iter().any(|text| text.contains("Start fresh")));
+    assert!(!labels.iter().any(|text| text.contains("Resume…")));
+    assert!(matches!(app.wizard.prompt, Some(Prompt::Done { .. })));
+    app.start_if_ready(&ctx);
+    assert!(matches!(
+        started.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        replies.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+}

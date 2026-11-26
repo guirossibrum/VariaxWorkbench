@@ -203,7 +203,7 @@ fn window(options: Options) {
             }
         };
         let mut data = RunData {
-            engine_folder,
+            engine_folder: engine_folder.clone(),
             ..RunData::default()
         };
         if evidence || mode == Mode::Real || plan.is_some() {
@@ -213,35 +213,44 @@ fn window(options: Options) {
                 .map_or("rig-check".into(), |s| s.to_string_lossy().into_owned());
             data.evidence_dir = Some(out.join(format!("{stem}-evidence")));
         }
-        let scope = RigScope::default();
-        let state_file = sink.path.with_extension("state");
-        let mut practice_port;
-        let mut real_port;
-        let port: &mut dyn rig_check::port::RigPort = if mode == Mode::Practice {
-            practice_port = rig_check::port::PracticePort::new(
-                rig_check::practice::SimRig::shared(Faults::default()),
-            );
-            &mut practice_port
-        } else {
-            real_port = RealPort::new(&scope);
-            &mut real_port
-        };
-        let run = match plan {
-            Some(plan) => {
-                rig_check::continue_on(
-                    port,
-                    &mut op,
-                    &mut sink,
-                    data,
-                    state_file,
-                    plan,
-                    recovery_dir,
-                )
-                .0
-            }
-            None => {
-                rig_check::run_with_state(port, &mut op, &mut sink, data, state_file, recovery_dir)
+        let run = {
+            let scope = RigScope::default();
+            let state_file = sink.path.with_extension("state");
+            let mut practice_port;
+            let mut real_port;
+            let port: &mut dyn rig_check::port::RigPort = if mode == Mode::Practice {
+                practice_port = rig_check::port::PracticePort::new(
+                    rig_check::practice::SimRig::shared(Faults::default()),
+                );
+                &mut practice_port
+            } else {
+                real_port = RealPort::new(&scope);
+                &mut real_port
+            };
+            match plan {
+                Some(plan) => {
+                    rig_check::continue_on(
+                        port,
+                        &mut op,
+                        &mut sink,
+                        data,
+                        state_file,
+                        plan,
+                        recovery_dir.clone(),
+                    )
                     .0
+                }
+                None => {
+                    rig_check::run_with_state(
+                        port,
+                        &mut op,
+                        &mut sink,
+                        data,
+                        state_file,
+                        recovery_dir.clone(),
+                    )
+                    .0
+                }
             }
         };
         op.send(Prompt::Done {

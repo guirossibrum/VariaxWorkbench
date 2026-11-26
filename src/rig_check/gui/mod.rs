@@ -14,7 +14,7 @@ pub mod raster;
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
-use super::resume::{self, Plan};
+use super::resume::{self, BlockedResume, Plan, ResumeCleanup, VERIFY_USB_CLEANUP};
 use super::runner::{
     Answer, CONTROLS_NOTICE, Decision, Operator, Progress, Question, ResultDecision, Retry,
 };
@@ -419,7 +419,9 @@ impl Wizard {
                 }
                 Prompt::Instruct { step, see, hear } => self.instruction = Some((step, see, hear)),
                 other => {
-                    if other.needs_reply() {
+                    if other.needs_reply()
+                        || matches!(&other, Prompt::Done { run, .. } if run.blocked_resume.is_some())
+                    {
                         self.focus_armed = true;
                     }
                     self.prompt = Some(other);
@@ -563,10 +565,8 @@ impl Wizard {
     }
 
     fn can_review(&self) -> bool {
-        matches!(
-            self.prompt,
-            Some(Prompt::Card(..) | Prompt::Finished(_) | Prompt::Done { .. })
-        )
+        matches!(self.prompt, Some(Prompt::Card(..) | Prompt::Finished(_)))
+            || matches!(&self.prompt, Some(Prompt::Done { run, .. }) if run.blocked_resume.is_none())
     }
 
     fn back_target(&self) -> Option<Review> {
@@ -736,9 +736,102 @@ impl Wizard {
             Some(Prompt::NotSeen { step, what }) => self.not_seen(ui, step, &what),
             Some(Prompt::Ask(question)) => self.question(ui, &question),
             Some(Prompt::Finished(record)) => self.result(ui, &record, true),
-            Some(Prompt::Done { run, report, path }) => self.summary(ui, &run, &report, &path),
+            Some(Prompt::Done { run, report, path }) => {
+                if let Some(blocked) = &run.blocked_resume {
+                    self.blocked_resume(ui, &run, blocked, &report, &path);
+                } else {
+                    self.summary(ui, &run, &report, &path);
+                }
+            }
             Some(_) => {}
         }
+    }
+
+    fn blocked_resume(
+        &mut self,
+        ui: &mut egui::Ui,
+        run: &RunRecord,
+        blocked: &BlockedResume,
+        report: &str,
+        path: &str,
+    ) {
+        ui.label(
+            RichText::new(BlockedResume::TITLE)
+                .size(TITLE)
+                .strong()
+                .color(DANGER),
+        );
+        for line in blocked.lines() {
+            ui.label(RichText::new(line).size(BODY));
+        }
+        if !matches!(run.resume_cleanup, Some(ResumeCleanup::Released)) {
+            let status = run.resume_cleanup_error().map_or_else(
+                || "USB release could not be verified.".into(),
+                |error| format!("USB cleanup failed: {error}"),
+            );
+            ui.label(RichText::new(status).color(DANGER));
+            ui.label(VERIFY_USB_CLEANUP);
+            ui.label(format!("Working report: {path}"));
+            ui.add_space(SPACE_16);
+            let open = button(
+                ui,
+                if self.preview {
+                    "Hide report"
+                } else {
+                    "Open report"
+                },
+                true,
+            );
+            self.focus_once(&open);
+            if open.clicked() {
+                self.preview = !self.preview;
+            }
+            if self.preview {
+                ui.monospace(report.split("\nSTEPS\n").next().unwrap_or(report));
+            }
+            return;
+        }
+        if let Some(cleanup) = run.rig_state.strip_prefix(&blocked.reason)
+            && !cleanup.trim().is_empty()
+        {
+            ui.label(cleanup.trim());
+        }
+        ui.label(format!("Working report: {path}"));
+        ui.add_space(SPACE_16);
+        ui.push_id("blocked-resume", |ui| {
+            ui.horizontal(|ui| {
+                let open = button(ui, "Open report", true);
+                self.focus_once(&open);
+                if open.clicked() {
+                    self.leave_blocked_resume(false);
+                } else if button(ui, "Start fresh", true).clicked() {
+                    self.leave_blocked_resume(true);
+                }
+            });
+        });
+    }
+
+    fn leave_blocked_resume(&mut self, start_fresh: bool) {
+        let Some(mut launch) = self.launch.take() else {
+            return;
+        };
+        launch.show_modes = false;
+        launch.selected = None;
+        launch.preview = None;
+        launch.error = None;
+        launch.text = None;
+        let mut mode = None;
+        if start_fresh {
+            launch.report = None;
+            mode = self.mode;
+        } else if let Some(path) = launch.report.take() {
+            launch.open(path);
+        }
+        *self = Self {
+            launch: Some(launch),
+            mode,
+            ..Self::default()
+        };
     }
 
     fn result(&mut self, ui: &mut egui::Ui, record: &StepRecord, awaiting: bool) {
@@ -1483,12 +1576,12 @@ fn open_report_dialog(dir: &Path) -> Option<PathBuf> {
         .pick_file()
 }
 
-type StartRun = Box<dyn FnOnce(Mode, Option<Plan>, ChannelOperator) + Send>;
+type StartRun = Arc<dyn Fn(Mode, Option<Plan>, ChannelOperator) + Send + Sync>;
 
 /// The eframe application.
 pub struct App {
     wizard: Wizard,
-    start: Option<StartRun>,
+    start: StartRun,
 }
 
 impl App {
@@ -1496,7 +1589,7 @@ impl App {
         dir: PathBuf,
         legacy_dir: Option<PathBuf>,
         requested_mode: Option<Mode>,
-        start: impl FnOnce(Mode, Option<Plan>, ChannelOperator) + Send + 'static,
+        start: impl Fn(Mode, Option<Plan>, ChannelOperator) + Send + Sync + 'static,
     ) -> Self {
         Self {
             wizard: Wizard {
@@ -1513,17 +1606,15 @@ impl App {
                 }),
                 ..Wizard::default()
             },
-            start: Some(Box::new(start)),
+            start: Arc::new(start),
         }
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.wizard.show(ctx);
-        if let (Some(mode), true) = (self.wizard.mode, self.wizard.to_runner.is_none())
-            && let Some(start) = self.start.take()
+    fn start_if_ready(&mut self, ctx: &egui::Context) {
+        if let Some(mode) = self.wizard.mode
+            && self.wizard.to_runner.is_none()
         {
+            let start = self.start.clone();
             let plan = self
                 .wizard
                 .launch
@@ -1531,6 +1622,13 @@ impl eframe::App for App {
                 .and_then(|launch| launch.selected.take());
             spawn(&mut self.wizard, ctx, move |op| start(mode, plan, op));
         }
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.wizard.show(ctx);
+        self.start_if_ready(ctx);
     }
 }
 
