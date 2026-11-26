@@ -33,7 +33,9 @@ impl Link for FakeLink {
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.writes.push(bytes.to_vec());
         for (delay, packet) in self.attempts.pop_front().expect("unexpected request") {
-            self.input.push_back((self.elapsed() + delay, packet));
+            let due = self.elapsed() + delay;
+            let index = self.input.partition_point(|(at, _)| *at <= due);
+            self.input.insert(index, (due, packet));
         }
         Ok(())
     }
@@ -64,10 +66,9 @@ fn ms(value: u64) -> Duration {
 }
 
 fn exercise(
-    read: ToneRead,
     scripts: Vec<Packets>,
     stop_at: Duration,
-) -> (Result<EditBuffer, String>, FakeLink, Vec<String>) {
+) -> (Result<EditBuffer, String>, FakeLink, Vec<String>, bool) {
     let mut link = FakeLink {
         attempts: scripts.into(),
         ..FakeLink::default()
@@ -76,44 +77,40 @@ fn exercise(
     let policy = StepPolicy {
         step: StepId(7, 4),
         mode: Mode::Practice,
-        ops: if matches!(read, ToneRead::Current) {
-            PODXT_CHANNEL
-        } else {
-            PODXT_LIBRARY
-        },
+        ops: PODXT_CHANNEL,
     };
     let clock = link.time.clone();
     let mut session = Session::new(&mut link as &mut dyn Link, &policy, &mut lines);
-    let result = read_tone(&mut session, &|| clock.get() >= stop_at, read);
-    (result, link, lines.0)
+    let mut outstanding = false;
+    let result = read_current_tone(&mut session, &|| clock.get() >= stop_at, &mut outstanding);
+    (result, link, lines.0, outstanding)
 }
 
 #[test]
 fn retries_the_same_request_after_an_incomplete_reply() {
-    for read in [ToneRead::Current, ToneRead::Stored(channel())] {
-        let mut short = frame(1);
-        short.truncate(40);
-        short.push(0xf7);
-        let good = frame(2);
-        let (result, link, log) = exercise(
-            read,
-            vec![vec![(ms(10), short)], vec![(ms(20), good.clone())]],
-            Duration::MAX,
-        );
-        assert_eq!(result.unwrap().raw, good);
-        assert_eq!(link.writes, vec![read.request().bytes(); 2]);
-        assert!(log.iter().any(|line| {
+    let mut short = frame(1);
+    short.truncate(40);
+    short.push(0xf7);
+    let good = frame(2);
+    let (result, link, log, outstanding) = exercise(
+        vec![vec![(ms(10), short)], vec![(ms(20), good.clone())]],
+        Duration::MAX,
+    );
+    assert_eq!(result.unwrap().raw, good);
+    assert_eq!(link.writes, vec![PodxtRequest::EditBuffer.bytes(); 2]);
+    assert!(!outstanding);
+    assert!(
+        log.iter().any(|line| {
             line.contains("attempt 2/3") && line.contains("41 bytes, expected 168")
-        }));
-    }
+        })
+    );
 }
 
 #[test]
 fn drain_discards_late_complete_dumps_and_resets_partial_frames() {
     let stale = frame(1);
     let fresh = frame(2);
-    let (result, link, _) = exercise(
-        ToneRead::Current,
+    let (result, link, _, _) = exercise(
         vec![
             vec![
                 (ms(10), stale[..50].to_vec()),
@@ -132,16 +129,13 @@ fn drain_discards_late_complete_dumps_and_resets_partial_frames() {
 
 #[test]
 fn exhaustion_sends_three_reads_and_reports_the_last_failure() {
-    let (result, link, log) = exercise(
-        ToneRead::Current,
-        vec![vec![], vec![], vec![]],
-        Duration::MAX,
-    );
+    let (result, link, log, outstanding) = exercise(vec![vec![], vec![], vec![]], Duration::MAX);
     assert_eq!(
         result.unwrap_err(),
         "No 168-byte edit-buffer dump arrived. The PODxt tone read used all 3 attempts."
     );
     assert_eq!(link.writes, vec![PodxtRequest::EditBuffer.bytes(); 3]);
+    assert!(outstanding);
     assert_eq!(
         log.iter()
             .filter(|line| line.contains("Retrying PODxt"))
@@ -155,22 +149,37 @@ fn a_complete_different_reply_fails_without_retry() {
     for offset in [5, 6] {
         let mut different = frame(1);
         different[offset] ^= 1;
-        let (result, link, _) = exercise(
-            ToneRead::Current,
-            vec![vec![(ms(10), different)]],
-            Duration::MAX,
-        );
+        let (result, link, _, outstanding) =
+            exercise(vec![vec![(ms(10), different)]], Duration::MAX);
         assert!(result.unwrap_err().contains("Unexpected PODxt tone reply"));
         assert_eq!(link.writes, [PodxtRequest::EditBuffer.bytes()]);
+        assert!(outstanding);
     }
 }
 
 #[test]
 fn stop_during_a_read_or_drain_prevents_any_resend() {
     for stop_at in [ms(0), ms(100), ms(2_100)] {
-        let (result, link, log) = exercise(ToneRead::Current, vec![vec![]], stop_at);
+        let (result, link, log, outstanding) = exercise(vec![vec![]], stop_at);
         assert!(result.unwrap_err().starts_with(STOPPED));
         assert_eq!(link.writes.len(), usize::from(!stop_at.is_zero()));
+        assert_eq!(outstanding, !stop_at.is_zero());
         assert!(!log.iter().any(|line| line.contains("Retrying PODxt")));
     }
+}
+
+#[test]
+fn a_duplicate_after_the_retry_reply_is_ambiguous() {
+    let tone = frame(1);
+    let (result, link, log, outstanding) = exercise(
+        vec![vec![(ms(3_050), tone.clone())], vec![(ms(20), tone)]],
+        Duration::MAX,
+    );
+    assert!(result.unwrap_err().contains("extra PODxt tone reply"));
+    assert!(outstanding);
+    assert_eq!(link.writes, vec![PodxtRequest::EditBuffer.bytes(); 2]);
+    assert!(
+        log.iter()
+            .any(|line| line.contains("Checking for an extra PODxt dump"))
+    );
 }

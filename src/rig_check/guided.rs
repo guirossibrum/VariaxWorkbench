@@ -7,7 +7,7 @@
 //! can also choose Continue to check what arrived, or Stop the run.
 
 use super::differences::{self, Severity};
-use super::podxt_reads::{ToneRead, read_tone, with_verified_tone_link};
+use super::podxt_reads::with_current_tone;
 use super::practice::{UserAction, preset_label};
 use super::procedures::{
     PODXT_CHANNEL, PodxtReplyQuarantine, same_program, variax_full_read, with_podxt_stopping,
@@ -685,9 +685,7 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "pedal sweep (CC 7 or CC 4)",
         &[UserAction::MovePedal],
         |ctx| {
-            with_verified_tone_link(ctx, PODXT_LISTEN, |session, stopping, _| {
-                read_tone(session, stopping, ToneRead::Current)
-            })?;
+            with_current_tone(ctx, PODXT_LISTEN, |_, _| Ok(()))?;
             Ok(None)
         },
         |ctx, advance| {

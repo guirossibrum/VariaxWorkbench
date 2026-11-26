@@ -310,33 +310,158 @@ fn pedal_preflight_retries_before_arming_and_the_gesture_sends_nothing() {
 }
 
 #[test]
-fn exhausted_pedal_read_keeps_later_live_and_save_steps_blocked() {
+fn exhaustion_quarantines_a_late_dump_and_preserves_the_read_only_block() {
+    for checkpoint in [StepId(2, 2), PEDAL] {
+        let rig = SimRig::shared(Faults::default());
+        let mut port = PracticePort::new(rig.clone());
+        let mut person = Script::run_all();
+        let model = rig.clone();
+        person.on_card = Some(Box::new(move |step| {
+            let mut model = model.borrow_mut();
+            if step == checkpoint {
+                model.next_podxt_dump = Some(TestPodxtDump::DropThenDelay {
+                    drops: 2,
+                    delay: Duration::from_secs(3),
+                });
+            }
+            if step == RIG_GUARD {
+                model.clock += Duration::from_secs(3);
+                assert!(model.has_ready_podxt_dump());
+            }
+        }));
+        let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+        let failed = run.step(checkpoint);
+        assert_eq!(failed.retries, 2);
+        assert!(matches!(
+            &failed.outcome,
+            Outcome::Failed(reason) if reason.contains("used all 3 attempts")
+        ));
+        if checkpoint != PEDAL {
+            let pedal = run.step(PEDAL);
+            assert!(matches!(
+                &pedal.outcome,
+                Outcome::Failed(reason) if reason.contains("outstanding after step 2.2")
+            ));
+            assert!(pedal.messages.is_empty());
+        }
+        assert!(!person.instructions.iter().any(|(step, _)| *step == PEDAL));
+        for step in [StepId(4, 1), StepId(4, 2), StepId(4, 7), StepId(5, 2)] {
+            assert_eq!(
+                run.step(step).outcome,
+                Outcome::SkippedNeeds(format!("read-only from here: step {checkpoint} failed"))
+            );
+            assert!(run.step(step).messages.is_empty());
+        }
+        assert_no_podxt_guard_request(&run);
+        assert!(rig.borrow().has_ready_podxt_dump());
+        assert_eq!(rig.borrow().podxt.stores, 0);
+        assert_eq!(rig.borrow().variax.stores, 0);
+    }
+}
+
+#[test]
+fn delayed_duplicate_after_a_retry_blocks_the_next_podxt_request() {
     let rig = SimRig::shared(Faults::default());
     let mut port = PracticePort::new(rig.clone());
     let mut person = Script::run_all();
     let model = rig.clone();
+    let checkpoint = StepId(2, 2);
     person.on_card = Some(Box::new(move |step| {
-        if step == PEDAL {
-            model.borrow_mut().next_podxt_dump = Some(TestPodxtDump::MissingRepeated(3));
+        if step == checkpoint {
+            model.borrow_mut().next_podxt_dump =
+                Some(TestPodxtDump::Delayed(Duration::from_secs(3)));
         }
+    }));
+    let (run, data) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+    let read = run.step(checkpoint);
+    assert!(matches!(
+        &read.outcome,
+        Outcome::Failed(reason) if reason.contains("extra PODxt tone reply")
+    ));
+    assert_eq!(read.retries, 1);
+    let sends: Vec<_> = read
+        .messages
+        .iter()
+        .filter_map(|line| line.split_once("s OUT ").map(|(_, bytes)| bytes))
+        .collect();
+    assert_eq!(
+        sends,
+        [
+            hex(&PodxtRequest::Identity.bytes()),
+            hex(&PodxtRequest::EditBuffer.bytes()),
+            hex(&PodxtRequest::EditBuffer.bytes()),
+        ],
+        "the playing-channel query must wait for the tone to settle"
+    );
+    assert!(data.start_tone.is_none());
+    let pedal = run.step(PEDAL);
+    assert!(matches!(
+        &pedal.outcome,
+        Outcome::Failed(reason) if reason.contains("outstanding after step 2.2")
+    ));
+    assert!(pedal.messages.is_empty());
+    assert_no_podxt_guard_request(&run);
+}
+
+#[test]
+fn stopping_an_in_flight_pedal_read_quarantines_its_late_dump() {
+    let rig = SimRig::shared(Faults::default());
+    let mut port = PracticePort::new(rig.clone());
+    let mut person = Script::run_all();
+    let preflight = Rc::new(Cell::new(None));
+    let armed = preflight.clone();
+    let model = rig.clone();
+    person.on_card = Some(Box::new(move |step| {
+        let mut model = model.borrow_mut();
+        if step == PEDAL {
+            armed.set(Some(model.written.len()));
+            model.next_podxt_dump = Some(TestPodxtDump::Delayed(Duration::from_secs(1)));
+        }
+        if step == RIG_GUARD {
+            model.clock += Duration::from_secs(2);
+            assert!(model.has_ready_podxt_dump());
+        }
+    }));
+    let model = rig.clone();
+    let dump = PodxtRequest::EditBuffer.bytes();
+    person.stop_when = Some(Box::new(move || {
+        if let Some(start) = preflight.get()
+            && model.borrow().written[start..]
+                .iter()
+                .any(|(_, bytes)| *bytes == dump)
+        {
+            preflight.set(None);
+            return true;
+        }
+        false
     }));
     let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
     let pedal = run.step(PEDAL);
-    assert_eq!(pedal.retries, 2);
-    assert!(matches!(
-        &pedal.outcome,
-        Outcome::Failed(reason) if reason.contains("used all 3 attempts")
-    ));
+    assert_eq!(run.stopped_at, Some(PEDAL));
+    assert_eq!(pedal.retries, 0);
+    assert!(matches!(pedal.outcome, Outcome::Stopped(_)));
     assert!(!person.instructions.iter().any(|(step, _)| *step == PEDAL));
-    for step in [StepId(4, 1), StepId(4, 2), StepId(4, 7), StepId(5, 2)] {
-        assert_eq!(
-            run.step(step).outcome,
-            Outcome::SkippedNeeds("read-only from here: step 7.4 failed".into())
-        );
-        assert!(run.step(step).messages.is_empty());
-    }
-    assert_eq!(rig.borrow().podxt.stores, 0);
-    assert_eq!(rig.borrow().variax.stores, 0);
+    let guard = run.step(RIG_GUARD);
+    assert!(matches!(
+        &guard.outcome,
+        Outcome::Failed(reason) if reason.contains("outstanding after step 7.4")
+    ));
+    assert_no_podxt_guard_request(&run);
+    assert!(rig.borrow().has_ready_podxt_dump());
+}
+
+fn assert_no_podxt_guard_request(run: &crate::rig_check::record::RunRecord) {
+    let guard = run.step(RIG_GUARD);
+    let request = hex(&PodxtRequest::EditBuffer.bytes());
+    assert!(!guard.messages.iter().any(|line| line.contains(&request)));
+    let identity = hex(&PodxtRequest::Identity.bytes());
+    assert!(!guard.messages.iter().any(|line| line.contains(&identity)));
+    assert!(
+        guard
+            .result
+            .iter()
+            .any(|line| line.contains("Guitar interface released"))
+    );
 }
 
 #[test]
