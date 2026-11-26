@@ -12,7 +12,8 @@ use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt::{self, EditBuffer, Location};
 use line6_devices::family::variax::{Preset, procedures as variax};
 use line6_devices::gate::{GatePolicy, Operation};
-use line6_devices::session::{Link, Log, Session};
+use line6_devices::midi::{Assembler, Event};
+use line6_devices::session::{Link, Log, POLL, Session};
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -65,6 +66,47 @@ pub(super) fn absorb(ctx: &mut Ctx<'_>, lines: Lines) {
     ctx.rec.messages.extend(lines.0);
 }
 
+#[doc(hidden)]
+pub enum PodxtReplyQuarantine {
+    Pending(Assembler),
+    Unresolved,
+}
+
+const PODXT_QUARANTINE_WINDOW: Duration = Duration::from_secs(2);
+const PODXT_UNRESOLVED: &str = "A PODxt dump may still be outstanding after step 7.3. The remaining PODxt requests are blocked for this run.";
+
+fn clear_podxt_quarantine(
+    session: &mut DynSession<'_>,
+    quarantine: &mut Option<PodxtReplyQuarantine>,
+) -> Result<(), String> {
+    let Some(PodxtReplyQuarantine::Pending(assembler)) =
+        quarantine.replace(PodxtReplyQuarantine::Unresolved)
+    else {
+        return Err(PODXT_UNRESOLVED.into());
+    };
+    session.assembler = assembler;
+    session.note("Quarantining the outstanding PODxt dump before sending any request.");
+    let end = session.link.elapsed() + PODXT_QUARANTINE_WINDOW;
+    while let Some(left) = end
+        .checked_sub(session.link.elapsed())
+        .filter(|d| !d.is_zero())
+    {
+        let events = session
+            .poll(left.min(POLL))
+            .map_err(|error| format!("{PODXT_UNRESOLVED} Receive error: {error}"))?;
+        if events.into_iter().flatten().any(|event| match event {
+            Event::Sysex(frame) => EditBuffer::parse(frame).is_ok(),
+            Event::Short(_) => false,
+        }) {
+            session.note("Discarded a late PODxt edit-buffer dump from step 7.3.");
+            session.assembler = Assembler::default();
+            *quarantine = None;
+            return Ok(());
+        }
+    }
+    Err(PODXT_UNRESOLVED.into())
+}
+
 /// Run a shared PODxt Live procedure on a gated session. Rig Check owns
 /// the step policy and logs, and the family library owns the device exchange.
 pub fn with_podxt<T>(
@@ -98,12 +140,17 @@ pub fn with_podxt_progress<T>(
     let op = RefCell::new(&mut *ctx.op);
     let stopping = || op.borrow().stop_requested();
     let progress = |update| op.borrow_mut().progress(update);
-    let result = match ctx.port.podxt(step) {
-        Ok(link) => {
+    let quarantine = &mut ctx.data.podxt_reply_quarantine;
+    let result = if matches!(quarantine, Some(PodxtReplyQuarantine::Unresolved)) {
+        Err(PODXT_UNRESOLVED.into())
+    } else {
+        ctx.port.podxt(step).and_then(|link| {
             let mut session = Session::new(link, &policy, &mut lines);
+            if quarantine.is_some() {
+                clear_podxt_quarantine(&mut session, quarantine)?;
+            }
             body(&mut session, &stopping, &progress)
-        }
-        Err(error) => Err(error),
+        })
     };
     absorb(ctx, lines);
     result

@@ -35,6 +35,8 @@ pub struct RunData {
     pub start_tone: Option<EditBuffer>,
     pub start_channel: Option<Location>,
     pub podxt_unsaved: bool,
+    #[doc(hidden)]
+    pub podxt_reply_quarantine: Option<procedures::PodxtReplyQuarantine>,
     pub podxt_library: Vec<(Location, EditBuffer)>,
     /// The independent channel 1A read from 2.3, compared with the backup in 2.5.
     pub podxt_channel_read: Option<Result<EditBuffer, String>>,
@@ -891,13 +893,7 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
     back
 }
 
-fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    if !ctx.data.touched_podxt && !ctx.data.touched_variax && !ctx.port.variax_claimed() {
-        ctx.rec
-            .show("Rig: no device step ran; the devices were not touched.");
-        return Ok(());
-    }
-    let mut problems = Vec::new();
+fn guard_podxt(ctx: &mut Ctx<'_>, problems: &mut Vec<String>) -> Result<(), String> {
     if let Some(start) = ctx.data.start_tone.clone() {
         let (now, channel) = with_podxt(ctx, procedures::PODXT_CHANNEL, |session| {
             let now = podxt::read_current(session)?.tone;
@@ -913,8 +909,11 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 super::differences::Severity::Stop,
                 true,
             );
-            ctx.rec
-                .show("Rig: the PODxt Live tone is the starting tone (all 168 bytes).");
+            ctx.rec.show(if now.raw == start.raw {
+                "Rig: the PODxt Live tone is the starting tone (all 168 bytes)."
+            } else {
+                "Rig: the PODxt Live starting channel and stable tone settings match. Live controller positions differ."
+            });
         } else if ctx.data.podxt_unsaved && ctx.data.start_channel.is_some() {
             if let Err(error) = super::live::restore_podxt_playing(ctx) {
                 problems.push(error);
@@ -956,6 +955,23 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
     } else if ctx.data.touched_podxt {
         ctx.rec
             .show("Rig: the PODxt Live starting tone was not recorded (2.2 did not pass).");
+    }
+    Ok(())
+}
+
+fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    if !ctx.data.touched_podxt && !ctx.data.touched_variax && !ctx.port.variax_claimed() {
+        ctx.rec
+            .show("Rig: no device step ran; the devices were not touched.");
+        return Ok(());
+    }
+    let mut problems = Vec::new();
+    if let Err(error) = guard_podxt(ctx, &mut problems) {
+        if ctx.data.podxt_reply_quarantine.is_none() {
+            return Err(error);
+        }
+        ctx.rec.show("Rig: the PODxt Live return could not be verified because a dump may still be outstanding.");
+        problems.push(error);
     }
     if ctx.data.podxt_verified == Some(true)
         && let Some(start) = ctx.data.start_program
