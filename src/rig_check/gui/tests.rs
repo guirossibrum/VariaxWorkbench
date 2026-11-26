@@ -127,6 +127,8 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
     let (to_runner, from_ui) = channel();
     let stop = Arc::new(AtomicBool::new(false));
     let op_stop = stop.clone();
+    // A deliberate long walk to the rig, measured by the fake link.
+    let guided_delay = super::super::guided::READY_DELAY + Duration::from_secs(40);
     let worker = std::thread::spawn(move || {
         let mut op = ChannelOperator {
             to_ui,
@@ -134,20 +136,26 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
             stop: op_stop,
             repaint: None,
         };
-        let (run, _, _) = run_practice(
-            Faults::default(),
+        let (run, _, rig) = run_practice(
+            Faults {
+                guided_action_delay: Some(guided_delay),
+                ..Faults::default()
+            },
             &mut op,
             &mut NoReport,
             RunData::default(),
         );
-        run.count("passed")
+        let simulated_elapsed = rig.borrow().clock;
+        (run.count("passed"), simulated_elapsed)
     });
     // The test plays the person: accept, Run every card, type every
     // confirmation, answer Yes.
     let mut cards = 0;
     let mut results = 0;
     let ctx = egui::Context::default();
-    while let Ok(prompt) = from_runner.recv_timeout(std::time::Duration::from_secs(10)) {
+    // The worker owns the sender. Channel closure, rather than wall time,
+    // signals that the simulated run finished.
+    while let Ok(prompt) = from_runner.recv() {
         let reply = match prompt {
             Prompt::Start(_) => Reply::Accept(true),
             Prompt::Card(..) => {
@@ -262,12 +270,14 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     .try_recv()
                     .expect("Enter continues from the focused button")
             }
-            _ => continue,
+            other if !other.needs_reply() => continue,
+            other => panic!("Unexpected prompt awaiting a reply: {other:?}"),
         };
         to_runner.send(reply).unwrap();
     }
     drop(to_runner);
-    let passed = worker.join().unwrap();
+    let (passed, elapsed) = worker.join().unwrap();
+    assert!(elapsed >= guided_delay);
     assert_eq!(passed, 36);
     assert_eq!(cards, 36);
     assert_eq!(results, 36);
@@ -348,19 +358,29 @@ fn running_shows_latest_action_count_time_and_playing_notice() {
     let texts = frame(&ctx, &mut wizard, Vec::new());
     assert!(texts.iter().any(|line| line == "Reading words 384–415"));
     assert!(texts.iter().any(|line| line == "12 of 35 reads"));
-    assert!(texts.iter().any(|line| line.starts_with("Elapsed 00:")));
+    assert!(texts.iter().any(|line| line.starts_with("Elapsed ")));
     assert!(texts.iter().any(|line| line == CONTROLS_NOTICE));
     assert!(!texts.iter().any(|line| line == "Checking the connection"));
+    let updated = Instant::now();
     wizard.activity = Some((
         Progress::waiting(
             "Waiting for the guitar to confirm, up to 15 s",
             Duration::from_secs(15),
             false,
         ),
-        Instant::now() - Duration::from_secs(9),
+        updated,
     ));
-    let texts = frame(&ctx, &mut wizard, Vec::new());
-    assert!(texts.iter().any(|line| line == "6 s left"));
+    for (elapsed, label) in [(0, "15 s left"), (9, "6 s left"), (15, "0 s left")] {
+        let output = ctx.run(RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                wizard.live_progress_at(ui, updated + Duration::from_secs(elapsed));
+            });
+        });
+        assert!(
+            labels(&output).iter().any(|(text, _)| text == label),
+            "{label}"
+        );
+    }
 }
 
 #[test]
@@ -452,8 +472,8 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
     });
     let next = || {
         from_runner
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap()
+            .recv()
+            .expect("practice runner sends the next prompt")
     };
     assert!(matches!(next(), Prompt::Start(_)));
     to_runner.send(Reply::Accept(true)).unwrap();
