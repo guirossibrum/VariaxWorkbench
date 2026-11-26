@@ -286,6 +286,72 @@ a shared AX3 id, or a generic float definition do not by themselves establish
 the PODxt association, stored type, domain, unit, side effects, error behavior,
 or preservation rules.
 
+### Fifth EQ band on PODxt Live
+
+[#305](https://github.com/guirossibrum/VariaxWorkbench/issues/305) examined
+whether the shared fifth-band lookup establishes an editable definition
+for `FORM/L6PA` tones with PINF target `0x0003000a` and host profile 3.00
+or later. The Rust `PodxtEqBand` exposes four bands in fixed model
+`0x020c0002`, slot `0x00030004`. The original lookup recognizes two
+additional IDs, but its definition dispatch leaves them unbound for this target.
+
+| Fifth-band field | Shared editor selector → semantic PARM | Definition in the Bass PODxt branch |
+| --- | --- | --- |
+| Frequency | `0x00090009` → `0x00100008` | Normalized float `0..=1`, nine-point table in Hz spanning 200–14,200 Hz |
+| Gain | `0x0009000a` → `0x00100009` | Normalized float `0..=1`, `POST_EQ_GAIN` display range −12.8 to +12.6 dB |
+
+- `L6ProductConstants.IsPODxt` classifies `0x0003000a` as PODxt and
+  `IsBassPODxt` excludes it. The `L6SharcToneParamMap` constructor sets
+  `m_bassxt` only on the Bass branch. `GetEQModel` resolves the fixed PODxt
+  slot, while the Bass branch resolves the same model ID through slots
+  `0x00020007` and `0x00050006`.
+- `GetEQParam` dispatches the fifth frequency and gain at bytecode offsets
+  104 and 152, then calls `FindParam`. `GetEQParamDef` returns
+  `BASSEQ_FREQ5` and `EQ_GAIN5` at offsets 152 and 176 only in the Bass
+  branch. In the PODxt branch, both selectors reach the null return at
+  offset 308. `L6AX3ParamDefs.Init` and `L6AX3ParamFormats.Init` supply the
+  above Bass definitions. The generic `L6ModelParam` reader/writer
+  handles a 24-bit ID and two 32-bit type/value words. The shared
+  `SetParam` fallback uses type 0 when the definition is absent, so
+  reaching a record through the shared lookup supplies no typed or
+  unit-bearing PODxt Live edit contract.
+- `L6SharcToneEditor.SetupEQPanel` builds four handles for PODxt and binds
+  the fifth-band controls only inside the Bass branch. As a static
+  cross-check, the shared transcoder constructor leaves both fifth-band
+  controller assignments at `-1` on the non-Bass path.
+
+The missing evidence is an original PODxt Live-specific definition and
+typed setter path for these selectors on the fixed EQ slot. A Bass
+definition, a matching record ID, or a record's float type cannot supply
+that association. The editor continues to expose the four existing bands.
+The `podxt_eq_unbound_band_five` synthetic tests exercise whole-file
+preservation through band-four edit, Save Copy and reopen, plus refusal
+without mutation for a Bass target, wrong model or slot, missing band-four
+records, wrong type and a truncated neighboring PARM.
+
+**Static reproduction.** Use the retained official Line 6 Edit 3.06.0
+Windows `Line 6 Edit.exe` embedded ZIP (executable SHA-256
+`02e46be124274617496f6aaa93ab8251b3ff60217bc08a6f3b5ed48943a112ac`)
+or the macOS `Contents/Resources/Java/Line6Edit.jar` (SHA-256
+`044b129b006d5f3cc00811d8a910c120f56ba2efe8e7f0d85f5fc89a28d5abf2`).
+These archive members match byte-for-byte across the two distributions.
+
+| Archive member | SHA-256 |
+| --- | --- |
+| `cmn/l6java/device/L6ProductConstants.class` | `4d58b823c811687239b60cafe0da7f5e12b473c325b1872a122dc77dc4872b95` |
+| `cmn/l6java/patch/L6ModelParam.class` | `29320a355f7090a9137cd0d83dfa0a4ed70a2e0fb2c29c7a17c91d6cf9147d4a` |
+| `modules/sharctone/device/L6SharcToneParamMap.class` | `761b59f407496ca5924f66e6fd8e3b7f728feb0771702ab9cc2484c6b2e72dcc` |
+| `modules/sharctone/device/L6AX3ParamDefs.class` | `53402f866e446fa182f32e9d31feabc891a4923c79dbb2e283455642961bde70` |
+| `modules/sharctone/device/L6AX3ParamFormats.class` | `494d269f4f4f87a17e82e5f8bca839800ef07eb872c6881c264f26ef57877fa1` |
+| `modules/sharctone/device/L6SharcToneMIDITranscoder.class` | `7841eaa9dc939e1917555c172a57ce9b2af809fd93fd8299d65e39c2e29dd3e7` |
+| `modules/sharctone/editor/L6SharcToneEditor.class` | `131c4167a01d02b684f9e522bd8182424ff6af1c26bde50f544331ddcedae060` |
+
+Hash the members with `unzip -p "$archive" "$member" | sha256sum` using
+the macOS JAR or retained Windows embedded ZIP. Inspect each with
+`javap -c -p -classpath "$archive" "$class"` using its dot-separated
+class name. The synthetic checks are independently runnable with
+`cargo test --locked --offline --no-default-features --lib podxt_eq_unbound_band_five`.
+
 Bounded read-only searches of the retained archived Workbench trees
 `analysis/decompiled/mac/line6editbase`,
 `analysis/decompiled/windows/line6editbase`,

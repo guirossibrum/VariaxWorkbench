@@ -2903,6 +2903,125 @@ fn podxt_eq_pair_rejects_invalid_inputs_and_targets_without_partial_mutation() {
 }
 
 #[test]
+fn podxt_eq_unbound_band_five_words_survive_edit_save_and_reopen() {
+    // Band four is editable. The adjacent, Bass-defined IDs remain raw here,
+    // including a nonstandard type and a nonfinite float payload.
+    let frequency = [0x3f, 0x10, 0x00, 0x06, 0, 0, 0, 1, 0x3f, 0, 0, 0];
+    let gain = [0x3f, 0x10, 0x00, 0x07, 0, 0, 0, 1, 0x3f, 0, 0, 0];
+    let extra_frequency = [0x3f, 0x10, 0x00, 0x08, 0, 0, 0, 1, 0x7f, 0xc0, 0, 1];
+    let extra_gain = [0x3f, 0x10, 0x00, 0x09, 0, 0, 0, 7, 0xde, 0xad, 0xbe, 0xef];
+    let build = |frequency, gain| {
+        custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: 0x0003_0004,
+                model_id: 0x020c_0002,
+                tail: &[0x27, 0xbd, 0xe1, 1],
+                parameters: &[&extra_gain, frequency, &extra_frequency, gain],
+            }],
+        )
+    };
+    let original = build(&frequency, &gain);
+    let expected = build(
+        &[0x3f, 0x10, 0x00, 0x06, 0, 0, 0, 1, 0, 0, 0, 0],
+        &[0x3f, 0x10, 0x00, 0x07, 0, 0, 0, 1, 0x3f, 0x80, 0, 0],
+    );
+    let mut tone = PodTone::parse(original.clone()).unwrap();
+    assert_eq!(tone.as_bytes(), original);
+    tone.set_podxt_eq_band(PodxtEqBand::Four, 500.0, 12.6)
+        .unwrap();
+    assert_eq!(tone.as_bytes(), expected);
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("podxt-eq-copy.l6t");
+    tone.save_copy(&path).unwrap();
+    let reopened = PodTone::parse(std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(reopened.as_bytes(), expected);
+}
+
+#[test]
+fn podxt_eq_unbound_band_five_words_do_not_supply_a_missing_edit_target() {
+    let frequency = [0x3f, 0x10, 0x00, 0x06, 0, 0, 0, 1, 0x3f, 0, 0, 0];
+    let gain = [0x3f, 0x10, 0x00, 0x07, 0, 0, 0, 1, 0x3f, 0, 0, 0];
+    let integer_gain = [0x3f, 0x10, 0x00, 0x07, 0, 0, 0, 0, 0x3f, 0, 0, 0];
+    let extra_frequency = [0x3f, 0x10, 0x00, 0x08, 0, 0, 0, 1, 0x3f, 0, 0, 0];
+    let extra_gain = [0x3f, 0x10, 0x00, 0x09, 0, 0, 0, 1, 0x3f, 0, 0, 0];
+    let good: &[&[u8]] = &[&extra_frequency, &frequency, &gain, &extra_gain];
+    for (label, target, model, slot, parameters) in [
+        (
+            "Bass PODxt Live target",
+            0x0003_000b,
+            0x020c_0002,
+            0x0003_0004,
+            good,
+        ),
+        ("wrong model", 0x0003_000a, 0x020c_0003, 0x0003_0004, good),
+        ("Bass EQ slot", 0x0003_000a, 0x020c_0002, 0x0002_0007, good),
+        (
+            "band five records only",
+            0x0003_000a,
+            0x020c_0002,
+            0x0003_0004,
+            &[&extra_frequency[..], &extra_gain[..]],
+        ),
+        (
+            "integer band four gain",
+            0x0003_000a,
+            0x020c_0002,
+            0x0003_0004,
+            &[
+                &extra_frequency[..],
+                &frequency[..],
+                &integer_gain[..],
+                &extra_gain[..],
+            ],
+        ),
+        (
+            "truncated extra record",
+            0x0003_000a,
+            0x020c_0002,
+            0x0003_0004,
+            &[
+                &extra_frequency[..],
+                &frequency[..],
+                &gain[..],
+                &extra_gain[..11],
+            ],
+        ),
+    ] {
+        let mut bytes = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot,
+                model_id: model,
+                tail: &[0x27, 0xbd, 0xe1, 1],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 4..pinf + 8].copy_from_slice(&u32::to_be_bytes(target));
+        if target == 0x0003_000b {
+            let mut library = Library::default();
+            assert!(matches!(
+                library.import_bytes(bytes),
+                Err(ToneError::WrongTarget {
+                    device_id: 0x0003_000b
+                })
+            ));
+            assert!(library.is_empty());
+            continue;
+        }
+        let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        assert!(
+            tone.set_podxt_eq_band(PodxtEqBand::Four, 500.0, 12.6)
+                .is_err(),
+            "{label}"
+        );
+        assert_eq!(tone.as_bytes(), bytes, "{label}");
+    }
+}
+
+#[test]
 fn podxt_eq_reset_is_atomic_and_writes_only_the_eight_independent_words() {
     const RESET: [u32; 8] = [
         0x3e00_0000,
