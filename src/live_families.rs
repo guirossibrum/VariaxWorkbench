@@ -148,7 +148,7 @@ fn read_podxt_on(link: &mut dyn Link) -> Result<(String, Option<FirmwareNotice>)
     Ok((lines.join(" "), None))
 }
 
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn read_both_live(
     read_variax: impl FnOnce() -> Result<(PresetMetadata, String), String>,
     read_podxt: impl FnOnce() -> Result<(String, Option<FirmwareNotice>), String>,
@@ -225,6 +225,18 @@ mod tests {
         assert_eq!(
             after_release::<()>(Err("operation".into()), Err("release".into())),
             Err("operation Cleanup also failed: release".into())
+        );
+    }
+
+    #[test]
+    fn failed_variax_cleanup_stops_before_podxt_open() {
+        let result = read_both_live(
+            || after_release(Err("read failed".into()), Err("release failed".into())),
+            || panic!("the PODxt interface must stay closed"),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Variax read stopped: read failed Cleanup also failed: release failed"
         );
     }
 

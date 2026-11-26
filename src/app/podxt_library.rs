@@ -1,12 +1,40 @@
 //! Verified PODxt Live library receipts used for offline startup.
 
-#[cfg(any(feature = "gui", all(not(test), feature = "usb", target_os = "linux")))]
+#[cfg(any(
+    feature = "gui",
+    all(
+        not(test),
+        feature = "usb",
+        any(target_os = "linux", target_os = "macos")
+    )
+))]
 use line6_devices::backup::{podxt_entry_name, verified_manifest_entries};
-#[cfg(any(feature = "gui", all(not(test), feature = "usb", target_os = "linux")))]
+#[cfg(any(
+    feature = "gui",
+    all(
+        not(test),
+        feature = "usb",
+        any(target_os = "linux", target_os = "macos")
+    )
+))]
 use line6_devices::family::podxt::{BankKind, IDENTITY_FAMILY, Location, PODXT_LIVE_MEMBER};
-#[cfg(any(feature = "gui", all(not(test), feature = "usb", target_os = "linux")))]
+#[cfg(any(
+    feature = "gui",
+    all(
+        not(test),
+        feature = "usb",
+        any(target_os = "linux", target_os = "macos")
+    )
+))]
 use line6_devices::identity::Identity;
-#[cfg(any(feature = "gui", all(not(test), feature = "usb", target_os = "linux")))]
+#[cfg(any(
+    feature = "gui",
+    all(
+        not(test),
+        feature = "usb",
+        any(target_os = "linux", target_os = "macos")
+    )
+))]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -37,7 +65,11 @@ impl CompletedPodxtBackup {
     }
 
     #[cfg(any(
-        all(not(test), feature = "usb", target_os = "linux"),
+        all(
+            not(test),
+            feature = "usb",
+            any(target_os = "linux", target_os = "macos")
+        ),
         all(feature = "gui", test)
     ))]
     pub(crate) fn verify(
@@ -70,7 +102,14 @@ impl CompletedPodxtBackup {
     }
 }
 
-#[cfg(any(feature = "gui", all(not(test), feature = "usb", target_os = "linux")))]
+#[cfg(any(
+    feature = "gui",
+    all(
+        not(test),
+        feature = "usb",
+        any(target_os = "linux", target_os = "macos")
+    )
+))]
 fn verify_complete_manifest(folder: &Path) -> Result<(Vec<String>, Identity), String> {
     if folder
         .file_name()

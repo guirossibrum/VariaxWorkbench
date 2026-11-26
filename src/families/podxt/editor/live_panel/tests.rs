@@ -213,9 +213,9 @@ fn transaction_locks_before_open_through_reply_and_port_close() {
             assert!(!held.replace(true));
             Ok(FakeLock(&held))
         },
-        |_| {
+        |_, run| {
             assert!(held.get());
-            Ok(FakeLink {
+            run(&mut FakeLink {
                 held: &held,
                 writes: &writes,
                 script: VecDeque::from([
@@ -244,7 +244,7 @@ fn transaction_locks_before_open_through_reply_and_port_close() {
         ReadCommand::Current,
         &stop,
         || Err::<(), _>("Rig busy".into()),
-        |_| -> Result<FakeLink<'_>, _> { panic!("lock refusal must prevent opening the link") },
+        |_, _| panic!("lock refusal must prevent opening the link"),
         |_| panic!("lock refusal must prevent updates"),
     );
     assert_eq!(busy, Err("Rig busy".into()));

@@ -25,10 +25,18 @@ pub enum Which {
     Podxt,
 }
 
-/// Linux builds with the backup gate open. Tests may see this and must not
-/// answer Yes against a real device.
+/// Whether Device Check can show either backup choice.
 pub fn offered() -> bool {
-    cfg!(target_os = "linux") && !hardware_gates::is_locked(Gate::DeviceCheckBackup)
+    offered_for(Which::Variax) || offered_for(Which::Podxt)
+}
+
+/// Backups are offered only on transports that support that family.
+pub fn offered_for(which: Which) -> bool {
+    !hardware_gates::is_locked(Gate::DeviceCheckBackup)
+        && match which {
+            Which::Variax => cfg!(target_os = "linux"),
+            Which::Podxt => crate::podxt_live::workbench_link_available(),
+        }
 }
 
 pub fn run(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<BackupResult, String> {
@@ -149,20 +157,29 @@ fn run_if_supported(
     root: &Path,
     progress: impl FnMut(&str),
 ) -> Result<BackupResult, String> {
-    #[cfg(any(test, not(target_os = "linux")))]
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     {
         let _ = (which, root, progress);
         Err("this build does not open a device for a backup; nothing was sent".into())
     }
-    #[cfg(all(not(test), target_os = "linux"))]
+    #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
     {
-        let _rig =
+        if !offered_for(which) {
+            return Err("this build does not open a device for a backup; nothing was sent".into());
+        }
+        let rig =
             line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
-        run_live(which, root, progress)
+        match which {
+            #[cfg(target_os = "linux")]
+            Which::Variax => backup_variax(root, progress),
+            #[cfg(target_os = "macos")]
+            Which::Variax => Err("Variax backup is unavailable in this build.".into()),
+            Which::Podxt => backup_podxt(&rig, root, progress),
+        }
     }
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn stamp() -> (String, String) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let seconds = SystemTime::now()
@@ -171,18 +188,10 @@ fn stamp() -> (String, String) {
     line6_devices::backup::utc(seconds)
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
-fn run_live(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<BackupResult, String> {
-    match which {
-        Which::Variax => backup_variax(root, progress),
-        Which::Podxt => backup_podxt(root, progress),
-    }
-}
-
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 struct BackupPolicy;
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 impl line6_devices::gate::GatePolicy for BackupPolicy {
     fn allows(&self, operation: line6_devices::gate::Operation) -> bool {
         if hardware_gates::is_locked(Gate::DeviceCheckBackup) {
@@ -236,7 +245,7 @@ fn close_folder(
     close_folder_path(folder, complete, summary).map(|(_, notice)| notice)
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn close_folder_path(
     folder: line6_devices::backup::BackupFolder,
     complete: bool,
@@ -490,15 +499,14 @@ fn read_variax_on(
     (library, cleanup)
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
-fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<BackupResult, String> {
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+fn backup_podxt(
+    rig: &line6_devices::device_lock::DeviceLock,
+    root: &Path,
+    mut progress: impl FnMut(&str),
+) -> Result<BackupResult, String> {
     use crate::podxt_library::CompletedPodxtBackup;
     use line6_devices::backup::{self, BackupFolder};
-    use line6_devices::family::podxt;
-    use line6_devices::session::Session;
-    use line6_devices::{
-        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
-    };
 
     let (stamp, when) = stamp();
     let mut folder = BackupFolder::create(root, &format!("podxt-library-{stamp}"))?;
@@ -506,17 +514,43 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<BackupRes
         "PODxt Live library backup at {when}. Stored tones and setups are read by location. The current tone is not changed on purpose. Nothing is stored."
     ));
     progress("Starting the PODxt Live backup. The current tone stays put.");
-    let mut link = match RawMidiLink::open_spec(PODXT_LIVE_MIDI) {
-        Ok(link) => link,
+    let read = crate::podxt_live::with_workbench_link(rig, None, |link, endpoint| {
+        let (library, packs_note) = read_podxt_library(link, &mut folder, &mut progress)?;
+        let complete = library.stopped.is_none();
+        backup::save_podxt_library(&mut folder, &library)?;
+        Ok((
+            complete,
+            podxt_summary(&library, &packs_note),
+            endpoint.to_owned(),
+        ))
+    });
+    let (complete, summary, endpoint) = match read {
+        Ok(result) => result,
         Err(error) => {
             folder.line(format!("STOPPED: {error}"));
-            return Err(close_folder(folder, false, Err(error)).unwrap_err());
+            return Err(close_folder_path(folder, false, Err(error)).unwrap_err());
         }
     };
+    let (path, notice) = close_folder_path(folder, complete, Ok(summary))?;
+    let backup = CompletedPodxtBackup::verify(path, std::time::SystemTime::now(), endpoint)
+        .map_err(|error| format!("{notice} Backup manifest verification failed: {error}"))?;
+    Ok(BackupResult::Podxt { backup, notice })
+}
+
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+fn read_podxt_library(
+    link: &mut dyn line6_devices::session::Link,
+    folder: &mut line6_devices::backup::BackupFolder,
+    mut progress: impl FnMut(&str),
+) -> Result<(line6_devices::family::podxt::Library, String), String> {
+    use line6_devices::backup;
+    use line6_devices::family::podxt;
+    use line6_devices::session::Session;
+
     let policy = BackupPolicy;
     let mut lines = Vec::new();
     let packs_note = {
-        let mut session = Session::new(&mut link, &policy, &mut folder);
+        let mut session = Session::new(&mut *link, &policy, folder);
         match podxt::read_packs(&mut session) {
             Ok((_, packs)) => {
                 let names = packs.names();
@@ -541,7 +575,7 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<BackupRes
     };
     folder.line(packs_note.clone());
     let library = {
-        let mut session = Session::new(&mut link, &policy, &mut folder);
+        let mut session = Session::new(&mut *link, &policy, folder);
         session.log_packets = false;
         let total: u16 = podxt::BankKind::ALL.iter().map(|kind| kind.size()).sum();
         let mut count = 0u16;
@@ -558,31 +592,12 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<BackupRes
     for line in &lines {
         folder.record(line.clone());
     }
-    let complete = library
-        .as_ref()
-        .is_ok_and(|library| library.stopped.is_none());
-    let summary = match library {
-        Ok(library) => {
-            if let Err(error) = backup::save_podxt_library(&mut folder, &library) {
-                Err(error)
-            } else {
-                Ok(podxt_summary(&library, &packs_note))
-            }
-        }
-        Err(error) => Err(format!("PODxt Live backup stopped: {error}")),
-    };
-    if let Err(error) = &summary {
-        folder.line(format!("STOPPED: {error}"));
-    }
-    let midi_device = link.device.clone();
-    drop(link);
-    let (path, notice) = close_folder_path(folder, complete && summary.is_ok(), summary)?;
-    let backup = CompletedPodxtBackup::verify(path, std::time::SystemTime::now(), midi_device)
-        .map_err(|error| format!("{notice} Backup manifest verification failed: {error}"))?;
-    Ok(BackupResult::Podxt { backup, notice })
+    library
+        .map(|library| (library, packs_note))
+        .map_err(|error| format!("PODxt Live backup stopped: {error}"))
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn podxt_summary(library: &line6_devices::family::podxt::Library, packs_note: &str) -> String {
     use line6_devices::family::podxt;
     let total: u16 = podxt::BankKind::ALL.iter().map(|kind| kind.size()).sum();
