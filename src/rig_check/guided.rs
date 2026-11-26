@@ -77,16 +77,24 @@ pub(super) struct ActiveAction {
 }
 
 impl ActiveAction {
+    pub fn resume(&mut self, ctx: &mut Ctx<'_>, what: &str) {
+        self.advance = ctx.op.watch_action(ctx.rec.id, what, self.clock.clone());
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        (self.elapsed)()
+    }
+
     pub fn done(&self) -> bool {
         (self.advance)() || self.expired()
     }
 
     pub fn expired(&self) -> bool {
-        (self.elapsed)() >= self.clock.ready_duration() + ACTION_WINDOW
+        self.elapsed() >= self.clock.ready_duration() + ACTION_WINDOW
     }
 
     pub fn early(&self) -> bool {
-        (self.elapsed)() < self.clock.ready_duration()
+        self.elapsed() < self.clock.ready_duration()
     }
 }
 

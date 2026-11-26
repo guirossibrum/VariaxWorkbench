@@ -240,10 +240,12 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         what: &str,
         clock: std::sync::Arc<super::guided::ActionClock>,
     ) -> Box<dyn Fn() -> bool> {
-        self.say(&format!(
-            "Get ready. Start in {} s. Watching for {what}. Enter = Continue   [+10] More time   [q] Stop",
-            super::guided::READY_DELAY.as_secs()
-        ));
+        if clock.elapsed() < clock.ready_duration() {
+            self.say(&format!(
+                "Get ready. Start in {} s. Watching for {what}. Enter = Continue   [+10] More time   [q] Stop",
+                super::guided::READY_DELAY.as_secs()
+            ));
+        }
         let keyboard = self.keyboard.clone();
         let stop = self.stop.clone();
         let advanced = Cell::new(false);
