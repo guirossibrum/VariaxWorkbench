@@ -59,6 +59,32 @@ store outcome is unknown, Rig Check ends with USB release only.
 of differing bits, retries, missing bytes in retried replies and message counts.
 Real runs save raw evidence by default in the report's companion folder.
 
+### Practice verification and owner evidence
+
+- **STOP:** Change two bytes of the simulated stored channel 1A between
+  steps 2.3 and 2.5. The completed text and JSON report retain the original
+  failure, both controls, expected and actual bytes, XOR and bit counts.
+  Steps 4.1–4.8 and 5.1–5.4 remain read-only with no write prompts or traffic
+  from those steps, even though the final guard completes.
+- **REPORT / INFO:** On a separate practice run, a starting unsaved control
+  edit is listed under Differences to review and a live pedal-position
+  change appears in the technical details. Step 2.5 passes, both families
+  can edit and save, and step 6.2 verifies the restored starting edit.
+  The existing 0.3 reference test separately verifies that a renderer
+  REPORT permits a later save.
+- **Current limit:** Variax full-program comparisons that allow live tone
+  position exclude whole words 871, 872 and 1,091. Word 872 also contains
+  the saved-tone flag and the first trim byte. The PODxt INFO rehearsal
+  does not verify a byte-level Variax classifier for those shared words.
+- **Owner evidence still needed:** A report and companion evidence from
+  the current build on the rig, showing restored starting edits at 6.2
+  and live-position changes that did not prevent otherwise eligible
+  steps. Cross-platform diagnosis needs reports from the platforms under
+  comparison. The STOP regression uses a seeded mismatch in practice.
+  If a mismatch occurs during an approved owner run, retain the original
+  failure, the raw evidence already captured, and the later refusal
+  reasons.
+
 
 ## Starting-state preconditions
 
