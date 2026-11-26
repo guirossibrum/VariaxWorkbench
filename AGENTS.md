@@ -199,8 +199,9 @@ project. Add a checkout only while there is a specific task or an owner-run
 procedure that needs it. Once reviewed and tested, integrate durable source
 changes into `origin/master`. An open issue does not reserve an old checkout
 whose implementation has already merged.
-Read `docs/parallel-work.md` for current issue ownership and the delivery and
-cleanup procedure. Do not duplicate another agent's reserved issues.
+Read `docs/parallel-work.md` for current issue ownership, the delivery and
+cleanup procedure, and the free-lane rule. Do not duplicate another agent's
+reserved issues.
 
 Target 30–60 minutes of agent time per issue; after more than two review rounds,
 stop and propose splitting the issue.
@@ -251,7 +252,12 @@ A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
 worktree, runs the checks listed under Implementation (plus the crate and probe
 checks when touched), and pushes that tested result to `origin/master`. It also
-updates the issues and the ledgers.
+updates the issues and the ledgers. When that verification is done, or when a
+completed research checkpoint or an owner decision blocks the work that lane
+was doing, the lane is free. Select its next ready issue and assign it
+promptly, using the free-lane rule in `docs/parallel-work.md`. A Herdr idle
+or completion badge asks the Gatekeeper to verify the delivery. Merge and
+approval remain the review of the exact head.
 
 After committing and checking the worktree, the lane agent leaves it. Its final
 report must give the absolute worktree path and explicitly confirm the agent has
