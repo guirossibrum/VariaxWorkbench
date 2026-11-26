@@ -26,10 +26,51 @@ pub fn get_editor_buffer<L: Link>(
     session: &mut Session<L>,
     cancelled: impl Fn() -> bool,
 ) -> Result<EditorBuffer, String> {
+    get_buffer(session, cancelled, |session, _| editor_tone(session))
+}
+
+/// Workbench's standalone Get, on a fresh locked link. Revalidate the
+/// playing channel after the dump and never let an unresolved reply reach
+/// the following global or pack query.
+pub fn get_editor_buffer_tracking_reply<L: Link>(
+    session: &mut Session<L>,
+    cancelled: impl Fn() -> bool,
+    outstanding: &mut bool,
+) -> Result<EditorBuffer, String> {
+    if *outstanding {
+        return Err(
+            "An earlier PODxt reply may still be pending. Reconnect the PODxt Live.".into(),
+        );
+    }
+    get_buffer(session, cancelled, |session, cancelled| {
+        let tone = read_verified_current_tone(
+            session,
+            || check_stop(cancelled),
+            None,
+            outstanding,
+            |event, _, _| match super::live_read::tone_event(event) {
+                ToneReadEvent::StateChanged => {
+                    Err("The PODxt tone changed while refreshing.".into())
+                }
+                disposition => Ok(disposition),
+            },
+        )?;
+        validate_editor_tone(&tone)?;
+        Ok(tone)
+    })
+}
+
+fn get_buffer<L: Link, C: Fn() -> bool>(
+    session: &mut Session<L>,
+    cancelled: C,
+    read_tone: impl FnOnce(&mut Session<L>, &C) -> Result<EditBuffer, String>,
+) -> Result<EditorBuffer, String> {
     open_editor(session, &cancelled)?;
     let channel = playing_channel(session)?;
-    let tone = editor_tone(session)?;
+    let tone = read_tone(session, &cancelled)?;
+    check_stop(&cancelled)?;
     let packs = query_packs(session)?;
+    check_stop(&cancelled)?;
     check_channel(session, channel)?;
     check_stop(&cancelled)?;
     Ok(EditorBuffer {

@@ -13,6 +13,11 @@ use crate::{
 };
 use std::time::Duration;
 
+pub(super) fn remaining<L: Link>(session: &Session<L>, end: Duration) -> Option<Duration> {
+    end.checked_sub(session.link.elapsed())
+        .filter(|duration| !duration.is_zero())
+}
+
 /// Drain, then identity; errors unless the reply is a PODxt.
 pub(super) fn identify_podxt<L: Link>(
     session: &mut Session<L>,
@@ -78,8 +83,31 @@ pub fn read_stored_tone<L: Link>(
     session: &mut Session<L>,
     location: Location,
 ) -> Result<Option<EditBuffer>, String> {
+    read_stored_tone_observing(session, location, || Ok(()), None, &mut false, |_, _| false)
+}
+
+/// The same addressed exchange with cancellation and an observer for recognized
+/// unsolicited events. The observer cannot claim a dump or block-end marker.
+pub(super) fn read_stored_tone_observing<L: Link>(
+    session: &mut Session<L>,
+    location: Location,
+    check_stop: impl Fn() -> Result<(), String>,
+    deadline: Option<Duration>,
+    outstanding: &mut bool,
+    mut observe: impl FnMut(&Event, Duration) -> bool,
+) -> Result<Option<EditBuffer>, String> {
+    check_stop()?;
+    if session.assembler.partial_sysex().is_some() {
+        *outstanding = true;
+        return Err("An earlier SysEx is incomplete before the stored PODxt read.".into());
+    }
+    if deadline.is_some_and(|end| session.link.elapsed() + STORED_GAP >= end) {
+        return Err("The stored PODxt read reached its time limit.".into());
+    }
+    *outstanding = true;
     session.send(PodxtRequest::Stored(location))?;
-    let reply_end = session.link.elapsed() + STORED_WINDOW;
+    let reply_end = (session.link.elapsed() + STORED_WINDOW)
+        .min(deadline.unwrap_or(Duration::MAX).saturating_sub(STORED_GAP));
     let mut end = reply_end + STORED_GAP;
     // Keep the dump and its settle period in one exchange. The packet
     // containing the dump's F7 can also contain the block-end frame.
@@ -88,6 +116,7 @@ pub fn read_stored_tone<L: Link>(
     let mut in_sysex = false;
     let orphans = session.assembler.orphans;
     loop {
+        check_stop()?;
         let now = session.link.elapsed();
         if now >= end {
             break;
@@ -97,13 +126,12 @@ pub fn read_stored_tone<L: Link>(
         } else {
             end
         };
+        let mut interrupted = false;
         let Some(events) = session.poll_with((next_deadline - now).min(POLL), |packet| {
             // The assembler keeps partial SysEx across packets. Detect a frame
             // that is abandoned or still unfinished when this read ends.
             for status in packet.iter().copied().filter(|b| (0x80..0xf8).contains(b)) {
-                if in_sysex && status != 0xf7 {
-                    return Err("Interrupted SysEx during a stored PODxt read.".into());
-                }
+                interrupted |= in_sysex && status != 0xf7;
                 in_sysex = status == 0xf0;
             }
             Ok(())
@@ -111,15 +139,22 @@ pub fn read_stored_tone<L: Link>(
         else {
             continue;
         };
-        if session.assembler.orphans != orphans {
-            return Err("Unexpected orphan MIDI bytes during a stored PODxt read.".into());
-        }
+        check_stop()?;
+        let mut issue = Ok(());
         for event in events {
+            if observe(&event, session.link.elapsed()) {
+                continue;
+            }
             match event {
                 Event::Sysex(frame)
-                    if tone.is_none() && now < reply_end && is_edit_buffer(&frame) =>
+                    if tone.is_none()
+                        && session.link.elapsed() <= reply_end
+                        && is_edit_buffer(&frame) =>
                 {
-                    tone = Some(EditBuffer::parse(frame)?);
+                    match EditBuffer::parse(frame) {
+                        Ok(reply) => tone = Some(reply),
+                        Err(error) => issue = Err(error),
+                    }
                     end = session.link.elapsed() + STORED_GAP;
                 }
                 Event::Sysex(frame)
@@ -128,14 +163,21 @@ pub fn read_stored_tone<L: Link>(
                     saw_marker = true;
                 }
                 Event::Sysex(frame) => {
-                    return Err(format!("Unexpected SysEx reply: {}", hex(&frame)));
+                    issue = Err(format!("Unexpected SysEx reply: {}", hex(&frame)));
                 }
                 Event::Short(message) if message[0] & 0xf0 == 0xc0 => {
-                    return Err(format!("Unexpected program change: {}", hex(&message)));
+                    issue = Err(format!("Unexpected program change: {}", hex(&message)));
                 }
                 Event::Short(_) => {}
             }
         }
+        if interrupted {
+            return Err("Interrupted SysEx during a stored PODxt read.".into());
+        }
+        if session.assembler.orphans != orphans {
+            return Err("Unexpected orphan MIDI bytes during a stored PODxt read.".into());
+        }
+        issue?;
     }
     if in_sysex {
         return Err("Unfinished SysEx during a stored PODxt read.".into());

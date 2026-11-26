@@ -82,6 +82,14 @@ fn short_len(status: u8) -> usize {
 }
 
 impl Assembler {
+    pub(crate) fn partial_sysex(&self) -> Option<&[u8]> {
+        self.sysex.as_deref()
+    }
+
+    pub(crate) fn discard_partial_sysex(&mut self) {
+        self.sysex = None;
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Event>, String> {
         let mut events = Vec::new();
         for &byte in bytes {

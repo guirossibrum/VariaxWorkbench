@@ -111,6 +111,9 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
         })),
     });
     assert!(app.podxt().busy());
+    let old_reply = Arc::clone(&app.podxt().live.editor.reply_pending);
+    old_reply.store(true, Ordering::Release);
+    assert!(!app.podxt().live.device_ready());
 
     presence.attached.set(false);
     frame(&mut app);
@@ -139,6 +142,12 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
     let tab = app.tabs.entries[0].device.as_ref().unwrap();
     assert_eq!(tab.connection, tabs::Connection::Present);
     assert_ne!(tab.device.key, device);
+    assert!(old_reply.load(Ordering::Acquire));
+    assert!(app.podxt().live.device_ready());
+    assert!(!Arc::ptr_eq(
+        &old_reply,
+        &app.podxt().live.editor.reply_pending
+    ));
     assert_eq!(
         tab.device.support,
         detection::DeviceSupport::Verified("3.01")
@@ -211,6 +220,7 @@ fn transaction_locks_before_open_through_reply_and_port_close() {
     transaction(
         ReadCommand::Current,
         &stop,
+        &AtomicBool::new(false),
         || {
             assert!(!held.replace(true));
             Ok(FakeLock(&held))
@@ -245,6 +255,7 @@ fn transaction_locks_before_open_through_reply_and_port_close() {
     let busy = transaction(
         ReadCommand::Current,
         &stop,
+        &AtomicBool::new(false),
         || Err::<(), _>("Rig busy".into()),
         |_, _| panic!("lock refusal must prevent opening the link"),
         |_| panic!("lock refusal must prevent updates"),
@@ -601,3 +612,5 @@ fn disconnected_stage_loads_backup_and_no_backup_shows_labelled_default() {
 }
 
 mod stage_acceptance;
+
+pub(super) mod read_recovery;
