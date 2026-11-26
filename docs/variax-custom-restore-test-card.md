@@ -166,9 +166,28 @@ validates the written snapshot files before comparing by preset or bank
 key. The success case confirms the edit and restore separately, consumes
 two `0x71` replies for exactly two slot-4 stores, and checks **60 programs,
 60 settings pairs and 12 bank names** at each of the three checkpoints.
-The fault cases include a checksum-valid recovery image that would change
-under stamping, and independent changes to an untouched program, settings
-pair and bank-name reply.
+The preflight checks both uploads with `write::Program::new` and uses an
+independent checksum and stamp calculation as an oracle for the shared
+firmware prediction. The synthetic baseline assumes unity DSP gain.
+The allowed edit changes the 24-bit gain at word 555 from `ffffff` to
+`c026e7` (trim flag set), and the three-byte trim at settings bytes
+65–67 from `000000` to `c0c000` (0 to −6 dB). Every other byte must
+match, apart from the verified checksum and the canonical upload stamp
+that becomes `0310` in the predicted stored image. In the stamped pair
+the exact changed byte offsets are 1665–1667, 2618–2619 and 3273–3275.
+The oracle rejects one-bit corruption at each of the 3,276 byte offsets
+and compensating changes that preserve both upload checksums. The
+original recovery image is a fixed point of both stamp calculations
+across all 3,276 bytes. A checksum-valid unstamped recovery image is
+refused.
+
+An offline test in the existing Reso-5 tool also renders the legacy
+Default Patch with the built-in model library, treating the stamped
+baseline as a synthetic capture. Changing only trim lowers the DSP
+gain and changes only words 555, 872, 873 and 1,091. It compares all 192
+settings bytes against the exact trim substitution and verifies that
+restamping preserves the baseline. Neither synthetic test supplies the
+provenance or gain coefficient for the owner's current slot.
 
 | Phase | Required result |
 | --- | --- |
@@ -177,6 +196,7 @@ pair and bank-name reply.
 | Restore | Require the successful intermediate comparison and a fresh exact target recheck before the Restore confirmation. Success sends one more `61 04` using the preserved bytes and receives its own `0x71`. The reloaded target and all final backup programs, metadata pairs and bank-name replies equal baseline. Verify return and cleanup. |
 | Refusals and faults | Use a missing or duplicate slot, corrupted manifest or checksum, invalid starting match, a valid upload that changes under stamping, and an unrelated edit byte. Each must cause zero stores at preflight. Inject missing or unexpected `0x71`, incomplete reload, and cleanup failure. Verify no retry after `0x61`, the additional two-minute wait on silence, and no second store after failed edit verification. Change an untouched program, metadata pair or bank-name reply independently and require the intermediate comparison to reject each. Inject wrong Restore confirmation and restore read-back mismatch and verify no further store. |
 
-A rehearsal verifies the workflow on fake links. Fresh capture, a verified
-one-setting edit, a resolved spare history, Gatekeeper review and separate
-owner approvals are still required before a real test.
+A rehearsal verifies the workflow on fake links. A fresh full-program
+backup, verified one-setting edit for that capture, resolved spare 60
+state, Gatekeeper review, and separate owner approvals and confirmations
+remain pending for the real test.
