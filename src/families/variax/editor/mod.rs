@@ -170,6 +170,7 @@ pub(super) struct VariaxEditor {
     slot_replacement: Option<SlotReplacement>,
     slot_transfer: Option<SlotTransfer>,
     new_file: Option<NewFile>,
+    new_model_collision: Option<PathBuf>,
     bank_rename: Option<BankRename>,
     #[cfg(test)]
     bank_slots: HashMap<usize, Rect>,
@@ -260,6 +261,7 @@ impl VariaxEditor {
             slot_replacement: None,
             slot_transfer: None,
             new_file: None,
+            new_model_collision: None,
             bank_rename: None,
             #[cfg(test)]
             bank_slots: HashMap::new(),
@@ -1416,6 +1418,7 @@ impl FamilyTab for VariaxEditor {
     }
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);
+        self.new_model_collision_dialog(ctx, services);
         self.preference_dialog(ctx, services);
         self.tuning_presets_dialog(ctx);
         self.slot_replacement_dialog(services, ctx);
@@ -1461,6 +1464,7 @@ impl FamilyTab for VariaxEditor {
             || self.bank_rename.is_some()
             || self.author_preference.is_some()
             || self.new_file.is_some()
+            || self.new_model_collision.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
