@@ -3,9 +3,12 @@ use crate::variax_library::CompletedVariaxBackup;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
+
+#[path = "library_preferences/variax_cache.rs"]
+pub mod variax_cache;
 
 /// Startup choices stored beside the app's editor preferences. Each update
 /// creates a new record, so backup and archive selections cannot clobber each other.
@@ -124,22 +127,7 @@ impl LibraryStore {
         let snapshots = std::path::absolute(self.directory.join("snapshots"))
             .map_err(|error| error.to_string())?;
         fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
-        let snapshot = tempfile::Builder::new()
-            .prefix("backup-")
-            .tempdir_in(snapshots)
-            .map_err(|error| error.to_string())?;
-        let staged = snapshot.path().join("staging");
-        for name in entries
-            .iter()
-            .map(String::as_str)
-            .chain(["MANIFEST.sha256"])
-        {
-            copy_snapshot_file(source, &staged, Path::new(name))?;
-        }
-        // This destination belongs to a newly reserved directory. Nothing in
-        // app data becomes a startup candidate until record() publishes it.
-        let folder = snapshot.path().join("library");
-        fs::rename(&staged, &folder).map_err(|error| error.to_string())?;
+        let (snapshot, folder) = stage_snapshot(&snapshots, source, entries, None)?;
         self.record("backup", &verify_receipt(folder)?)?;
         let _ = snapshot.keep();
         Ok(())
@@ -166,7 +154,7 @@ impl LibraryStore {
 
     fn record(&self, prefix: &str, value: &impl Serialize) -> Result<(), String> {
         fs::create_dir_all(&self.directory).map_err(|error| error.to_string())?;
-        let mut temporary = tempfile::Builder::new()
+        let temporary = tempfile::Builder::new()
             .prefix(".pending-")
             .tempfile_in(&self.directory)
             .map_err(|error| error.to_string())?;
@@ -176,19 +164,57 @@ impl LibraryStore {
             .expect("temporary filename")
             .to_string_lossy();
         let target = self.directory.join(format!("{prefix}-{name}.json"));
-        serde_json::to_writer(&mut temporary, value).map_err(|error| error.to_string())?;
-        temporary
-            .write_all(b"\n")
-            .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|error| error.to_string())?;
-        temporary
-            .persist_noclobber(target)
-            .map_err(|error| error.error.to_string())?;
-        Ok(())
+        persist_record(temporary, &target, value)
     }
 }
 
-fn copy_snapshot_file(source: &Path, staged: &Path, relative: &Path) -> Result<(), String> {
+fn persist_record(
+    mut temporary: tempfile::NamedTempFile,
+    target: &Path,
+    value: &impl Serialize,
+) -> Result<(), String> {
+    serde_json::to_writer(&mut temporary, value).map_err(|error| error.to_string())?;
+    temporary
+        .write_all(b"\n")
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist_noclobber(target)
+        .map_err(|error| error.error.to_string())?;
+    Ok(())
+}
+
+fn stage_snapshot(
+    snapshots: &Path,
+    source: &Path,
+    entries: &[String],
+    max_file_bytes: Option<u64>,
+) -> Result<(tempfile::TempDir, PathBuf), String> {
+    let snapshot = tempfile::Builder::new()
+        .prefix("backup-")
+        .tempdir_in(snapshots)
+        .map_err(|error| error.to_string())?;
+    let staged = snapshot.path().join("staging");
+    for name in entries
+        .iter()
+        .map(String::as_str)
+        .chain(["MANIFEST.sha256"])
+    {
+        copy_snapshot_file(source, &staged, Path::new(name), max_file_bytes)?;
+    }
+    // The destination belongs to a newly reserved directory. Readers
+    // need a separate atomically published receipt to select this copy.
+    let folder = snapshot.path().join("library");
+    fs::rename(&staged, &folder).map_err(|error| error.to_string())?;
+    Ok((snapshot, folder))
+}
+
+fn copy_snapshot_file(
+    source: &Path,
+    staged: &Path,
+    relative: &Path,
+    max_file_bytes: Option<u64>,
+) -> Result<(), String> {
     if relative.as_os_str().is_empty()
         || relative
             .components()
@@ -202,7 +228,17 @@ fn copy_snapshot_file(source: &Path, staged: &Path, relative: &Path) -> Result<(
     let input = source.join(relative);
     let output = staged.join(relative);
     let copy = || -> std::io::Result<()> {
-        if !input.is_file() {
+        let regular = if max_file_bytes.is_some() {
+            // Cache names were already checked against the family allowlist.
+            // Recheck the source components before copying them.
+            fs::symlink_metadata(source)?.is_dir()
+                && fs::symlink_metadata(input.parent().expect("snapshot input has a parent"))?
+                    .is_dir()
+                && fs::symlink_metadata(&input)?.is_file()
+        } else {
+            input.is_file()
+        };
+        if !regular {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "expected a regular file",
@@ -211,7 +247,16 @@ fn copy_snapshot_file(source: &Path, staged: &Path, relative: &Path) -> Result<(
         let mut input = crate::open_regular_file(&input)?;
         fs::create_dir_all(output.parent().expect("snapshot file has a parent"))?;
         let mut output = fs::File::create_new(&output)?;
-        std::io::copy(&mut input, &mut output)?;
+        if let Some(limit) = max_file_bytes {
+            if std::io::copy(&mut input.take(limit + 1), &mut output)? > limit {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "snapshot file exceeds the copy limit",
+                ));
+            }
+        } else {
+            std::io::copy(&mut input, &mut output)?;
+        }
         output.sync_all()
     };
     copy().map_err(|error| {

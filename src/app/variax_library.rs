@@ -173,4 +173,4 @@ pub enum BackupResult {
 }
 
 #[cfg(feature = "gui")]
-pub use crate::library_preferences::LibraryPreferences;
+pub use crate::library_preferences::{LibraryPreferences, variax_cache};
