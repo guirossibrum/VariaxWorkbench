@@ -104,6 +104,7 @@ struct Queued {
 #[cfg(test)]
 pub(super) enum TestPodxtDump {
     Missing,
+    DropThenDelay { drops: usize, delay: Duration },
     Delayed(Duration),
     Interrupted { channel: u8, delay: Duration },
 }
@@ -399,13 +400,27 @@ impl SimRig {
     fn script_podxt_dump(&mut self, dump: &[u8], reply: TestPodxtDump) {
         let delay = match reply {
             TestPodxtDump::Missing => return,
-            TestPodxtDump::Delayed(delay) => delay,
+            TestPodxtDump::DropThenDelay { drops, delay } if drops > 0 => {
+                self.next_podxt_dump = Some(TestPodxtDump::DropThenDelay {
+                    drops: drops - 1,
+                    delay,
+                });
+                return;
+            }
+            TestPodxtDump::Delayed(delay) | TestPodxtDump::DropThenDelay { delay, .. } => delay,
             TestPodxtDump::Interrupted { channel, delay } => {
                 Self::queue(&mut self.podxt_out, self.clock + LATENCY, &[0xc0, channel]);
                 delay
             }
         };
         Self::queue(&mut self.podxt_out, self.clock + delay, dump);
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_ready_podxt_dump(&self) -> bool {
+        self.podxt_out.iter().any(|queued| {
+            queued.at <= self.clock && queued.packet.starts_with(&[0xf0, 0, 1, 0x0c, 3, 0x74])
+        })
     }
 
     fn podxt_write(&mut self, bytes: &[u8]) {

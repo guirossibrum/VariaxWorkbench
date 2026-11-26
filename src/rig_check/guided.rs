@@ -7,10 +7,11 @@
 //! can also choose Continue to check what arrived, or Stop the run.
 
 use super::differences::{self, Severity};
+use super::podxt_reads::with_current_tone;
 use super::practice::{UserAction, preset_label};
 use super::procedures::{
-    PODXT_CHANNEL, PodxtReplyQuarantine, same_program, variax_full_read, with_podxt,
-    with_podxt_stopping, with_variax, with_variax_progress,
+    PODXT_CHANNEL, PodxtReplyQuarantine, same_program, variax_full_read, with_podxt_stopping,
+    with_variax, with_variax_progress,
 };
 use super::runner::{Ctx, Decision, Progress, Retry, SKIPPED, STOPPED};
 use super::variax_reads::other_preset;
@@ -520,41 +521,6 @@ pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn podxt_window(
-    ctx: &mut Ctx<'_>,
-    advance: &ActiveAction,
-    mut accepts: impl FnMut(podxt::ReadUpdate) -> bool,
-) -> Result<bool, String> {
-    let seen = Cell::new(false);
-    let result = with_podxt_stopping(ctx, PODXT_LISTEN, |session, stopping| {
-        podxt::follow_action(
-            session,
-            || stopping() || seen.get() || advance.done(),
-            |update| {
-                match &update {
-                    podxt::ReadUpdate::Channel(location) => advance
-                        .clock
-                        .observe(format!("PODxt channel {}", location.label())),
-                    podxt::ReadUpdate::Controller { number, value } => {
-                        let name = match number {
-                            4 | 7 => "pedal",
-                            _ => "control",
-                        };
-                        advance.clock.observe(format!("PODxt {name} {value}"));
-                    }
-                    _ => {}
-                }
-                seen.set(accepts(update));
-            },
-        )
-    });
-    match result {
-        Ok(()) => Ok(seen.get()),
-        Err(error) if error == "PODxt read cancelled." && !ctx.stopping() => Ok(seen.get()),
-        Err(error) => Err(error),
-    }
-}
-
 fn already_on_podxt(
     ctx: &mut Ctx<'_>,
     target: Location,
@@ -719,25 +685,34 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "pedal sweep (CC 7 or CC 4)",
         &[UserAction::MovePedal],
         |ctx| {
-            with_podxt(ctx, PODXT_LISTEN, |session| {
-                podxt::read_current(session).map(|current| current.tone)
-            })?;
+            with_current_tone(ctx, PODXT_LISTEN, |_, _| Ok(()))?;
             Ok(None)
         },
         |ctx, advance| {
             let mut range = Range::default();
-            let seen = podxt_window(ctx, advance, |event| {
-                if let podxt::ReadUpdate::Controller {
-                    number: 7 | 4,
-                    value,
-                } = event
-                {
-                    range.add(value);
+            with_podxt_stopping(ctx, PODXT_LISTEN, |session, stopping| {
+                while !stopping() && !advance.done() && !range.swept() {
+                    for event in session
+                        .poll(line6_devices::session::POLL)?
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some((4 | 7, value)) = podxt::controller_notification(&event) {
+                            advance.clock.observe(format!("PODxt pedal {value}"));
+                            range.add(value);
+                            if range.swept() {
+                                break;
+                            }
+                        }
+                    }
                 }
-                range.swept()
+                if stopping() {
+                    return Err(format!("{STOPPED}Stopped by you."));
+                }
+                Ok(())
             })?;
             ctx.rec.note(format!("Pedal range: {}", range.text()));
-            Ok(seen.then_some(range))
+            Ok(range.swept().then_some(range))
         },
     )?;
     ctx.rec.show(format!("Pedal range seen: {}.", range.text()));

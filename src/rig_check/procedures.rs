@@ -69,20 +69,25 @@ pub(super) fn absorb(ctx: &mut Ctx<'_>, lines: Lines) {
 #[doc(hidden)]
 pub enum PodxtReplyQuarantine {
     Pending(Assembler),
-    Unresolved,
+    Unresolved(StepId),
 }
 
 const PODXT_QUARANTINE_WINDOW: Duration = Duration::from_secs(2);
-const PODXT_UNRESOLVED: &str = "A PODxt dump may still be outstanding after step 7.3. The remaining PODxt requests are blocked for this run.";
+fn podxt_unresolved(step: StepId) -> String {
+    format!(
+        "A PODxt dump may still be outstanding after step {step}. The remaining PODxt requests are blocked for this run."
+    )
+}
 
 fn clear_podxt_quarantine(
     session: &mut DynSession<'_>,
     quarantine: &mut Option<PodxtReplyQuarantine>,
 ) -> Result<(), String> {
+    let source = StepId(7, 3);
     let Some(PodxtReplyQuarantine::Pending(assembler)) =
-        quarantine.replace(PodxtReplyQuarantine::Unresolved)
+        quarantine.replace(PodxtReplyQuarantine::Unresolved(source))
     else {
-        return Err(PODXT_UNRESOLVED.into());
+        unreachable!("only a pending footswitch dump can be cleared");
     };
     session.assembler = assembler;
     session.note("Quarantining the outstanding PODxt dump before sending any request.");
@@ -93,7 +98,7 @@ fn clear_podxt_quarantine(
     {
         let events = session
             .poll(left.min(POLL))
-            .map_err(|error| format!("{PODXT_UNRESOLVED} Receive error: {error}"))?;
+            .map_err(|error| format!("{} Receive error: {error}", podxt_unresolved(source)))?;
         if events.into_iter().flatten().any(|event| match event {
             Event::Sysex(frame) => EditBuffer::parse(frame).is_ok(),
             Event::Short(_) => false,
@@ -104,7 +109,7 @@ fn clear_podxt_quarantine(
             return Ok(());
         }
     }
-    Err(PODXT_UNRESOLVED.into())
+    Err(podxt_unresolved(source))
 }
 
 /// Run a shared PODxt Live procedure on a gated session. Rig Check owns
@@ -141,8 +146,8 @@ pub fn with_podxt_progress<T>(
     let stopping = || op.borrow().stop_requested();
     let progress = |update| op.borrow_mut().progress(update);
     let quarantine = &mut ctx.data.podxt_reply_quarantine;
-    let result = if matches!(quarantine, Some(PodxtReplyQuarantine::Unresolved)) {
-        Err(PODXT_UNRESOLVED.into())
+    let result = if let Some(PodxtReplyQuarantine::Unresolved(source)) = *quarantine {
+        Err(podxt_unresolved(source))
     } else {
         ctx.port.podxt(step).and_then(|link| {
             let mut session = Session::new(link, &policy, &mut lines);
