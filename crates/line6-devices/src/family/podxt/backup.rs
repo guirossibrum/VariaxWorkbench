@@ -5,6 +5,9 @@ use super as podxt;
 use crate::backup::{BackupFolder, read_optional, verify_manifest};
 use std::path::Path;
 
+mod snapshot;
+pub use snapshot::{ValidatedSnapshot, validate_snapshot};
+
 pub(crate) const STORED_FOLDERS: &[&str] = &["tones", "amp-setups", "fx-setups"];
 
 pub const PODXT_RESTORE: &str =
