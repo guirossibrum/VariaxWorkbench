@@ -226,15 +226,19 @@ Normal application operation must not require Line 6 services or external apps.
 A self-contained core does not imply that OS integration can have no OS dependency,
 or relax any hardware-access boundary.
 
-## Agent-coordinator workflow
+## Review and merge (owner decision 2026-11-26)
 
-When this checkout is managed by agent-coordinator, read
-[AGENT_COORDINATOR.md](AGENT_COORDINATOR.md) and the installed
-`agent-coordination` skill before receiving work. Use the exact registered scoped
-client and the repository context in the receipt. Cloning or reading this guide
-does not activate a session, assign work, authorize CI or change any safety rule
-above. Keep machine-specific settings and credentials outside tracked files.
+Claude Code and Codex are the Gatekeepers. The agent-coordinator dispatcher is
+retired: do not use its receipts, CI approval or auto-merge, and do not try to
+restore it. `AGENT_COORDINATOR.md` and `docs/roles/` are kept for history only;
+where they disagree with this section, this section applies.
 
-## Required coordinated role reading
-
-Before further coordinated action, contributors must read [the contributor role](docs/roles/contributor.md), and Gatekeepers must read [the Gatekeeper role](docs/roles/gatekeeper.md). Both roles must explicitly load the versioned generic review skill named by their delivery. These role documents preserve all hardware and private-input boundaries; they do not activate a missing coordinator policy or grant work, CI or merge authority.
+Lane agents work as described in `docs/parallel-work.md`: one worktree per issue
+from `origin/master`, local commits, no push, no PR, and a report when done. A
+Gatekeeper reviews the exact head against each acceptance criterion and this
+file. It then merges the branch onto current `origin/master` in a throwaway
+worktree, runs the checks listed under Implementation (plus the crate and probe
+checks when touched), and pushes that tested result to `origin/master`. It also
+updates the issues and the ledgers, and deletes the merged worktree's `target/`.
+Do not merge from, reset or switch the main checkout. Gatekeepers make no device
+runs; the owner runs every hardware check.

@@ -43,8 +43,8 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   `tools/variax-probe` when they are touched. Report the test counts before and
   after.
 - Commit locally with focused commits. **No push, no PR and no GitHub posts.**
-  The reviewer (Claude Code in the main session) reviews, tests the merge
-  result, merges to `master` and updates the issues.
+  A Gatekeeper (Claude Code or Codex) reviews, tests the merge result,
+  pushes it to `origin/master` and updates the issues (see AGENTS.md).
 - Stop after each issue and report: commits, what changed, test counts, and
   anything that affects devices.
 - Keep one issue in progress per agent. Target 30–60 minutes of agent time per
