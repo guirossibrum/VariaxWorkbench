@@ -1,5 +1,6 @@
 """Generate bundle metadata, lay out the disk image, and inspect its contents."""
 
+import hashlib
 import plistlib
 import re
 import subprocess
@@ -9,6 +10,76 @@ from pathlib import Path
 
 ARCHITECTURES = {"x86_64": (10, 15), "arm64": (11, 0)}
 APPS = {"Variax Workbench": "variax-workbench-gui", "Rig Check": "rig-check"}
+ARTWORK_SOURCE = Path(__file__).resolve().parents[2] / "assets" / "ui"
+BUNDLE_ARTWORK = Path("Contents/Resources/assets/ui")
+ARTWORK_MANIFEST = "SHA256SUMS"
+# Images loaded from disk by the Workbench shell and PODxt stage.
+RUNTIME_ARTWORK = (
+    "pod-farm/analog-delay.png",
+    "pod-farm/facial-fuzz.png",
+    "pod-farm/lux-spring.png",
+    "pod-farm/sine-chorus.png",
+    "pod-farm/stage-frame.png",
+    "pod-farm/vetta-wah.png",
+    "pod-farm/volume-pedal.png",
+    "shell/podxt-live.png",
+    "shell/variax.png",
+    "shell/workbench-mark.png",
+)
+
+
+def approved_artwork():
+    sources = (ARTWORK_SOURCE / "SOURCES.md").read_text(encoding="utf-8")
+    approved = dict(re.findall(
+        r"^\| `([^\n`]+\.png)` \| [^\n]* \| `([0-9a-f]{64})` \|$", sources, re.M
+    ))
+    missing = set(RUNTIME_ARTWORK) - approved.keys()
+    if missing:
+        raise ValueError(f"Runtime artwork missing from assets/ui/SOURCES.md: {sorted(missing)}")
+    return {name: approved[name] for name in RUNTIME_ARTWORK}
+
+
+def artwork_manifest(approved):
+    return "".join(f"{digest}  {name}\n" for name, digest in approved.items()).encode("ascii")
+
+
+def checked_artwork(path, digest):
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError(f"Artwork checksum mismatch: {path}")
+    return data
+
+
+def stage_artwork(bundle):
+    approved = approved_artwork()
+    destination = Path(bundle) / BUNDLE_ARTWORK
+    destination.mkdir(parents=True)
+    for name, digest in approved.items():
+        data = checked_artwork(ARTWORK_SOURCE / name, digest)
+        path = destination / name
+        path.parent.mkdir(exist_ok=True)
+        with path.open("xb") as output:
+            output.write(data)
+    with (destination / ARTWORK_MANIFEST).open("xb") as output:
+        output.write(artwork_manifest(approved))
+
+
+def verify_artwork(bundle):
+    approved = approved_artwork()
+    root = Path(bundle) / BUNDLE_ARTWORK
+    expected = {*approved, ARTWORK_MANIFEST}
+    paths = list(root.rglob("*"))
+    if any(path.is_symlink() for path in [root, *paths]):
+        raise ValueError("Bundle artwork must not contain symbolic links")
+    actual = {path.relative_to(root).as_posix() for path in paths if path.is_file()}
+    if actual != expected:
+        raise ValueError(f"Bundle artwork files differ: missing {sorted(expected - actual)}, "
+                         f"unexpected {sorted(actual - expected)}")
+    if (root / ARTWORK_MANIFEST).read_bytes() != artwork_manifest(approved):
+        raise ValueError("Bundle artwork manifest differs from the approved checksums")
+    for name, digest in approved.items():
+        checked_artwork(root / name, digest)
+    return len(approved)
 
 
 def plist(path, title, binary, identifier, version):
@@ -89,6 +160,8 @@ def verify_load_commands(arch, vtool, otool):
 def verify(mount, scratch, dmg):
     for title, binary in APPS.items():
         bundle = Path(mount, f"{title}.app")
+        if binary == APPS["Variax Workbench"]:
+            print(f"Workbench runtime artwork: verified {verify_artwork(bundle)} PNGs and SHA-256 manifest")
         executable = bundle / "Contents" / "MacOS" / binary
         arches = xcrun("lipo", "-archs", executable).split()
         if sorted(arches) != sorted(ARCHITECTURES):
@@ -107,5 +180,5 @@ def verify(mount, scratch, dmg):
 
 
 if __name__ == "__main__":
-    commands = {"plist": plist, "image": image, "verify": verify}
+    commands = {"plist": plist, "artwork": stage_artwork, "image": image, "verify": verify}
     commands[sys.argv[1]](*sys.argv[2:])

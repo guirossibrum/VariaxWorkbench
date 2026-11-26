@@ -83,6 +83,9 @@ make_app() {
         -output "$app/Contents/MacOS/$binary"
     chmod +x "$app/Contents/MacOS/$binary"
     make_icon "$here/$icon" "$app/Contents/Resources/AppIcon.icns"
+    if [[ "$binary" == variax-workbench-gui ]]; then
+        python3 "$here/package.py" artwork "$app"
+    fi
     python3 "$here/package.py" plist "$app/Contents/Info.plist" "$name" "$binary" "$identifier" "$version"
     plutil -lint "$app/Contents/Info.plist"
     codesign --sign - --force --deep "$app"

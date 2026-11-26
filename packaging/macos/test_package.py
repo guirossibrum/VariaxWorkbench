@@ -1,4 +1,5 @@
 import plistlib
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,38 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(manifest["LSMinimumSystemVersionByArchitecture"], {"x86_64": "10.15", "arm64": "11.0"})
         self.assertEqual(manifest["CFBundleExecutable"], "rig-check")
         self.assertEqual(manifest["CFBundleIconFile"], "AppIcon.icns")
+
+    def test_runtime_artwork_in_relocated_bundle(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage = Path(folder) / "stage"
+            staged_app = stage / "Variax Workbench.app"
+            package.stage_artwork(staged_app)
+            installed_app = Path(folder) / "Mac Applications" / staged_app.name
+            installed_app.parent.mkdir()
+            shutil.move(str(staged_app), str(installed_app))
+            root = installed_app / package.BUNDLE_ARTWORK
+            self.assertEqual(package.verify_artwork(installed_app), 10)
+            self.assertEqual(len((root / package.ARTWORK_MANIFEST).read_text().splitlines()), 10)
+            for name in ("workbench-mark.png", "variax.png", "podxt-live.png"):
+                self.assertTrue((root / "shell" / name).is_file(), name)
+
+    def test_runtime_artwork_rejects_missing_extra_or_corrupt_files(self):
+        for name, contents, error in (
+            ("shell/variax.png", None, "missing"),
+            ("shell/unapproved.png", b"extra", "unexpected"),
+            ("shell/podxt-live.png", b"changed", "Artwork checksum mismatch"),
+            (package.ARTWORK_MANIFEST, b"changed", "manifest differs"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                bundle = Path(folder) / "Variax Workbench.app"
+                package.stage_artwork(bundle)
+                path = bundle / package.BUNDLE_ARTWORK / name
+                if contents is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(contents)
+                with self.assertRaisesRegex(ValueError, error):
+                    package.verify_artwork(bundle)
 
 
 if __name__ == "__main__":
