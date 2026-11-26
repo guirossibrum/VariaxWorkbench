@@ -6,7 +6,7 @@ use line6_devices::{
     family::{
         podxt::check_live_identity,
         variax::{
-            backup::{SnapshotCoverage, ValidatedSnapshot, validate_snapshot},
+            backup::{CaptureReceipt, SnapshotCoverage, ValidatedSnapshot, validate_snapshot},
             procedures::check_identity,
         },
     },
@@ -93,6 +93,15 @@ enum Coverage {
     Programs,
 }
 
+impl From<SnapshotCoverage> for Coverage {
+    fn from(coverage: SnapshotCoverage) -> Self {
+        match coverage {
+            SnapshotCoverage::Metadata => Self::Settings,
+            SnapshotCoverage::FullPrograms => Self::Programs,
+        }
+    }
+}
+
 impl Coverage {
     fn snapshot(self) -> SnapshotCoverage {
         match self {
@@ -107,20 +116,6 @@ impl Coverage {
             Self::Programs => BackupSource::FullBackup,
         }
     }
-}
-
-/// Reserved for a sealed capture finalizer that owns the selected attachment
-/// under the rig lock through the sweep, verified return and checked release
-/// of the same link. It must bind the profile, relay, source path and strict
-/// manifest to that sweep. The existing #284 check compares the data but
-/// accepts a caller-supplied cleanup result and an editable sweep object.
-/// Until the finalizer exists, this type has no production issuer.
-pub struct VariaxCaptureProof {
-    key: VariaxCacheKey,
-    source: PathBuf,
-    captured_at: SystemTime,
-    coverage: Coverage,
-    manifest_sha256: String,
 }
 
 /// The private on-disk receipt is the publication marker. Its path is
@@ -164,14 +159,27 @@ impl PublishedVariaxSnapshot {
 }
 
 impl LibraryPreferences {
-    /// Stage a copy under the selected profile and publish one receipt after
-    /// the independent copy verifies. The proof is consumed by this attempt.
-    pub fn publish_variax_cache(
-        &self,
-        source: &Path,
-        proof: VariaxCaptureProof,
-    ) -> Result<(), String> {
-        self.stage_variax_cache(source, proof)?.publish()
+    /// Consume the sealed capture receipt and publish an independently
+    /// validated copy under its selected profile.
+    ///
+    /// ```compile_fail,E0308
+    /// use line6_devices::family::variax::backup::ValidatedSnapshot;
+    /// use variax_workbench::variax_library::LibraryPreferences;
+    ///
+    /// fn publish_compatibility_snapshot(prefs: &LibraryPreferences, backup: ValidatedSnapshot) {
+    ///     let _ = prefs.publish_variax_cache(backup);
+    /// }
+    /// ```
+    pub fn publish_variax_cache(&self, capture: CaptureReceipt) -> Result<(), String> {
+        let key = VariaxCacheKey::new(capture.profile(), capture.guitar(), capture.relay())?;
+        self.stage_variax_cache(
+            capture.source(),
+            key,
+            capture.coverage(),
+            capture.captured_at(),
+            capture.manifest_sha256(),
+        )?
+        .publish()
     }
 
     /// Revalidate newest first within one profile and supported firmware tuple.
@@ -228,42 +236,38 @@ impl LibraryPreferences {
     fn stage_variax_cache(
         &self,
         source: &Path,
-        proof: VariaxCaptureProof,
+        key: VariaxCacheKey,
+        coverage: SnapshotCoverage,
+        captured_at: SystemTime,
+        manifest_sha256: &str,
     ) -> Result<Staged, String> {
-        let source = std::path::absolute(source).map_err(|error| error.to_string())?;
-        if source != proof.source {
-            return Err("The Variax backup path differs from the capture proof.".into());
+        let (root, profile) = self.cache_dirs(&key)?;
+        let snapshot = validate_snapshot(source, &key.guitar.identity(), coverage)?;
+        if snapshot.manifest_sha256() != manifest_sha256 {
+            return Err("The Variax backup manifest differs from the capture receipt.".into());
         }
-        let snapshot = validate_snapshot(
-            &source,
-            &proof.key.guitar.identity(),
-            proof.coverage.snapshot(),
-        )?;
-        if snapshot.manifest_sha256() != proof.manifest_sha256 {
-            return Err("The Variax backup manifest differs from the capture proof.".into());
-        }
-        let entries = manifest_paths(&source, snapshot.manifest_sha256())?;
+        let entries = manifest_paths(source, manifest_sha256)?;
 
-        let (root, profile) = self.cache_dirs(&proof.key)?;
         for dir in [self.variax.directory.as_path(), &root, &profile] {
             create_synced_dir(dir)?;
         }
 
         let (reservation, directory) =
-            stage_snapshot(&profile, &source, &entries, Some(COPY_BYTES))?;
+            stage_snapshot(&profile, source, &entries, Some(COPY_BYTES))?;
         let generation = reservation
             .path()
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or("Invalid Variax cache generation name.")?;
         let target = profile.join(format!("{generation}.json"));
+        let coverage = Coverage::from(coverage);
         let receipt = Receipt {
             schema: SCHEMA,
-            key: proof.key,
-            captured_at: proof.captured_at,
-            source: proof.coverage.source(),
-            coverage: proof.coverage,
-            manifest_sha256: proof.manifest_sha256,
+            key,
+            captured_at,
+            source: coverage.source(),
+            coverage,
+            manifest_sha256: manifest_sha256.into(),
             snapshot: format!("{generation}/library"),
         };
         Ok(Staged {
