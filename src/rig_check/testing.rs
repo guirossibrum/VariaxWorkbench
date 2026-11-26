@@ -373,7 +373,7 @@ mod tests {
             RunData::default(),
         );
         for (id, units, total) in [
-            (StepId(2, 4), "channels", 4),
+            (StepId(2, 3), "channels", 1),
             (StepId(2, 5), "entries", 299),
             (StepId(3, 4), "presets", 60),
             (StepId(3, 5), "presets", 1),

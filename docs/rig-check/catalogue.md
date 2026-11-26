@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.4 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.5 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -109,7 +109,6 @@ owner-rig issue or card that proved the procedure.
 | 2.1 | PODxt Live identity and firmware | 1.1 | G2 | Read | #213, [identity card](../automatic-identity-owner-test-card.md) |
 | 2.2 | PODxt Live current tone | 2.1 | G3 | Read | #220, [reads card](../podxt-live-reads-test-card.md) |
 | 2.3 | PODxt Live one stored channel | 2.2 | G5 | Read | #220 |
-| 2.4 | PODxt Live one bank (A–D) | 2.3 | G5 | Read | #220 |
 | 2.5 | PODxt Live full library backup | 2.2 | G5 | Read | #220, #222 |
 | 2.7 | Compatibility check for other firmware versions (PODxt Live) | 2.1 | None, uses captured identity | Read | #277 |
 | 3.1 | Variax identity, model and firmware | 1.2, 2.1 | G2 | Read | #213 |
@@ -260,16 +259,12 @@ firmware, and step 3.1 checks the Variax firmware.
   you are playing does not change.
 - **Risk:** Read. **Evidence:** dump, SHA-256, shape check.
 
-### 2.4 PODxt Live one bank (A–D)
-- **What it does:** Reads the four channels of one bank.
-- **Risk:** Read. **Evidence:** four dumps, SHA-256 each.
-
 ### 2.5 PODxt Live full library backup
 - **What it does:** Reads all 128 tones, 107 amp setups and 64 FX setups
-  (299 entries) and saves them to the evidence folder. Reads from 2.3 and
-  2.4 are compared with it: content differences are reported separately
-  from lost bytes. The tone you play is read again at the end to show it
-  did not change.
+  (299 entries) and saves them to the evidence folder. Rig Check compares
+  channel 1A with the independent read in 2.3 and reports a content difference
+  separately from a lost reply. It reads the playing tone again at the end
+  to verify it stayed the same. The verified backup is required for step 5.2.
 - **SEE:** The number of entries read out of 299.
 - **Risk:** Read. **Evidence:** entry count, SHA-256 per entry and of the
   manifest, before/after current tone.
@@ -482,6 +477,8 @@ return to your starting preset.
 
 ## Changes
 
+- 1.5 (2026-11-25): removed the standalone bank read (2.4). The full
+  library backup (2.5) reads all banks. Other step numbers stay the same.
 - 1.4 (2026-11-25): named the editor read in 3.5 and removed the repeated bank sweep (3.6).
 - 1.3 (2026-11-25): clarified where firmware is checked and added result navigation (#276).
 - 1.2 (2026-11-25): added app-message and Follow coverage and strict save prerequisites.

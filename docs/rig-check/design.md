@@ -5,6 +5,8 @@
 headless from the running code (`rig-check --mockups DIR`, a software
 renderer: no window, display server, GPU or device). They use the shared UI
 theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
+The sidebar follows catalogue 1.5, which goes from the stored channel read
+(2.3) to the full PODxt library backup (2.5).
 
 | Screen | File |
 | --- | --- |

@@ -188,12 +188,6 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                         "Channel 1A: Practice 1A",
                         "does its display show the same name?",
                     ],
-                    StepId(2, 4) => &[
-                        "Channel 1A: Practice 1A",
-                        "Channel 1B: Practice 1B",
-                        "Channel 1C: Practice 1C",
-                        "Channel 1D: Practice 1D",
-                    ],
                     StepId(2, 5) => &["Read 299 of 299 entries"],
                     StepId(2, 6) => &["Editor Get: 5B", "global values answered"],
                     StepId(3, 1) => &["Variax 300/600", "firmware 3.10 (verified device)"],
@@ -281,9 +275,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
     drop(to_runner);
     let (passed, elapsed) = worker.join().unwrap();
     assert!(elapsed >= guided_delay);
-    assert_eq!(passed, 36);
-    assert_eq!(cards, 36);
-    assert_eq!(results, 36);
+    assert_eq!((passed, cards, results), (35, 35, 35));
 }
 
 #[test]

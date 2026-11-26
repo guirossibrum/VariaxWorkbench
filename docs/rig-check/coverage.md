@@ -22,7 +22,7 @@ exercise full program payloads.
 | PODxt editor and Tone Locker whole-tone Send | Complete `03 74` payload into the playing buffer and exact read-back | 4.6 |
 | PODxt editor and Device Check channel recall | Program change with starting and saved-tone checks | 4.7 |
 | PODxt editor and Tone Locker Save | Addressed tone frame and commit, one receipt wait, stored read-back | 5.2 |
-| PODxt editor and Device Check library reads and backup | Current and addressed reads of tone channels, amp setups and FX setups | 2.2–2.6 |
+| PODxt editor and Device Check library reads and backup | Current and addressed reads of tone channels, amp setups and FX setups | 2.2, 2.3, 2.5, 2.6 |
 | PODxt editor Follow | Shared Follow decodes channel and controller updates, then re-reads a named channel | 7.3–7.5 |
 | PODxt tuner | Tuner-mode CC on/off and global note and deviation polls | 4.8 |
 | USB/driver verification, claim, release and re-attach | Read-only USB discovery, Rig Check claim/release and driver-binding check, verified identity after VDI replug | 0.2, 1.1, 1.2, 6.1, 6.2 |
@@ -68,7 +68,7 @@ Real runs save raw evidence by default in the report's companion folder.
 | 4.4, 5.3 | Lower trim by 6 dB when it fits. Raise it by 6 dB near the minimum. A preset whose affected words cannot be reproduced skips the edit. |
 | 4.5 | Test a different low-string tuning when tuning is already on. Acoustic presets and sitar skip. |
 | 4.1 | Stomp toggles from either state. Drive moves away from the upper limit. Tempo outside the editable range skips only the tempo comparison. |
-| 2.3, 2.4 | Use fixed read addresses as test targets, independently of the playing channel. |
+| 2.3, 2.5 | Read 1A by address independently of the playing channel, then compare it against the full backup. |
 | 2.2, 2.5, 3.3–3.5, 4.6–4.7, 6.2, 7.1, 7.3 | Use the reported or identified starting state and verified backups. Other selections are derived from the starting slot. Captured unsaved edits are restored and verified. |
 | 5.1, 5.3, 5.4 | Flash 40–59 skips while spare 62 cannot be verified. A store that would change the backup when the firmware stamps it also skips. |
 | All device paths | Keep the verified attachment, firmware, gate and backup requirements. Checksum violations, bad read-backs and uncertain stores still stop writes. |
