@@ -6,6 +6,8 @@ use crate::backup::{BackupFolder, read_optional, verify_manifest};
 use std::path::Path;
 
 mod snapshot;
+#[cfg(all(feature = "usb", target_os = "macos"))]
+pub use snapshot::capture_macos_usb_library;
 pub use snapshot::{
     CaptureLink, CaptureReceipt, FinalizedCapture, SnapshotReport, capture_library,
     validate_snapshot,
