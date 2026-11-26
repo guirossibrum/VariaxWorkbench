@@ -197,8 +197,8 @@ Respect native dependencies and keep at most one implementation issue In Progres
 per agent. The user explicitly authorized parallel agents on separate issues:
 use a disposable implementation worktree/branch per issue, preserve the main
 checkout, and merge each completed issue only after review and offline checks.
-Read `docs/parallel-work.md` for current issue ownership; do not duplicate another
-agent's reserved issues or remove another agent's worktree.
+Read `docs/parallel-work.md` for current issue ownership and the delivery and
+cleanup procedure. Do not duplicate another agent's reserved issues.
 
 Target 30–60 minutes of agent time per issue; after more than two review rounds,
 stop and propose splitting the issue.
@@ -239,6 +239,16 @@ Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
 worktree, runs the checks listed under Implementation (plus the crate and probe
 checks when touched), and pushes that tested result to `origin/master`. It also
-updates the issues and the ledgers, and deletes the merged worktree's `target/`.
+updates the issues and the ledgers.
+
+After committing and checking the worktree, the lane agent leaves it and reports
+its path, branch, commit, and any local files that must be kept. If review needs
+changes, the Gatekeeper sends the agent back to the same worktree. After verifying
+the delivery is on `origin/master`, the Gatekeeper may remove that individual
+worktree with `git worktree remove` without force, once the lane has left, no
+process is using it, and its local files are verified disposable. Preserve active,
+unmerged, dirty, and owner-test worktrees, and any worktree with local evidence or
+other files to keep. Follow the checks in `docs/parallel-work.md`.
+
 Do not merge from, reset or switch the main checkout. Gatekeepers make no device
 runs; the owner runs every hardware check.

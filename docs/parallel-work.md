@@ -34,8 +34,8 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 - One worktree and branch per issue, created from `origin/master` under the
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).
-  Never work in the main checkout. Never remove, reset, stash or clean another
-  agent's worktree.
+  Use the issue worktree for changes. Leave other agents' worktrees alone.
+  The Gatekeeper handles cleanup after integration.
 - Rebase onto `origin/master` before delivering.
 - Run `cargo fmt --all -- --check`, `cargo clippy --offline --all-features
   --all-targets -- -D warnings` and `cargo test --offline --all-features`, plus
@@ -45,10 +45,33 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 - Commit locally with focused commits. **No push, no PR and no GitHub posts.**
   A Gatekeeper (Claude Code or Codex) reviews, tests the merge result,
   pushes it to `origin/master` and updates the issues (see AGENTS.md).
-- Stop after each issue and report: commits, what changed, test counts, and
-  anything that affects devices.
+- At delivery, check the worktree for tracked changes, untracked files, and
+  ignored files that need to be kept. Stop worktree-local builds or watchers
+  you started and move your shell to a stable directory outside the worktree.
+  Report the worktree's absolute path, branch, commit, test counts, what
+  changed, device impact, and whether you and your processes have left. List
+  any local files to keep, including owner tools, evidence and private inputs.
+- For review changes, return to the same worktree named by the Gatekeeper,
+  then repeat the delivery check and report.
 - Keep one issue in progress per agent. Target 30–60 minutes of agent time per
   issue; after two review rounds, propose a split.
+
+## Worktree cleanup after merge
+
+The Gatekeeper confirms that the reported worktree and its current commit match
+the delivery and that the commit is an ancestor of the verified
+`origin/master`. Check that the lane has left, no shell, build, watcher or other
+process is using the worktree, and no tracked changes, untracked files or ignored
+artifacts need to be kept. Keep the checkout if verification is incomplete, the
+delivery needs more work, or the worktree holds owner tools, private inputs,
+or test evidence.
+
+From outside the worktree, remove one verified worktree at a time with
+`git worktree remove <validated-worktree-path>`, without force. If Git refuses,
+investigate the reason. Retry only after resolving it, such as by clearing
+explicitly verified disposable build output. Keep the branch and confirm the
+worktree is gone from `git worktree list`. Preserve the main checkout and leave
+shared build directories alone.
 
 ## Boundaries
 
