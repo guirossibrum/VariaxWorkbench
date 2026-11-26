@@ -290,6 +290,21 @@ fn notifications_update_the_current_snapshot_and_saved_preview_independently() {
     assert_eq!(snapshot.tap, Some(now + PULSE));
 }
 
+fn render_stage(
+    ctx: &egui::Context,
+    app: &mut Workbench,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    ctx.run(
+        egui::RawInput {
+            events,
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0))),
+            ..Default::default()
+        },
+        |ctx| app.render(ctx),
+    )
+}
+
 fn stage_frame(ctx: &egui::Context, app: &mut Workbench) -> String {
     fn collect(shape: &egui::epaint::Shape, text: &mut String) {
         match shape {
@@ -305,13 +320,7 @@ fn stage_frame(ctx: &egui::Context, app: &mut Workbench) -> String {
     }
     let mut output = String::new();
     for _ in 0..2 {
-        let frame = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0))),
-                ..Default::default()
-            },
-            |ctx| app.render(ctx),
-        );
+        let frame = render_stage(ctx, app, vec![]);
         output.clear();
         for shape in &frame.shapes {
             collect(&shape.shape, &mut output);
@@ -360,11 +369,16 @@ fn complete_backup(root: &std::path::Path, active: &str, saved: &str) -> PathBuf
     folder
         .file("current-after.syx", &valid_dump(active).raw)
         .unwrap();
-    let saved = valid_dump(saved);
-    for slot in Location::all(&BankKind::ALL) {
-        folder
-            .file(&podxt::backup::podxt_entry_name(slot), &saved.raw)
-            .unwrap();
+    for (kind, name) in BankKind::ALL
+        .into_iter()
+        .zip([saved, "Backup Amp", "Backup FX"])
+    {
+        let dump = valid_dump(name);
+        for slot in Location::all(&[kind]) {
+            folder
+                .file(&podxt::backup::podxt_entry_name(slot), &dump.raw)
+                .unwrap();
+        }
     }
     folder.finish(true).unwrap()
 }
@@ -583,3 +597,5 @@ fn disconnected_stage_loads_backup_and_no_backup_shows_labelled_default() {
     assert!(!visible.contains("Open a tone or create a new one"));
     assert!(!app.podxt().dirty());
 }
+
+mod stage_acceptance;

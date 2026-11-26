@@ -36,6 +36,9 @@ pub(super) struct LivePanel {
     panel: Option<StagePanel>,
     scroll_to_panel: bool,
     message: Option<String>,
+    // Count intent before admission so the test transport cannot mask it.
+    #[cfg(test)]
+    device_requests: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -368,6 +371,10 @@ impl LivePanel {
     }
 
     fn start(&mut self, command: ReadCommand, ctx: &egui::Context) {
+        #[cfg(test)]
+        {
+            self.device_requests += 1;
+        }
         let Some(device) = self.device.clone() else {
             return;
         };
@@ -575,6 +582,10 @@ impl LivePanel {
     }
 
     pub(super) fn refresh_current(&mut self, ctx: &egui::Context) {
+        #[cfg(test)]
+        {
+            self.device_requests += 1;
+        }
         if !self.busy()
             && let Some(device) = &self.device
         {
@@ -596,6 +607,10 @@ impl LivePanel {
     }
 
     pub(super) fn recall(&mut self, slot: Location, ctx: &egui::Context) {
+        #[cfg(test)]
+        {
+            self.device_requests += 1;
+        }
         if self.live_editing
             && !self.busy()
             && let Some(device) = &self.device
