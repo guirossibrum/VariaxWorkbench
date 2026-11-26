@@ -52,6 +52,10 @@ enum NewFileContents {
 }
 
 impl NewFile {
+    fn is_model(&self) -> bool {
+        matches!(self.contents, NewFileContents::Template(FileKind::Model))
+    }
+
     pub(super) fn destination(&self, path: &Path) -> Result<PathBuf, String> {
         match &self.contents {
             NewFileContents::Template(_) => Ok(path.to_owned()),
@@ -72,24 +76,13 @@ impl VariaxEditor {
     pub(super) fn new_file_menu(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         let menu = ui.menu_button("New Variax file", |ui| {
             for kind in [FileKind::Model, FileKind::Bundle, FileKind::Collection] {
-                let (label, suggested, extension) = kind.commands();
+                let (label, _, _) = kind.commands();
                 let response = ui.button(label);
                 #[cfg(test)]
                 self.new_file_buttons.insert(label, response.rect);
                 if response.clicked() {
                     ui.close();
-                    let request = PickRequest::SaveWorkbenchFile {
-                        name: suggested.into(),
-                        extension: extension.into(),
-                    };
-                    services.request_picker::<Self>(ui.ctx(), request, move |editor, path, _| {
-                        if let Some(path) = path {
-                            editor.queue_new_file(NewFile {
-                                path: super::slot_files::with_file_extension(path, extension),
-                                contents: NewFileContents::Template(kind),
-                            });
-                        }
-                    });
+                    Self::choose_new_file(kind, ui.ctx(), services);
                 }
             }
             #[cfg(feature = "usb")]
@@ -110,6 +103,73 @@ impl VariaxEditor {
             .insert("New Variax file", menu.response.rect);
         #[cfg(not(test))]
         let _ = menu;
+    }
+
+    fn choose_new_file(
+        kind: FileKind,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) -> bool {
+        let (_, suggested, extension) = kind.commands();
+        let request = PickRequest::SaveWorkbenchFile {
+            name: suggested.into(),
+            extension: extension.into(),
+        };
+        services.request_picker::<Self>(ctx, request, move |editor, path, _| {
+            if let Some(path) = path {
+                editor.queue_new_file(NewFile {
+                    path: super::slot_files::with_file_extension(path, extension),
+                    contents: NewFileContents::Template(kind),
+                });
+            }
+        })
+    }
+
+    fn report_new_model_collision(&mut self, path: &Path) -> bool {
+        // Also catch a dangling symlink. The final save still uses the atomic
+        // non-overwriting path, regardless of this advisory check.
+        if std::fs::symlink_metadata(path).is_err() {
+            return false;
+        }
+        self.new_model_collision = Some(path.to_owned());
+        self.error = None;
+        true
+    }
+
+    pub(super) fn new_model_collision_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
+        let Some(path) = &self.new_model_collision else {
+            return;
+        };
+        let modal = egui::Modal::new(egui::Id::new("variax-new-model-collision")).show(ctx, |ui| {
+            ui.heading("Model filename already in use");
+            ui.label(path.display().to_string());
+            ui.horizontal(|ui| {
+                let retry = ui.button("Choose a different name…");
+                let cancel = ui.button("Cancel");
+                #[cfg(test)]
+                {
+                    services
+                        .prompt_buttons
+                        .insert("retry-new-model", retry.rect);
+                    services
+                        .prompt_buttons
+                        .insert("cancel-new-model-collision", cancel.rect);
+                }
+                (retry.clicked(), cancel.clicked())
+            })
+            .inner
+        });
+        let (retry, cancel) = modal.inner;
+        if cancel
+            || modal.should_close()
+            || retry && Self::choose_new_file(FileKind::Model, ctx, services)
+        {
+            self.new_model_collision = None;
+        }
     }
 
     #[cfg(feature = "usb")]
@@ -150,6 +210,9 @@ impl VariaxEditor {
     }
 
     fn queue_new_file(&mut self, pending: NewFile) {
+        if pending.is_model() && self.report_new_model_collision(&pending.path) {
+            return;
+        }
         if let Err(error) = pending.destination(&pending.path) {
             self.error = Some(error);
             return;
@@ -164,8 +227,10 @@ impl VariaxEditor {
         let Some(pending) = self.new_file.take() else {
             return;
         };
+        let is_model = pending.is_model();
+        let requested = pending.path.clone();
         let result = (|| -> Result<_, String> {
-            let path = pending.destination(&pending.path)?;
+            let path = pending.destination(&requested)?;
             let (document, status) = match pending.contents {
                 NewFileContents::Template(kind) => (
                     kind.create(path.clone(), &self.new_model_author())?,
@@ -190,6 +255,7 @@ impl VariaxEditor {
                 self.adopt_document(document, Some(&path));
                 self.status = status;
             }
+            Err(_) if is_model && self.report_new_model_collision(&requested) => {}
             Err(error) => self.error = Some(error),
         }
     }
@@ -457,10 +523,11 @@ mod tests {
         let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
         choose_file(&ctx, &mut app, "New Model…");
         assert_eq!(fs::read(&collision).unwrap(), b"original");
-        assert!(app.variax().error.is_some());
+        assert!(app.has_prompt());
         assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
 
-        choose_file(&ctx, &mut app, "New Model…");
+        click_prompt(&ctx, &mut app, "retry-new-model");
+        frame(&ctx, &mut app, vec![]);
         let model = model.with_extension("vwm");
         let defaults = PresetFile::default_legacy_model().unwrap();
         assert_eq!(
@@ -517,6 +584,105 @@ mod tests {
                 .selected_preset()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn new_model_replace_choice_can_retry_or_cancel_without_losing_edits() {
+        let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("existing.vwm");
+        let replacement = directory.path().join("different.vwm");
+        let original_bytes = include_bytes!("../../../../tests/fixtures/editor-preset.vwm");
+        save_new(&original, original_bytes).unwrap();
+        app.variax_mut().load(&original);
+        app.variax_mut()
+            .change(|preset| preset.rename("Keep this edit"));
+        let edited = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+        app.dialogs = Box::new(FakeDialogs {
+            // A native Replace choice returns the existing path.
+            save: [
+                Some(original.clone()),
+                None,
+                Some(original.clone()),
+                Some(original.clone()),
+                Some(replacement.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+
+        let assert_preserved = |app: &Workbench| {
+            assert_eq!(fs::read(&original).unwrap(), original_bytes);
+            assert_eq!(
+                app.variax().source_path.as_deref(),
+                Some(original.as_path())
+            );
+            let document = app.variax().document.as_ref().unwrap();
+            assert_eq!(document.as_bytes(), edited);
+            assert!(document.is_dirty() && document.can_undo());
+        };
+
+        choose_file(&ctx, &mut app, "New Model…");
+        assert_preserved(&app);
+        assert!(
+            app.variax().new_file.is_none(),
+            "a known collision should offer a different name before asking about unsaved edits"
+        );
+        click_prompt(&ctx, &mut app, "retry-new-model");
+        frame(&ctx, &mut app, vec![]);
+        assert!(!app.has_prompt());
+        assert_preserved(&app);
+
+        choose_file(&ctx, &mut app, "New Model…");
+        click_prompt(&ctx, &mut app, "cancel-new-model-collision");
+        assert!(!app.has_prompt());
+        assert_preserved(&app);
+
+        choose_file(&ctx, &mut app, "New Model…");
+        click_prompt(&ctx, &mut app, "retry-new-model");
+        frame(&ctx, &mut app, vec![]);
+        assert!(!replacement.exists());
+        assert_preserved(&app);
+        click_prompt(&ctx, &mut app, "discard");
+
+        let document = app.variax().document.as_ref().unwrap();
+        assert_eq!(document.as_bytes(), fs::read(&replacement).unwrap());
+        assert_eq!(document.preset().name(), "Default Patch");
+        assert!(!document.is_dirty());
+        assert_eq!(
+            app.variax().source_path.as_deref(),
+            Some(replacement.as_path())
+        );
+        assert_eq!(fs::read(original).unwrap(), original_bytes);
+    }
+
+    #[test]
+    fn a_destination_created_during_the_unsaved_prompt_offers_retry() {
+        let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("new.vwm");
+        app.variax_mut()
+            .change(|preset| preset.rename("Keep this edit"));
+        let edited = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(destination.with_extension(""))].into(),
+            ..Default::default()
+        });
+
+        choose_file(&ctx, &mut app, "New Model…");
+        assert!(app.has_prompt());
+        save_new(&destination, b"concurrent file").unwrap();
+        click_prompt(&ctx, &mut app, "discard");
+        assert!(
+            app.has_prompt(),
+            "late collision should offer a different name"
+        );
+        click_prompt(&ctx, &mut app, "cancel-new-model-collision");
+
+        assert_eq!(fs::read(destination).unwrap(), b"concurrent file");
+        let document = app.variax().document.as_ref().unwrap();
+        assert_eq!(document.as_bytes(), edited);
+        assert!(document.is_dirty() && document.can_undo());
     }
 
     #[cfg(feature = "usb")]
