@@ -122,6 +122,8 @@ pub struct SimRig {
     pub written: Vec<(&'static str, Vec<u8>)>,
     #[cfg(test)]
     pub(super) next_podxt_dump: Option<TestPodxtDump>,
+    #[cfg(test)]
+    pub(super) variax_evidence_replay: Option<Vec<Vec<u8>>>,
     pub variax_claimed: bool,
     pub driver_bound: bool,
 }
@@ -311,6 +313,8 @@ impl SimRig {
             span_replies: 0,
             #[cfg(test)]
             next_podxt_dump: None,
+            #[cfg(test)]
+            variax_evidence_replay: None,
             written: Vec::new(),
             variax_claimed: false,
             driver_bound: true,
@@ -367,6 +371,10 @@ impl SimRig {
     }
 
     pub(super) fn variax_evidence_replies(&self) -> Vec<Vec<u8>> {
+        #[cfg(test)]
+        if let Some(replies) = &self.variax_evidence_replay {
+            return replies.clone();
+        }
         let mut replies = vec![
             self.variax_identity(),
             self.variax_span_reply(851, 32),
