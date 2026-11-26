@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #206 device prerequisite adds a gated six-word global string-level RAM read, backup, temporary set and verified restoration, plus a separately gated single store request. Twelve new offline tests verify the transactions. [Lane 3 API and owner verification draft](variax-string-levels.md).
+
 - [x] Rig Check catalogue 1.5 removes the standalone PODxt bank read (2.4). The 299-entry backup in 2.5 still verifies the separate 1A read and protects the PODxt save. Practice runs prove that later checks and the save proceed after a verified backup, and a mismatch keeps the run read-only. Offline tests passed (1,099 app, 207 device, 72 owner-tool). [Coverage](rig-check/coverage.md).
 
 - [x] The [Windows package smoke test](windows-package.md) checks the structured Rig Check report for the Windows connection notice and zero messages on device steps. Synthetic reports verify that the offline firmware comparison can skip for a missing identity and that the build skips the host USB and audio inventories. Five Python packaging tests passed. The native MSVC package run and desktop checks remain pending.
