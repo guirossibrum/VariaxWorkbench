@@ -231,7 +231,43 @@ impl VariaxEditor {
 mod tests {
     use super::*;
     use crate::editor::{PathBuf, Workbench};
-    use variax_workbench::ui::body_canvas::rotate_degrees;
+    use variax_workbench::ui::body_canvas::{
+        POSITION_MAX, POSITION_MIN, move_inches, pickup_limits, rotate_degrees,
+    };
+
+    #[test]
+    fn pickup_drag_divisor_differs_from_workbench_175() {
+        // Exact results from Workbench 1.75 build 121's pickup control and
+        // position parameter, run with synthetic image dimensions in headless AWT.
+        const LESTER: u32 = 0x0310_0004;
+        const FIREBIRD: u32 = 0x0310_0009;
+        let cases = [
+            (LESTER, (26, 93), 100.0, 405, 0x40e3_df23),
+            (LESTER, (110, 30), 100.0, 385, 0x40e7_bada),
+            (FIREBIRD, (110, 30), -100.0, 292, 0x3fca_5863),
+            (LESTER, (26, 93), 198.0, 405, 0x4116_5433),
+            (FIREBIRD, (110, 30), 147.0, 292, 0x4118_0000),
+            (FIREBIRD, (110, 30), -147.0, 292, 0x3dcc_cccd),
+        ];
+        let origin = 4.8_f32;
+        let span = POSITION_MAX - POSITION_MIN;
+        let normalized_origin = (origin - POSITION_MIN) / span;
+        for (body, (width, height), dx, expected_divisor, original_bits) in cases {
+            let limits = pickup_limits(body);
+            let placement = limits.placement();
+            let padded_width = (f64::from(i32::max(width, height)) * 1.15) as i32;
+            let drag_divisor = limits.right - limits.left - padded_width;
+            assert_eq!(drag_divisor, expected_divisor);
+            let normalized = (normalized_origin + dx / drag_divisor as f32).clamp(0.0, 1.0);
+            let original = normalized * span + POSITION_MIN;
+            assert_eq!(original.to_bits(), original_bits, "{body:#x}: {dx:+} px");
+
+            // Replace this mismatch check with equality on the shared canvas
+            // event once it uses the grabbed pickup's padded width.
+            let current = move_inches(origin, dx, placement);
+            assert_ne!(current.to_bits(), original_bits, "{body:#x}: {dx:+} px");
+        }
+    }
 
     #[test]
     fn catalog_bodies_use_their_pickup_placement_for_rendering_and_dragging() {
