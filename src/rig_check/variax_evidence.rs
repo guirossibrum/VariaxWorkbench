@@ -15,7 +15,7 @@ use line6_devices::{
     midi::hex,
 };
 
-pub const NOTICE: &str = "Variax firmware evidence mode. This guitar reports firmware other than 3.10. Its response to the diagnostic reads has not been verified. Keep the rig powered and connected, and leave the selector and knobs alone. Rig Check will only read the current sound. Choose Run on the evidence card to collect replies. The regular rig checks end here.";
+pub const NOTICE: &str = "Variax firmware evidence mode. This guitar reports firmware other than 3.10. Its response to the diagnostic reads has not been verified. Keep the rig powered and connected, and leave the selector and knobs alone. Rig Check will only read the current sound. Choose Run on the evidence card to collect replies. PODxt Live checks can continue after this Variax check.";
 
 pub const RELAY_REASON: &str = "The Variax relay was verified with PODxt Live firmware 3.01. Only the Variax evidence read is offered on an unverified PODxt Live relay.";
 pub const RELAY_NOTICE: &str = "Variax firmware evidence mode. The PODxt Live reports firmware other than 3.01, so its Variax relay has not been verified. Keep both devices powered and connected. Leave the selector and knobs alone. The evidence step will ask before reading the current sound. The regular rig checks end here.";
@@ -83,12 +83,38 @@ pub fn read(ctx: &mut Ctx<'_>) -> Result<(), String> {
             chunk.span.reply_bytes(),
         );
     }
+    if let Some(root) = &ctx.data.evidence_dir {
+        let mut files = Vec::new();
+        if let Ok(program) = &read {
+            files.push((
+                "identity.bin".into(),
+                program.settings.identified.reply.clone(),
+            ));
+            for (index, reply) in program.settings.replies.iter().enumerate() {
+                files.push((format!("settings-{}.bin", index + 1), reply.clone()));
+            }
+        }
+        for chunk in &chunks {
+            files.push((
+                format!("reply-{:04}.bin", chunk.span.start()),
+                chunk.raw.clone(),
+            ));
+        }
+        let folder = ctx.rec.evidence_folder("variax-compatibility");
+        super::evidence::save_folder(root, &folder, &files)?;
+        ctx.rec.note(format!(
+            "Saved {} compatibility replies in {folder}.",
+            files.len()
+        ));
+    }
     let read = read.inspect_err(|_| {
         ctx.rec.note(format!(
             "Partial evidence: received {} of {CHUNK_COUNT} complete program replies. See the message log for received packets.",
             chunks.len()
         ));
     })?;
+    ctx.data.variax_identity = Some(read.settings.identified.identity.clone());
+    ctx.data.variax_verified = Some(read.firmware == FirmwareStatus::Verified310);
     record_layout(ctx, &read);
     ctx.rec.show(format!(
         "Collected the identity, two settings replies and {} program replies for comparison with firmware 3.10.",
@@ -204,8 +230,8 @@ mod tests {
         let (run, data) = run_on(&mut port, &mut operator, &mut NoReport, RunData::default());
         assert_eq!(operator.notices.last().map(String::as_str), Some(NOTICE));
         assert!(matches!(
-            &operator.cards[operator.cards.len() - 2..],
-            [StepId(3, 1), VARIAX_EVIDENCE]
+            operator.cards.iter().find(|id| **id == VARIAX_EVIDENCE),
+            Some(&VARIAX_EVIDENCE)
         ));
         let evidence = run.step(VARIAX_EVIDENCE);
         assert!(evidence.outcome.passed(), "{evidence:?}");
@@ -251,20 +277,21 @@ mod tests {
                     || bytes == "f0 7e 7f 06 01 f7")
         );
         assert!(data.start_program.is_none() && data.variax_library.is_empty());
-        assert_eq!(run.step(StepId(3, 4)).outcome, Outcome::NotReached);
+        assert!(matches!(
+            run.step(StepId(3, 4)).outcome,
+            Outcome::SkippedNotApplicable(_)
+        ));
+        assert!(run.step(StepId(5, 2)).outcome.passed());
         let rig = rig.borrow();
         assert_eq!(rig.variax.active, original);
         assert_eq!((rig.variax.stores, rig.variax.working_uploads), (0, 0));
         assert!(
             !rig.written
                 .iter()
-                .any(|(_, bytes)| bytes.first() == Some(&0xc0))
+                .any(|(device, bytes)| *device == "VariaxViaPodxt" && bytes.first() == Some(&0xc0))
         );
         assert!(rig.driver_bound && !rig.variax_claimed);
-        assert!(matches!(
-            run.step(RIG_GUARD).outcome,
-            Outcome::NotAvailable(_)
-        ));
+        assert!(run.step(RIG_GUARD).outcome.passed());
     }
 
     #[test]

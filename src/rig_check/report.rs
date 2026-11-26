@@ -51,16 +51,18 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
     );
 
     section(&mut out, "SUMMARY");
+    let _ = writeln!(out, "{}", run.rig_description);
     for mismatch in run.look_mismatches() {
         let _ = writeln!(out, "{mismatch}");
     }
     let _ = writeln!(
         out,
-        "Passed {} · Failed {} · Skipped by you {} · Skipped (tested firmware) {} · Skipped (needs) {} · Not authorized {} · Not available {} · Unverified device {} · Stopped {} · Not reached {}",
+        "Passed {} · Failed {} · Skipped by you {} · Skipped (tested firmware) {} · Skipped (not applicable) {} · Skipped (needs) {} · Not authorized {} · Not available {} · Unverified device {} · Stopped {} · Not reached {}",
         run.count("passed"),
         run.count("failed"),
         run.count("skipped"),
         run.count("skipped_verified_firmware"),
+        run.count("skipped_not_applicable"),
         run.count("skipped_needs"),
         run.count("not_authorized"),
         run.count("not_available"),
@@ -72,6 +74,13 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
         let _ = writeln!(out, "You stopped the run at step {stop}.");
     }
     let _ = writeln!(out, "Rig state: {}", run.rig_state);
+    let differences: Vec<_> = run.report_differences().collect();
+    if !differences.is_empty() {
+        let _ = writeln!(out, "Differences to review");
+        for difference in differences {
+            let _ = writeln!(out, "  {difference}");
+        }
+    }
     for step in &run.steps {
         let reason = step
             .outcome
@@ -157,6 +166,9 @@ fn render_step(out: &mut String, step: &StepRecord) {
     if let Some(look) = &step.look {
         let _ = writeln!(out, "  Look check: {}", look.report_line());
     }
+    for line in step.technical_lines() {
+        let _ = writeln!(out, "  {line}");
+    }
     if !step.answers.is_empty() {
         let _ = writeln!(out, "  Your answers:");
         for (question, answer) in &step.answers {
@@ -229,7 +241,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
     let steps = run.steps.iter().map(json_step).collect::<Vec<_>>();
     let prior = run.prior_attempts.iter().map(json_step).collect::<Vec<_>>();
     format!(
-        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"rig_state\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
+        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"rig_state\":{},\"rig_description\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
         json_string(run.app_version),
         run.git_commit.map_or("null".into(), json_string),
         json_string(run.catalogue_version),
@@ -240,6 +252,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
         run.stopped_at
             .map_or("null".into(), |id| json_string(&id.to_string())),
         json_string(&run.rig_state),
+        json_string(&run.rig_description),
         json_pairs(&run.computer),
         json_pairs(&run.devices),
         steps.join(","),
@@ -249,7 +262,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
 
 fn json_step(step: &StepRecord) -> String {
     format!(
-        "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
+        "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"technical\":{},\"hints\":{}}}",
         json_string(&step.id.to_string()),
         json_string(step.title),
         json_string(step.outcome.code()),
@@ -271,6 +284,7 @@ fn json_step(step: &StepRecord) -> String {
         )),
         json_pairs(&step.checksums),
         json_list(&step.evidence),
+        json_list(&step.technical_lines().collect::<Vec<_>>()),
         json_list(&step.hints),
     )
 }

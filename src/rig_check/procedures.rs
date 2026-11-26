@@ -236,6 +236,13 @@ pub fn same_program(a: &Program, b: &Program) -> bool {
         .all(|(i, (x, y))| x == y || TONE_POSITION_WORDS.contains(&i))
 }
 
+pub fn unpack_program(bytes: &variax::Image) -> Program {
+    std::array::from_fn(|index| {
+        let [a, b, c] = bytes.as_chunks::<3>().0[index];
+        u32::from_be_bytes([0, a, b, c])
+    })
+}
+
 pub fn program_bytes(words: &Program) -> Vec<u8> {
     variax::pack(words).to_vec()
 }
@@ -253,6 +260,11 @@ pub fn settings_of(words: &Program) -> [u8; 192] {
 }
 
 pub const PODXT_IDENTITY: &[Operation] = &[Operation::PodxtIdentity];
+pub const PODXT_CHANNEL: &[Operation] = &[
+    Operation::PodxtIdentity,
+    Operation::PodxtRead,
+    Operation::PodxtGlobalRead,
+];
 pub const PODXT_READ: &[Operation] = &[Operation::PodxtIdentity, Operation::PodxtRead];
 pub const PODXT_LIBRARY: &[Operation] = &[
     Operation::PodxtIdentity,

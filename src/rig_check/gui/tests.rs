@@ -532,3 +532,22 @@ fn review_shows_the_start_notice_accepted_for_this_mac() {
             .any(|line| line.contains("Rig Check can check this Mac"))
     );
 }
+
+#[test]
+fn technical_details_are_hidden_until_opened() {
+    let ctx = egui::Context::default();
+    let mut record = StepRecord::new(StepId(4, 2));
+    record.started = Some("practice".into());
+    record.difference(
+        super::super::differences::Severity::Stop,
+        "2 words differ",
+        vec!["word 2 · expected 0x010000 · actual 0x010001 · XOR 0x000001 · 1 bit".into()],
+    );
+    let (mut wizard, _) = wired(Prompt::Finished(Box::new(record)));
+    let hidden = frame(&ctx, &mut wizard, Vec::new());
+    assert!(hidden.iter().any(|text| text == "Show technical details"));
+    assert!(!hidden.iter().any(|text| text.contains("XOR")));
+    wizard.technical = true;
+    let shown = frame(&ctx, &mut wizard, Vec::new());
+    assert!(shown.iter().any(|text| text.contains("XOR 0x000001")));
+}

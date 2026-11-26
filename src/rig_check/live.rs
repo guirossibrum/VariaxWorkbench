@@ -2,6 +2,7 @@
 //! back, undo, and check the whole tone byte for byte. Nothing is stored:
 //! the step's policy does not include the PODxt store operation.
 
+use super::differences::{self, Severity};
 use super::procedures::{with_podxt, with_podxt_stopping};
 use super::runner::Ctx;
 use line6_devices::family::podxt;
@@ -63,6 +64,16 @@ pub fn podxt_stomp(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
         Err(error) => ctx.rec.note(format!("Read after the undo failed: {error}")),
     }
+    if let Ok(restored) = &test.restored {
+        differences::tone(
+            ctx.rec,
+            "PODxt Stomp undo",
+            &test.before.raw,
+            &restored.raw,
+            Severity::Stop,
+            false,
+        );
+    }
     if !test.stuck() {
         return Err(
             "The stomp change was not confirmed by the read-back. The undo was still sent.".into(),
@@ -97,7 +108,7 @@ pub fn podxt_stomp(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
 }
 
-const PODXT_EDITOR: &[Operation] = &[
+pub(super) const PODXT_EDITOR: &[Operation] = &[
     Operation::PodxtIdentity,
     Operation::PodxtRead,
     Operation::PodxtLibraryRead,
@@ -155,26 +166,103 @@ pub fn podxt_whole_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("No starting PODxt tone.")?;
     let channel = ctx.data.start_channel.ok_or("No starting PODxt channel.")?;
     let verified = podxt::verify_tone_backup(&root, channel)?;
-    with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
+    let mut before_raw = None;
+    let sent = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
         let before = podxt::get_editor_buffer(session, stopping)?;
-        if before.channel != channel || !before.tone.same_tone(&start) {
+        before_raw = Some(before.tone.raw.clone());
+        if before.channel != channel || !differences::same_podxt_tone(&start.raw, &before.tone.raw)
+        {
             return Err("The playing channel changed since the backup. Nothing was sent.".into());
         }
-        let after = podxt::send_whole_tone(
+        podxt::send_whole_tone(
             session,
             &before,
             podxt::WholeToneSource::Current,
             &verified,
             stopping,
-        )?;
-        if !after.tone.same_tone(&before.tone) {
-            return Err("The verified tone differs from the original.".into());
+        )
+    });
+    if let Err(reason) = sent {
+        if let Some(before) = before_raw {
+            if reason.contains("Whole-tone readback differs") {
+                if let Some(actual) = differences::last_podxt_dump(&ctx.rec.messages) {
+                    differences::tone(
+                        ctx.rec,
+                        "PODxt whole-tone send",
+                        &before,
+                        &actual,
+                        Severity::Stop,
+                        false,
+                    );
+                }
+            } else if reason.contains("playing channel changed") {
+                differences::tone(
+                    ctx.rec,
+                    "PODxt whole-tone preflight",
+                    &start.raw,
+                    &before,
+                    Severity::Stop,
+                    true,
+                );
+            }
         }
-        Ok(())
-    })?;
+        return Err(reason);
+    }
     ctx.rec
         .show("The whole tone read back as sent on your starting channel.");
     Ok(())
+}
+
+pub(super) fn restore_podxt_playing(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let start = ctx
+        .data
+        .start_tone
+        .clone()
+        .ok_or("No PODxt starting tone.")?;
+    let channel = ctx.data.start_channel.ok_or("No PODxt starting channel.")?;
+    let root = ctx
+        .data
+        .podxt_backup_dir
+        .clone()
+        .ok_or("No verified PODxt backup for putting back unsaved edits.")?;
+    let backup = podxt::verify_tone_backup(&root, channel)?;
+    let payload = podxt::TonePayload::from_dump(&start)?;
+    let actual = with_podxt_stopping(ctx, PODXT_EDITOR, |session, _| {
+        let mut current = podxt::get_editor_buffer(session, || false)?;
+        if current.channel != channel {
+            podxt::restore_channel(session, channel)?;
+            current = podxt::get_editor_buffer(session, || false)?;
+        }
+        if current.channel != channel {
+            return Err(
+                "The starting channel was not selected before restoring the playing tone.".into(),
+            );
+        }
+        podxt::send_whole_tone(
+            session,
+            &current,
+            podxt::WholeToneSource::Payload(&payload),
+            &backup,
+            || false,
+        )
+    })?;
+    let same = super::differences::tone(
+        ctx.rec,
+        "Restored PODxt edit buffer",
+        &start.raw,
+        &actual.tone.raw,
+        super::differences::Severity::Stop,
+        true,
+    ) == 0;
+    if same {
+        ctx.rec.show(format!(
+            "Rig: the PODxt Live is back on {} with your unsaved edits restored.",
+            channel.label()
+        ));
+        Ok(())
+    } else {
+        Err("The restored PODxt tone differs from the starting edit buffer.".into())
+    }
 }
 
 pub fn podxt_recall(ctx: &mut Ctx<'_>) -> Result<(), String> {
@@ -194,25 +282,57 @@ pub fn podxt_recall(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("The target channel is missing from the backup.")?
         .1
         .clone();
+    let saved_start = ctx
+        .data
+        .podxt_library
+        .iter()
+        .find(|(location, _)| *location == start)
+        .ok_or("The starting channel is missing from the backup.")?
+        .1
+        .clone();
+    let unsaved = ctx.data.podxt_unsaved;
     let result = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
         let current = podxt::get_editor_buffer(session, stopping)?;
-        if current.channel != start || !current.tone.same_tone(&tone) {
-            return Err("The starting PODxt channel is no longer selected and unedited.".into());
-        }
-        let selected = podxt::recall_editor_channel(session, target, stopping);
-        let returned = podxt::recall_editor_channel(session, start, || false)?;
-        if !returned.tone.same_tone(&tone) {
-            return Err("The starting PODxt channel did not verify on return.".into());
-        }
-        let selected = selected?;
-        if !selected.tone.same_tone(&target_tone) {
+        if current.channel != start || !differences::same_podxt_tone(&tone.raw, &current.tone.raw) {
             return Err(
-                "The recalled tone differed from the backup. The starting tone was restored."
+                "The starting PODxt channel or its edit buffer changed. Nothing was switched."
                     .into(),
             );
         }
-        Ok(selected.tone.name())
-    })?;
+        if unsaved {
+            let loaded = podxt::restore_channel(session, start)?;
+            if !differences::same_podxt_tone(&saved_start.raw, &loaded.tone.raw) {
+                return Err("The saved starting channel differs from its backup.".into());
+            }
+        }
+        let selected = podxt::recall_editor_channel(session, target, stopping);
+        let returned = podxt::recall_editor_channel(session, start, || false)?;
+        Ok((selected?.tone, returned.tone))
+    });
+    if unsaved {
+        restore_podxt_playing(ctx)?;
+    }
+    let (selected, returned) = result?;
+    let returned_ok = super::differences::tone(
+        ctx.rec,
+        "Starting stored channel after recall",
+        &saved_start.raw,
+        &returned.raw,
+        super::differences::Severity::Stop,
+        true,
+    ) == 0;
+    let selected_ok = super::differences::tone(
+        ctx.rec,
+        "Recalled PODxt tone",
+        &target_tone.raw,
+        &selected.raw,
+        super::differences::Severity::Stop,
+        true,
+    ) == 0;
+    if !returned_ok || !selected_ok {
+        return Err("The recalled or returned tone differs from the backup.".into());
+    }
+    let result = selected.name();
     ctx.rec.show(format!(
         "Recalled {} ({result}), then verified the return to {}.",
         target.label(),
@@ -270,8 +390,10 @@ fn podxt_editor_controls(ctx: &mut Ctx<'_>) -> Result<(), String> {
     if ctx.stopping() {
         return Err("Stopped before editor control edits.".into());
     }
-    with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
+    let mut before_raw = None;
+    let result = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
         let before = podxt::get_editor_buffer(session, stopping)?;
+        before_raw = Some(before.tone.raw.clone());
         let tempo = LiveControl::Additional(Setting::Tempo).read(&before.tone);
         // The compound tempo path emits two CC messages. Use a nearby value
         // within the supported range and keep the original available for Undo.
@@ -297,7 +419,23 @@ fn podxt_editor_controls(ctx: &mut Ctx<'_>) -> Result<(), String> {
             return Err("Editor Undo did not restore the complete PODxt tone.".into());
         }
         edited.map(|_| ())
-    })?;
+    });
+    if let Err(reason) = result {
+        if reason.contains("Undo")
+            && let Some(expected) = before_raw
+            && let Some(actual) = differences::last_podxt_dump(&ctx.rec.messages)
+        {
+            differences::tone(
+                ctx.rec,
+                "PODxt editor Undo",
+                &expected,
+                &actual,
+                Severity::Stop,
+                false,
+            );
+        }
+        return Err(reason);
+    }
     ctx.rec.note(
         "Editor Drive and compound tempo edits read back. Editor Undo restored the complete tone.",
     );

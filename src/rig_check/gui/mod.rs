@@ -51,6 +51,7 @@ pub enum Prompt {
         hear: String,
     },
     WatchAction(Arc<AtomicBool>, Arc<super::guided::ActionClock>),
+    VariaxConnected,
     NotSeen {
         step: StepId,
         what: String,
@@ -73,6 +74,7 @@ impl Prompt {
                 | Prompt::Card(..)
                 | Prompt::Save { .. }
                 | Prompt::PrepareAction { .. }
+                | Prompt::VariaxConnected
                 | Prompt::NotSeen { .. }
                 | Prompt::Ask(_)
         ) || matches!(self, Prompt::Finished(record) if record.started.is_some())
@@ -170,6 +172,13 @@ impl Operator for ChannelOperator {
         Box::new(move || advance.load(Ordering::Relaxed))
     }
 
+    fn variax_connected(&mut self) -> bool {
+        matches!(
+            self.request(Prompt::VariaxConnected),
+            Some(Reply::Retry(Retry::TryAgain))
+        )
+    }
+
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry {
         match self.request(Prompt::NotSeen {
             step,
@@ -227,6 +236,7 @@ pub struct Wizard {
     pub typed: String,
     pub note: String,
     pub preview: bool,
+    technical: bool,
     pub saved: Option<String>,
     pub stop: Arc<AtomicBool>,
     to_runner: Option<Sender<Reply>>,
@@ -252,6 +262,7 @@ impl Default for Wizard {
             typed: String::new(),
             note: String::new(),
             preview: false,
+            technical: false,
             saved: None,
             stop: Arc::new(AtomicBool::new(false)),
             to_runner: None,
@@ -288,6 +299,7 @@ fn outcome_tag(outcome: &Outcome) -> (&'static str, Color32) {
         Outcome::Stopped(_) => ("STOP", DANGER),
         Outcome::SkippedByPerson
         | Outcome::SkippedVerifiedFirmware(_)
+        | Outcome::SkippedNotApplicable(_)
         | Outcome::SkippedNeeds(_)
         | Outcome::UnverifiedDevice(_) => ("SKIP", MUTED),
         Outcome::NotAuthorized(_) | Outcome::NotAvailable(_) => ("N/A", DIM),
@@ -378,6 +390,7 @@ impl Wizard {
                     self.activity = Some((progress, Instant::now()));
                 }
                 Prompt::Finished(record) => {
+                    self.technical = false;
                     self.running = None;
                     self.activity = None;
                     self.step_start = None;
@@ -620,6 +633,22 @@ impl Wizard {
             Some(Prompt::PrepareAction { step, see, hear }) => {
                 self.prepare_action(ui, step, &see, &hear)
             }
+            Some(Prompt::VariaxConnected) => {
+                ui.label(
+                    RichText::new("No guitar answered. Is a Variax connected by its VDI cable?")
+                        .size(TITLE)
+                        .color(TEXT),
+                );
+                ui.horizontal(|ui| {
+                    let absent = button(ui, "No Variax", true);
+                    self.focus_once(&absent);
+                    if absent.clicked() {
+                        self.reply(Reply::Retry(Retry::Skip));
+                    } else if button(ui, "Try again", true).clicked() {
+                        self.reply(Reply::Retry(Retry::TryAgain));
+                    }
+                });
+            }
             Some(Prompt::NotSeen { step, what }) => self.not_seen(ui, step, &what),
             Some(Prompt::Ask(question)) => self.question(ui, &question),
             Some(Prompt::Finished(record)) => self.result(ui, &record, true),
@@ -662,6 +691,7 @@ impl Wizard {
                 }
             });
         }
+        self.technical_toggle(ui, std::iter::once(record));
         ui.add_space(SPACE_16);
         if awaiting && self.different_open {
             ui.label("Type exactly what the device shows.");
@@ -704,6 +734,37 @@ impl Wizard {
             });
         } else {
             self.review_navigation(ui);
+        }
+    }
+
+    fn technical_toggle<'a>(
+        &mut self,
+        ui: &mut egui::Ui,
+        records: impl IntoIterator<Item = &'a StepRecord>,
+    ) {
+        let label = if self.technical {
+            "Hide technical details"
+        } else {
+            "Show technical details"
+        };
+        if button(ui, label, true).clicked() {
+            self.technical = !self.technical;
+        }
+        if self.technical {
+            egui::ScrollArea::vertical()
+                .id_salt("technical-comparisons")
+                .max_height(260.0)
+                .show(ui, |ui| {
+                    for record in records {
+                        ui.label(
+                            RichText::new(format!("Step {} · {}", record.id, record.title))
+                                .strong(),
+                        );
+                        for line in record.technical_lines() {
+                            ui.monospace(line);
+                        }
+                    }
+                });
         }
     }
 
@@ -846,6 +907,9 @@ impl Wizard {
                     .size(BODY)
                     .color(MUTED),
             );
+            if let Some(note) = step.starting_buffer_note() {
+                ui.label(RichText::new(note).size(BODY).color(TEXT));
+            }
         });
         ui.add_space(SPACE_8);
         section_panel(ui, "What you'll see and hear", |ui| {
@@ -1063,12 +1127,18 @@ impl Wizard {
                 .color(TEXT),
         );
         ui.label(
+            RichText::new(&run.rig_description)
+                .size(SECTION)
+                .color(TEXT),
+        );
+        ui.label(
             RichText::new(format!(
                 "{} passed · {} failed · {} skipped · {} not authorized or not available",
                 run.count("passed"),
                 run.count("failed"),
                 run.count("skipped")
                     + run.count("skipped_verified_firmware")
+                    + run.count("skipped_not_applicable")
                     + run.count("skipped_needs")
                     + run.count("unverified_device"),
                 run.count("not_authorized") + run.count("not_available")
@@ -1081,6 +1151,14 @@ impl Wizard {
             section_panel(ui, "Display mismatches", |ui| {
                 for mismatch in mismatches {
                     ui.label(RichText::new(mismatch).size(SECTION).color(DANGER));
+                }
+            });
+        }
+        let differences: Vec<_> = run.report_differences().collect();
+        if !differences.is_empty() {
+            section_panel(ui, "Differences to review", |ui| {
+                for difference in differences {
+                    ui.label(difference);
                 }
             });
         }
@@ -1120,6 +1198,13 @@ impl Wizard {
         if let Some(saved) = &self.saved {
             ui.label(RichText::new(saved).size(BODY).color(OK));
         }
+        self.technical_toggle(
+            ui,
+            run.steps
+                .iter()
+                .chain(&run.prior_attempts)
+                .filter(|record| record.started.is_some()),
+        );
         if self.preview {
             egui::Frame::new()
                 .fill(PANEL)

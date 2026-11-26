@@ -6,6 +6,7 @@
 //! walk back to the computer, but the next action waits for their OK. They
 //! can also choose Continue to check what arrived, or Stop the run.
 
+use super::differences::{self, Severity};
 use super::practice::{UserAction, preset_label};
 use super::procedures::{
     same_program, variax_full_read, with_podxt, with_variax, with_variax_progress,
@@ -254,6 +255,55 @@ fn guided<T>(
     }
 }
 
+/// Read the real selector location from its two Follow notices. The backup
+/// sweeps the logical presets without moving the physical selector.
+pub(super) fn starting_variax_selector(
+    ctx: &mut Ctx<'_>,
+    practice_start: Option<Preset>,
+) -> Result<Preset, String> {
+    let observe = |ctx: &mut Ctx<'_>, action: &ActiveAction, except| {
+        let mut selected = None;
+        with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
+            watch_variax(session, stopping, action, |update| {
+                if let FollowUpdate::ProgramChange(preset) = update
+                    && Some(preset) != except
+                {
+                    selected = Some(preset);
+                }
+                selected.is_some()
+            })
+        })?;
+        Ok(selected)
+    };
+    let away_actions: Vec<_> = practice_start
+        .map(super::variax_reads::other_preset)
+        .map(UserAction::TurnSelector)
+        .into_iter()
+        .collect();
+    let away = guided(
+        ctx,
+        "Move the Variax selector one position away from where it was at the start. Leave the bank knob where it was.",
+        "The guitar may change sound.",
+        "the selector moving away",
+        &away_actions,
+        |_| Ok(None),
+        |ctx, action| observe(ctx, action, None),
+    )?;
+    let return_actions: Vec<_> = practice_start
+        .map(UserAction::TurnSelector)
+        .into_iter()
+        .collect();
+    guided(
+        ctx,
+        "Move the Variax selector back to its original position.",
+        "The saved sound for that position. Rig Check has kept a copy of your starting sound.",
+        "the selector returning",
+        &return_actions,
+        |_| Ok(None),
+        |ctx, action| observe(ctx, action, Some(away)),
+    )
+}
+
 fn already_on_variax(
     ctx: &mut Ctx<'_>,
     expected: &[u32; super::practice::PROGRAM_WORDS],
@@ -295,7 +345,10 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .data
         .start_preset
         .ok_or("The starting preset is unknown (3.4).")?;
-    let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
+    let start_program = ctx
+        .data
+        .exercise_program()
+        .ok_or("No starting program (3.3).")?;
     let target = other_preset(start);
     let name = preset_label(target);
     let backup = ctx
@@ -318,7 +371,14 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         super::procedures::drain(session)?;
         variax_full_read(session, stopping, progress, &format!("Checking {name}"))
     })?;
-    if same_program(&read.words, &backup) {
+    if differences::program(
+        ctx.rec,
+        "Guided Variax recall",
+        &backup,
+        &read.words,
+        Severity::Stop,
+        true,
+    ) {
         ctx.rec.show(format!(
             "{name} plays the program from the 3.4 backup (1,092 words)."
         ));
@@ -344,7 +404,14 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
             &format!("Verifying return to {start_name}"),
         )
     })?;
-    if !same_program(&back.words, &start_program) {
+    if !differences::program(
+        ctx.rec,
+        "Guided Variax return",
+        &start_program,
+        &back.words,
+        Severity::Stop,
+        true,
+    ) {
         return Err(format!(
             "Back on {start_name}, but the program differs from the start."
         ));
@@ -536,9 +603,12 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("The starting channel is unknown (2.5).")?;
     let start_tone = ctx
         .data
-        .start_tone
-        .clone()
-        .ok_or("No starting tone (2.2).")?;
+        .podxt_library
+        .iter()
+        .find(|(location, _)| *location == start)
+        .ok_or("Starting channel is missing from the backup.")?
+        .1
+        .clone();
     let target = Location::new(
         BankKind::Tones,
         (start.index() & !3) + (start.index() + 1) % 4,
@@ -563,7 +633,15 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         |ctx| already_on_podxt(ctx, target, &stored),
         |ctx, advance| channel_window(ctx, target, &stored.name(), advance),
     )?;
-    if !stored.same_tone(&now) {
+    if super::differences::tone(
+        ctx.rec,
+        "PODxt guided recall",
+        &stored.raw,
+        &now.raw,
+        super::differences::Severity::Stop,
+        true,
+    ) != 0
+    {
         return Err(format!(
             "Channel {} does not match the 2.5 backup.",
             target.label()
@@ -586,7 +664,15 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         |ctx| already_on_podxt(ctx, start, &start_tone),
         |ctx, advance| channel_window(ctx, start, &start_tone.name(), advance),
     )?;
-    if !back.same_tone(&start_tone) {
+    if super::differences::tone(
+        ctx.rec,
+        "PODxt guided return",
+        &start_tone.raw,
+        &back.raw,
+        super::differences::Severity::Stop,
+        true,
+    ) != 0
+    {
         return Err(format!(
             "Back on {}, but the tone differs from the start.",
             start.label()
@@ -596,6 +682,9 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Back on channel {}: the starting tone.",
         start.label()
     ));
+    if ctx.data.podxt_unsaved {
+        super::live::restore_podxt_playing(ctx)?;
+    }
     ctx.rec.look_at(
         "Check that the PODxt Live display shows the starting channel again.",
         start.label(),
@@ -667,7 +756,10 @@ pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
             let current = with_podxt(ctx, PODXT_LISTEN, |session| {
                 podxt::read_current(session).map(|current| current.tone)
             })?;
-            if current.cc(cc) != value {
+            let actual = current.cc(cc);
+            if actual != value {
+                let xor = actual ^ value;
+                ctx.rec.difference(Severity::Stop, "The Drive value read back differs from the Follow update.", vec![format!("Drive (CC {cc}) · expected 0x{value:02X} · actual 0x{actual:02X} · XOR 0x{xor:02X} · {} bit(s)", xor.count_ones())]);
                 return Err("The Drive value read back differs from the Follow update.".into());
             }
         }

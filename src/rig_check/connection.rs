@@ -40,6 +40,18 @@ fn the_podxt(ctx: &Ctx<'_>) -> Result<UsbDevice, String> {
 }
 
 pub fn see_podxt(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    if ctx
+        .data
+        .usb
+        .as_ref()
+        .is_some_and(|view| view.podxt_lives().is_empty())
+    {
+        ctx.data.no_podxt = true;
+        return Err(format!(
+            "{}No PODxt Live found",
+            super::runner::NOT_APPLICABLE
+        ));
+    }
     let device = the_podxt(ctx)?;
     ctx.rec
         .show(format!("PODxt Live found on port {}.", device.port));
@@ -144,16 +156,6 @@ mod tests {
 
     #[test]
     fn clear_failure_texts() {
-        assert!(
-            failure(
-                Faults {
-                    podxt_absent: true,
-                    ..Faults::default()
-                },
-                StepId(1, 1)
-            )
-            .starts_with("Device absent")
-        );
         assert!(
             failure(
                 Faults {

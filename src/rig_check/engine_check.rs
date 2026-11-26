@@ -406,6 +406,44 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_difference_is_reported_and_does_not_block_a_save() {
+        use crate::rig_check::{
+            catalogue::StepId, practice::Faults, run_practice, runner::NoReport, steps::RunData,
+            testing::Script,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = String::new();
+        for (i, (id, bytes)) in BODY_IDS.iter().zip(BODIES.chunks(17483)).enumerate() {
+            std::fs::write(dir.path().join(format!("b{i}.bin")), bytes).unwrap();
+            manifest.push_str(&format!("body\t{id:08x}\tb{i}.bin\n"));
+        }
+        for (i, (id, bytes)) in PICKUP_IDS.iter().zip(PICKUPS.chunks(85)).enumerate() {
+            std::fs::write(dir.path().join(format!("p{i}.bin")), bytes).unwrap();
+            manifest.push_str(&format!("pickup\t{id:08x}\tp{i}.bin\n"));
+        }
+        std::fs::write(dir.path().join("models.tsv"), manifest).unwrap();
+        std::fs::write(dir.path().join("A.vwm"), PRESET).unwrap();
+        let mut reference = PRESET_PACKED.to_vec();
+        reference[121] ^= 1;
+        std::fs::write(dir.path().join("A.packed"), reference).unwrap();
+        let (run, _, _) = run_practice(
+            Faults::default(),
+            &mut Script::run_all(),
+            &mut NoReport,
+            RunData {
+                engine_folder: Some(dir.path().into()),
+                ..RunData::default()
+            },
+        );
+        assert!(run.step(StepId(0, 3)).outcome.passed());
+        assert!(
+            run.report_differences()
+                .any(|line| line.contains("A: 1 of 1,092"))
+        );
+        assert!(run.step(StepId(5, 1)).outcome.passed());
+    }
+
+    #[test]
     fn a_local_folder_reports_hashes_and_missing_files() {
         let dir = tempfile::tempdir().unwrap();
         let mut manifest = String::new();

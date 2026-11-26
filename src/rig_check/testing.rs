@@ -25,6 +25,7 @@ pub struct Script {
     pub notices: Vec<String>,
     pub progress: Vec<(StepId, Progress)>,
     pub accept_evidence: bool,
+    pub retry_variax: bool,
     pub instructions: Vec<(StepId, String)>,
     pub questions: Vec<Question>,
     pub saves: Vec<String>,
@@ -61,6 +62,7 @@ impl Script {
             notices: Vec::new(),
             progress: Vec::new(),
             accept_evidence: true,
+            retry_variax: false,
             instructions: Vec::new(),
             questions: Vec::new(),
             saves: Vec::new(),
@@ -127,6 +129,10 @@ impl Operator for Script {
             .push((step, format!("SEE {see} HEAR {hear}")));
     }
 
+    fn variax_connected(&mut self) -> bool {
+        std::mem::take(&mut self.retry_variax)
+    }
+
     fn not_seen(&mut self, step: StepId, _: &str) -> Retry {
         if let Some(callback) = &mut self.on_missed {
             callback(step);
@@ -188,7 +194,9 @@ impl Operator for Script {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rig_check::catalogue::{RIG_GUARD, RUN_ORDER, STEPS, VARIAX_EVIDENCE};
+    use crate::rig_check::catalogue::{
+        PODXT_COMPATIBILITY, RIG_GUARD, RUN_ORDER, STEPS, VARIAX_EVIDENCE,
+    };
     use crate::rig_check::port::RealPort;
     use crate::rig_check::practice::{Faults, SimRig, flash_index};
     use crate::rig_check::run_on;
@@ -235,6 +243,8 @@ mod tests {
                     outcome.technical_note(),
                     Some("evidence mode not entered: firmware verified")
                 );
+            } else if step.id == PODXT_COMPATIBILITY {
+                assert_eq!(outcome.code(), "skipped_verified_firmware");
             } else if step.not_in_this_version.is_some() {
                 assert!(matches!(outcome, Outcome::NotAvailable(_)), "{}", step.id);
             } else {
@@ -253,6 +263,7 @@ mod tests {
             .copied()
             .filter(|id| {
                 *id != VARIAX_EVIDENCE
+                    && *id != PODXT_COMPATIBILITY
                     && crate::rig_check::catalogue::step(*id)
                         .unwrap()
                         .not_in_this_version
@@ -537,14 +548,17 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_skips_its_dependents() {
+    fn a_podxt_only_run_skips_variax_and_still_offers_the_podxt_save() {
         let mut person = Script::run_all();
         let faults = Faults {
             variax_silent: true,
             ..Faults::default()
         };
         let (run, _, _) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
-        assert!(matches!(run.step(StepId(3, 1)).outcome, Outcome::Failed(_)));
+        assert!(matches!(
+            run.step(StepId(3, 1)).outcome,
+            Outcome::SkippedNotApplicable(_)
+        ));
         for id in [
             StepId(3, 2),
             StepId(3, 3),
@@ -553,7 +567,7 @@ mod tests {
             StepId(5, 1),
         ] {
             assert!(
-                matches!(run.step(id).outcome, Outcome::SkippedNeeds(_)),
+                matches!(run.step(id).outcome, Outcome::SkippedNotApplicable(_)),
                 "{id}: {:?}",
                 run.step(id).outcome
             );
@@ -563,6 +577,150 @@ mod tests {
             run.step(StepId(2, 2)).outcome.passed(),
             "PODxt steps still run"
         );
+        assert!(run.step(StepId(5, 2)).outcome.passed());
+        assert_eq!(
+            run.rig_description,
+            "PODxt Live 3.01 (tested), Variax: not connected"
+        );
+    }
+
+    #[test]
+    fn no_podxt_leaves_computer_checks_available() {
+        let mut person = Script::run_all();
+        let (run, _, rig) = run_practice(
+            Faults {
+                podxt_absent: true,
+                ..Faults::default()
+            },
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        assert!(run.step(StepId(0, 3)).outcome.passed());
+        assert!(matches!(
+            run.step(StepId(2, 1)).outcome,
+            Outcome::SkippedNotApplicable(_)
+        ));
+        assert!(run.rig_description.starts_with("No PODxt Live found"));
+        assert!(rig.borrow().written.is_empty());
+    }
+
+    #[test]
+    fn retrying_after_a_cable_check_can_find_the_guitar() {
+        let rig = SimRig::shared(Faults {
+            variax_silent: true,
+            ..Faults::default()
+        });
+        let mut port = crate::rig_check::port::PracticePort::new(rig.clone());
+        let mut person = Script::run_all();
+        person.retry_variax = true;
+        person.on_prepare = Some(Box::new(move |step| {
+            if step == StepId(3, 1) {
+                rig.borrow_mut().variax.connected = true;
+            }
+        }));
+        let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+        assert!(run.step(StepId(3, 1)).outcome.passed());
+        assert!(
+            person
+                .instructions
+                .iter()
+                .any(|(step, text)| *step == StepId(3, 1) && text.contains("Check the VDI cable"))
+        );
+    }
+
+    #[test]
+    fn two_differing_readback_words_show_both_bit_masks_and_stop_later_writes() {
+        let mut person = Script::run_all();
+        let (run, _, rig) = run_practice(
+            Faults {
+                change_uploaded_words_once: true,
+                ..Faults::default()
+            },
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        let step = run.step(StepId(4, 2));
+        assert!(matches!(step.outcome, Outcome::Failed(_)));
+        let details = step.technical_lines().collect::<Vec<_>>().join("\n");
+        assert!(details.contains("word 2 (pickups)"));
+        assert!(details.contains("XOR 0x000001 · 1 bit(s)"));
+        assert!(details.contains("word 680 (pitch/tuning)"));
+        assert!(details.contains("XOR 0x000003 · 2 bit(s)"));
+        assert_eq!(rig.borrow().variax.stores, 0);
+    }
+
+    #[test]
+    fn only_an_ambiguous_variax_byte_match_needs_the_selector() {
+        for duplicate in [false, true] {
+            let rig = SimRig::shared(Faults::default());
+            let mut port = crate::rig_check::port::PracticePort::new(rig.clone());
+            let start = rig.borrow().variax.selected.unwrap();
+            if duplicate {
+                let mut model = rig.borrow_mut();
+                let other = crate::rig_check::variax_reads::other_preset(start);
+                model.variax.stored[flash_index(other)] = model.variax.active;
+            }
+            let mut person = Script::run_all();
+            let (run, data) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+            assert!(run.step(StepId(3, 4)).outcome.passed());
+            assert_eq!(data.start_preset, Some(start));
+            assert!(!data.variax_unsaved);
+            let selector_requests = person
+                .instructions
+                .iter()
+                .filter(|(step, _)| *step == StepId(3, 4))
+                .count();
+            assert_eq!(selector_requests, if duplicate { 2 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn starting_edits_are_reported_and_both_buffers_are_restored() {
+        let rig = SimRig::shared(Faults::default());
+        let mut port = crate::rig_check::port::PracticePort::new(rig.clone());
+        let start = {
+            let mut model = rig.borrow_mut();
+            let channel = model.podxt.channel.unwrap() as usize;
+            model.podxt.stored[channel][32 + 15] = 75;
+            model.podxt.playing[32 + 15] = 61;
+            model.podxt.stored[channel][32 + 21] = 38;
+            model.podxt.playing[32 + 21] = 1;
+            model.variax.active[2] ^= 1;
+            let mut image = line6_devices::family::variax::procedures::pack(&model.variax.active);
+            line6_devices::family::variax::procedures::set_firmware_checksum(&mut image);
+            model.variax.active = crate::rig_check::procedures::unpack_program(&image);
+            (model.podxt.playing, model.variax.active)
+        };
+        let mut person = Script::run_all();
+        let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+        let tech = run
+            .step(StepId(2, 5))
+            .technical_lines()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(tech.contains("2 unsaved changes"));
+        assert!(tech.contains("mid (CC 15)"));
+        assert!(tech.contains("presence (CC 21)"));
+        assert!(
+            run.step(StepId(3, 4))
+                .comparisons
+                .iter()
+                .any(|diff| diff.summary.contains("unsaved changes"))
+        );
+        assert!(
+            run.step(StepId(6, 2)).outcome.passed(),
+            "{:?}",
+            run.step(StepId(6, 2)).result_lines()
+        );
+        assert!(
+            run.step(StepId(5, 1)).outcome.passed(),
+            "{:?}",
+            run.step(StepId(5, 1)).outcome
+        );
+        assert_eq!(rig.borrow().podxt.playing, start.0);
+        assert_eq!(rig.borrow().variax.active, start.1);
     }
 
     #[test]
