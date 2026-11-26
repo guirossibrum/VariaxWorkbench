@@ -102,8 +102,7 @@ mod tests {
         frame(ctx, editor, Some(request), vec![button(false)]);
     }
 
-    #[test]
-    fn active_variax_tab_has_one_connection_status_and_one_guitar_action() {
+    fn count_labels(output: &egui::FullOutput, label: &str) -> usize {
         fn count(shape: &egui::Shape, label: &str) -> usize {
             match shape {
                 egui::Shape::Text(text) => usize::from(text.galley.text() == label),
@@ -111,18 +110,20 @@ mod tests {
                 _ => 0,
             }
         }
+        output
+            .shapes
+            .iter()
+            .map(|shape| count(&shape.shape, label))
+            .sum()
+    }
+
+    #[test]
+    fn active_variax_tab_has_one_connection_status_and_one_guitar_action() {
         let (ctx, mut app) = app();
         let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
         app.tabs.entries[index].device = Some(super::super::refresh::tests::verified_tab());
         let render = |app: &mut crate::editor::Workbench| {
             ctx.run(egui::RawInput::default(), |ctx| app.render(ctx))
-        };
-        let count_labels = |output: &egui::FullOutput, label| {
-            output
-                .shapes
-                .iter()
-                .map(|shape| count(&shape.shape, label))
-                .sum::<usize>()
         };
         let connected = render(&mut app);
         assert_eq!(count_labels(&connected, "Guitar: Variax 600 3.10"), 1);
@@ -140,6 +141,94 @@ mod tests {
         assert_eq!(count_labels(&checking, "Guitar: checking…"), 1);
         assert_eq!(count_labels(&checking, "Download from guitar…"), 0);
         assert_eq!(count_labels(&checking, "Refresh guitar"), 1);
+    }
+
+    #[test]
+    fn firmware_notice_stays_with_the_offline_editor_and_clears_on_verification() {
+        use super::super::{EditorDocument, FamilyTab};
+        use variax_workbench::firmware_notice::FirmwareNotice;
+
+        let (ctx, mut app) = app();
+        let id = app.tabs.active.unwrap();
+        let index = app.tabs.index(id).unwrap();
+        let mut tab = super::super::refresh::tests::verified_tab();
+        let verified = tab.device.support.clone();
+        let mut reply = variax_workbench::identity_stage::guitar_reply();
+        reply[12..16].copy_from_slice(b"0309");
+        let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
+        let notice = FirmwareNotice::variax(&identity).unwrap();
+        let message = notice.message();
+        assert!(message.contains("reports firmware 3.09"));
+        assert!(message.contains("firmware 3.10"));
+        assert!(message.contains("You can open, edit and save files"));
+        assert!(message.contains("Device actions are unavailable"));
+        assert!(!message.to_lowercase().contains("update"));
+
+        tab.device.support = DeviceSupport::UnverifiedGuitarFirmware(notice);
+        tab.device.guitar_status = Some("Guitar: identity unverified".into());
+        tab.device.refresh_guitar = false;
+        assert!(tab.verified_attachment().is_none());
+        app.tabs.entries[index].device = Some(tab);
+
+        let render = |app: &mut crate::editor::Workbench| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 960.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            )
+        };
+        let offline = render(&mut app);
+        assert_eq!(count_labels(&offline, &message), 1);
+        assert_eq!(count_labels(&offline, "Download from guitar…"), 0);
+
+        let folder = tempfile::tempdir().unwrap();
+        let input = folder.path().join("original.vwm");
+        let output = folder.path().join("offline-copy.vwm");
+        let original = include_bytes!("../../../../tests/fixtures/editor-preset.vwm");
+        std::fs::write(&input, original).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            open: [Some(input.clone())].into(),
+            save: [Some(output.clone())].into(),
+            ..Default::default()
+        });
+        app.with_tab(id, |entry, services| {
+            let editor = (entry.editor.as_mut() as &mut dyn std::any::Any)
+                .downcast_mut::<VariaxEditor>()
+                .unwrap();
+            editor.open_dialog(&ctx, services);
+        });
+        app.poll_picker(&ctx);
+        assert_eq!(app.variax().source_path(), Some(input.as_path()));
+        app.variax_mut()
+            .change(|preset| preset.rename("Offline edit"));
+        assert!(app.variax().dirty());
+        app.with_tab(id, |entry, services| entry.editor.save_copy(&ctx, services));
+        app.poll_picker(&ctx);
+        assert_eq!(
+            EditorDocument::open(&output).unwrap().preset().name(),
+            "Offline edit"
+        );
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        assert_eq!(count_labels(&render(&mut app), &message), 1);
+
+        app.variax_mut()
+            .change(|preset| preset.rename("Keep my edits"));
+        app.tabs.entries[index].device.as_mut().unwrap().connection = Connection::Disconnected;
+        assert_eq!(count_labels(&render(&mut app), &message), 0);
+        let tab = app.tabs.entries[index].device.as_mut().unwrap();
+        tab.connection = Connection::Present;
+        tab.device.support = verified;
+        assert_eq!(count_labels(&render(&mut app), &message), 0);
+        assert_eq!(
+            app.variax().document.as_ref().unwrap().preset().name(),
+            "Keep my edits"
+        );
+        assert!(app.variax().dirty());
     }
 
     #[test]

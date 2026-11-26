@@ -127,6 +127,7 @@ pub(super) struct VariaxEditor {
     library_origin: Option<LibraryOrigin>,
     library_import: Option<LibraryImport>,
     connection_status: Option<String>,
+    firmware_notice: Option<variax_workbench::firmware_notice::FirmwareNotice>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
     #[cfg(feature = "usb")]
@@ -221,6 +222,7 @@ impl VariaxEditor {
             library_origin: None,
             library_import: None,
             connection_status: None,
+            firmware_notice: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
             #[cfg(feature = "usb")]
@@ -1101,6 +1103,9 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         ui: &mut egui::Ui,
     ) {
+        if let Some(notice) = self.firmware_notice {
+            ui.colored_label(variax_workbench::ui::theme::AMBER, notice.message());
+        }
         #[cfg(feature = "usb")]
         if self.device_sync.stopped_after_store() {
             ui.label("Guitar actions are paused after an unverified store. Follow the store recovery instructions before using the guitar again.");
@@ -1365,6 +1370,8 @@ impl FamilyTab for VariaxEditor {
     }
     fn observe_device(&mut self, device: Option<&crate::editor::tabs::DeviceTab>) {
         self.connection_status = device.map(connection::status);
+        self.firmware_notice =
+            device.and_then(crate::editor::tabs::DeviceTab::guitar_firmware_notice);
         #[cfg(feature = "usb")]
         {
             self.refresh.observe(device);
