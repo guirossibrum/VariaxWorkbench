@@ -11,14 +11,20 @@ pub(super) fn fixture_image(preset: Preset) -> Image {
     settings[length..18].fill(b' ');
     image[METADATA].copy_from_slice(&settings);
     image[0] = key;
+    image[555 * 3..556 * 3].copy_from_slice(&[0xff; 3]);
     procedures::expected_stored_image(&image)
 }
 
-// Synthetic trim-only fixture with an otherwise empty DSP program. These
-// bytes do not model trim processing or authorize editing captured DSP.
+// The synthetic baseline assumes unity gain so the dependent DSP word has
+// a known value. The remaining DSP bytes do not model a playable preset.
 pub(super) fn fixture_edit(baseline: &Image) -> Image {
     let mut image = *baseline;
-    image[METADATA.start + 65..][..3].copy_from_slice(&(-6.0_f32).to_be_bytes()[..3]);
+    let trim = -6.0_f32;
+    // 10^(-6/20), rounded to the fixture's f32 input.
+    let gain = 0.501_187_2_f32;
+    let coefficient = ((gain * 8_388_607.0 + 0.5) as u32) | 0x80_0000;
+    image[555 * 3..556 * 3].copy_from_slice(&coefficient.to_be_bytes()[1..]);
+    image[METADATA.start + 65..][..3].copy_from_slice(&trim.to_be_bytes()[..3]);
     procedures::set_firmware_checksum(&mut image);
     image
 }

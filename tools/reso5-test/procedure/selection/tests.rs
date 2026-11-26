@@ -1048,6 +1048,46 @@ fn shared_store_and_reload_checks_gate_first_and_uses_exact_owner_wire_sequence(
 }
 
 #[test]
+fn custom_restore_default_model_render_changes_only_trim_and_its_gain() {
+    use crate::procedure::{SYSTEM_SLOT, TRIM_PARAM};
+    use variax_workbench::{host::ModelLibrary, preset::PresetFile};
+
+    let models = ModelLibrary::built_in().unwrap();
+    let mut model = PresetFile::default_legacy_model().unwrap();
+    model.rename("Synthetic Custom").unwrap();
+    let before = sources::render(&model, models).unwrap();
+    model
+        .set_parameter(SYSTEM_SLOT, TRIM_PARAM, 1, (-6.0_f32).to_bits())
+        .unwrap();
+    let after = sources::render(&model, models).unwrap();
+    let original = expected_stored_image(&before);
+    let edited = expected_stored_image(&after);
+
+    write::Program::new("Synthetic Custom", &original).unwrap();
+    assert_eq!(expected_stored_image(&original), original);
+    let words = |a: &Image, b: &Image| {
+        a.as_chunks::<3>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<3>().0)
+            .enumerate()
+            .filter_map(|(index, (old, new))| (old != new).then_some(index))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(words(&original, &edited), [555, 872, 873, 1091]);
+    let gain = |image: &Image| {
+        let [high, mid, low] = image.as_chunks::<3>().0[555];
+        assert_ne!(high & 0x80, 0, "trim flag");
+        u32::from_be_bytes([0, high & 0x7f, mid, low])
+    };
+    assert!((0..gain(&original)).contains(&gain(&edited)));
+    let mut settings = <[u8; 192]>::try_from(&original[METADATA]).unwrap();
+    assert_eq!(settings[65..68], [0; 3]);
+    settings[65..68].copy_from_slice(&[0xc0, 0xc0, 0]);
+    assert_eq!(edited[METADATA], settings);
+}
+
+#[test]
 #[ignore = "requires local #236 backup, archive and model manifest"]
 fn private_inputs_verify_spank_one_trim_difference() {
     let backup = std::env::var_os("VARIAX_SELECTION_BACKUP").unwrap();

@@ -8,6 +8,7 @@ use variax::{
 };
 
 mod fixture;
+mod proof;
 
 use fixture::{alter_program, fixture_edit, fixture_image, stopped_script};
 
@@ -271,16 +272,8 @@ fn rehearse(
     let restore = baseline.image(TARGET);
     let name = variax::PresetMetadata::from_bytes(restore[METADATA].try_into().unwrap())?.name;
     let recovery = Program::new(&name, restore)?;
-    if procedures::expected_stored_image(restore) != *restore {
-        return Err("Restore image changes under firmware stamping".into());
-    }
     let upload = Program::new(&name, edit)?;
-    let edit = procedures::expected_stored_image(edit);
-    // This oracle applies only to the synthetic fixture, with no DSP trim
-    // dependencies. Hardware candidates require their own provenance.
-    if edit != fixture_edit(restore) {
-        return Err("Synthetic edit has unrelated changes".into());
-    }
+    let edit = proof::verify(&recovery, &upload)?;
     verify_target(session, restore, "Edit preflight")?;
     procedures::return_to_preset(session, *start, &starting, |_| Ok(()))?;
     evidence.captures.push(verify_baseline(&baseline)?);
