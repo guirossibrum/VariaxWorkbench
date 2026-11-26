@@ -71,6 +71,7 @@ pub enum ResultDecision {
     Continue,
     Stop,
     Different(String),
+    Repeat,
 }
 
 pub const CONTROLS_NOTICE: &str = "Leave the guitar selector, the volume and tone knobs, and the PODxt footswitches and knobs alone until this finishes. Playing is fine.";
@@ -149,8 +150,6 @@ pub trait Operator {
     fn progress(&mut self, progress: Progress);
     /// Publish any outcome. If the step ran, wait for the person to read it.
     fn finished(&mut self, record: &StepRecord) -> ResultDecision;
-    /// Update the result after a reported display mismatch.
-    fn result_updated(&mut self, record: &StepRecord);
     /// The person asked to stop the running step.
     fn stop_requested(&self) -> bool;
 }
@@ -357,79 +356,93 @@ impl<'a> Runner<'a> {
             self.finish(id, outcome, None, None);
             return false;
         }
-        match self.op.confirm(step, self.run.mode) {
-            Decision::Skip => {
-                self.finish(id, Outcome::SkippedByPerson, None, None);
-                false
-            }
-            Decision::Stop => {
-                self.run.stopped_at = Some(id);
-                self.finish(
-                    id,
-                    Outcome::Stopped("You chose Stop before this step.".into()),
-                    None,
-                    None,
-                );
-                id != RIG_GUARD
-            }
-            Decision::Run => {
-                self.run.current = Some(id);
-                self.write_report();
-                let started = utc_now();
-                let clock = Instant::now();
-                let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
-                let result = {
-                    let mut ctx = Ctx {
-                        mode: self.run.mode,
-                        port: &mut *self.port,
-                        op: &mut *self.op,
-                        data: &mut self.data,
-                        rec: &mut rec,
-                    };
-                    ctx.op.progress(Progress::action(step.title));
-                    steps::execute(&mut ctx)
-                };
-                let stopped_now = self.op.stop_requested()
-                    || result
-                        .as_ref()
-                        .is_err_and(|reason| reason.starts_with(STOPPED));
-                let outcome = match result {
-                    Ok(()) => Outcome::Passed,
-                    Err(reason) if reason.starts_with(SKIPPED) => {
-                        rec.show(reason.trim_start_matches(SKIPPED));
-                        Outcome::SkippedByPerson
-                    }
-                    Err(error) if stopped_now => {
-                        Outcome::Stopped(error.trim_start_matches(STOPPED).into())
-                    }
-                    Err(error) => Outcome::Failed(error),
-                };
-                self.data.read_only |= matches!(outcome, Outcome::Failed(_));
-                if id == RIG_GUARD {
-                    self.run.rig_state = rec
-                        .evidence
-                        .iter()
-                        .filter_map(|line| line.strip_prefix("Rig: "))
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                        .join(" ");
+        let mut attempt_number = 1;
+        loop {
+            match self.op.confirm(step, self.run.mode) {
+                Decision::Skip => {
+                    self.finish(id, Outcome::SkippedByPerson, None, None);
+                    return false;
                 }
-                self.run.current = None;
-                super::hints::attach(&mut rec, &outcome);
-                *self.run.step_mut(id) = rec;
-                self.run.computer = self.data.computer.clone();
-                self.run.devices = self.data.devices.clone();
-                let continuing = self.finish(
-                    id,
-                    outcome,
-                    Some(started),
-                    Some(clock.elapsed().as_millis()),
-                );
-                if (stopped_now || !continuing) && id != RIG_GUARD {
+                Decision::Stop => {
                     self.run.stopped_at = Some(id);
-                    return true;
+                    self.finish(
+                        id,
+                        Outcome::Stopped("You chose Stop before this step.".into()),
+                        None,
+                        None,
+                    );
+                    return id != RIG_GUARD;
                 }
-                false
+                Decision::Run => {
+                    self.run.current = Some(id);
+                    self.write_report();
+                    let started = utc_now();
+                    let clock = Instant::now();
+                    let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
+                    rec.attempt = Some(attempt_number);
+                    let result = {
+                        let mut ctx = Ctx {
+                            mode: self.run.mode,
+                            port: &mut *self.port,
+                            op: &mut *self.op,
+                            data: &mut self.data,
+                            rec: &mut rec,
+                        };
+                        ctx.op.progress(Progress::action(step.title));
+                        steps::execute(&mut ctx)
+                    };
+                    let stopped_now = self.op.stop_requested()
+                        || result
+                            .as_ref()
+                            .is_err_and(|reason| reason.starts_with(STOPPED));
+                    let outcome = match result {
+                        Ok(()) => Outcome::Passed,
+                        Err(reason) if reason.starts_with(SKIPPED) => {
+                            rec.show(reason.trim_start_matches(SKIPPED));
+                            Outcome::SkippedByPerson
+                        }
+                        Err(error) if stopped_now => {
+                            Outcome::Stopped(error.trim_start_matches(STOPPED).into())
+                        }
+                        Err(error) => Outcome::Failed(error),
+                    };
+                    if id == RIG_GUARD {
+                        self.run.rig_state = rec
+                            .evidence
+                            .iter()
+                            .filter_map(|line| line.strip_prefix("Rig: "))
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                    }
+                    self.run.current = None;
+                    super::hints::attach(&mut rec, &outcome);
+                    *self.run.step_mut(id) = rec;
+                    self.run.computer = self.data.computer.clone();
+                    self.run.devices = self.data.devices.clone();
+                    let decision = self.finish(
+                        id,
+                        outcome,
+                        Some(started),
+                        Some(clock.elapsed().as_millis()),
+                    );
+                    if !stopped_now
+                        && decision == ResultDecision::Repeat
+                        && self.run.step(id).can_repeat()
+                    {
+                        let attempt = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
+                        self.run.prior_attempts.push(attempt);
+                        attempt_number += 1;
+                        self.write_report();
+                        continue;
+                    }
+                    self.data.read_only |= matches!(self.run.step(id).outcome, Outcome::Failed(_));
+                    if (stopped_now || decision == ResultDecision::Stop) && id != RIG_GUARD {
+                        self.run.stopped_at = Some(id);
+                        return true;
+                    }
+                    return false;
+                }
             }
         }
     }
@@ -518,7 +531,7 @@ impl<'a> Runner<'a> {
         outcome: Outcome,
         started: Option<String>,
         duration: Option<u128>,
-    ) -> bool {
+    ) -> ResultDecision {
         let rec = self.run.step_mut(id);
         rec.outcome = outcome;
         if started.is_some() {
@@ -528,8 +541,6 @@ impl<'a> Runner<'a> {
         let rec = rec.clone();
         self.write_report();
         match self.op.finished(&rec) {
-            ResultDecision::Continue => true,
-            ResultDecision::Stop => false,
             ResultDecision::Different(value) => {
                 let rec = self.run.step_mut(id);
                 if rec.outcome.passed()
@@ -541,10 +552,11 @@ impl<'a> Runner<'a> {
                     );
                     let rec = rec.clone();
                     self.write_report();
-                    self.op.result_updated(&rec);
+                    return self.op.finished(&rec);
                 }
-                true
+                ResultDecision::Continue
             }
+            decision => decision,
         }
     }
 }

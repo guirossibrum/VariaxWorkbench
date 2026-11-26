@@ -307,7 +307,7 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("The target preset is missing from the backup.")?;
     guided(
         ctx,
-        &format!("Turn the selector to {name}."),
+        &format!("Turn the Variax selector to {name}."),
         &format!("{name}."),
         &format!("program change to {name}"),
         &[UserAction::TurnSelector(target)],
@@ -328,7 +328,7 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let start_name = preset_label(start);
     guided(
         ctx,
-        &format!("Turn the selector back to {start_name}."),
+        &format!("Turn the Variax selector back to {start_name}."),
         &format!("{start_name}, your starting sound."),
         &format!("program change back to {start_name}"),
         &[UserAction::TurnSelector(start)],
@@ -388,7 +388,7 @@ impl Range {
 pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let (volume, tone) = guided(
         ctx,
-        "Turn the volume knob down and up, then the tone knob down and up. Leave them where they were.",
+        "On the Variax, turn volume down and up, then tone down and up. Leave them where they were.",
         "The volume and the tone change while you turn.",
         "volume (CC 7) and tone (CC 79) sweeps",
         &[UserAction::SweepVariaxKnobs],
@@ -553,7 +553,10 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("The target channel is missing from the backup.")?;
     let now = guided(
         ctx,
-        &format!("Press the footswitch for channel {}.", target.label()),
+        &format!(
+            "On the PODxt Live, press the footswitch for channel {}.",
+            target.label()
+        ),
         &format!("Channel {}.", target.label()),
         &format!("channel change to {}", target.label()),
         &[UserAction::PodxtFootswitch(target.index())],
@@ -573,7 +576,10 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ));
     let back = guided(
         ctx,
-        &format!("Press the footswitch for channel {} again.", start.label()),
+        &format!(
+            "On the PODxt Live, press the footswitch for channel {} again.",
+            start.label()
+        ),
         &format!("Channel {}, your starting tone.", start.label()),
         &format!("channel change back to {}", start.label()),
         &[UserAction::PodxtFootswitch(start.index())],
@@ -601,7 +607,7 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
 pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let range = guided(
         ctx,
-        "Rock the pedal from heel to toe and back, then leave it where it was.",
+        "Rock the PODxt Live pedal from heel to toe and back, then leave it where it was.",
         "The volume or the wah follows the pedal.",
         "pedal sweep (CC 7 or CC 4)",
         &[UserAction::MovePedal],
@@ -675,7 +681,7 @@ pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
     };
     let changed = guided(
         ctx,
-        &format!("Turn Drive away from its starting value of {before}."),
+        &format!("Turn the PODxt Live Drive knob away from its starting value of {before}."),
         "The drive setting changes.",
         "a new Drive value",
         &[UserAction::PodxtKnob(trial)],
@@ -687,7 +693,7 @@ pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ));
     guided(
         ctx,
-        &format!("Turn Drive back to {before}."),
+        &format!("Turn the PODxt Live Drive knob back to {before}."),
         "Your starting Drive setting.",
         "the starting Drive value",
         &[UserAction::PodxtKnob(before)],

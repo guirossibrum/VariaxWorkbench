@@ -111,6 +111,13 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
         render_step(&mut out, step);
     }
 
+    if !run.prior_attempts.is_empty() {
+        section(&mut out, "EARLIER ATTEMPTS");
+        for attempt in &run.prior_attempts {
+            render_step(&mut out, attempt);
+        }
+    }
+
     section(&mut out, "MACHINE-READABLE");
     let _ = writeln!(out, "{JSON_BEGIN}");
     let _ = writeln!(out, "{}", json(run, written));
@@ -126,6 +133,9 @@ fn render_step(out: &mut String, step: &StepRecord) {
         step.title,
         step.outcome.label()
     );
+    if let Some(attempt) = step.attempt {
+        let _ = writeln!(out, "  Attempt: {attempt}");
+    }
     if let Some(reason) = step.outcome.reason() {
         let _ = writeln!(out, "  Reason: {reason}");
     }
@@ -216,35 +226,10 @@ fn json_list(items: &[String]) -> String {
 /// One compact JSON object describing the run (no message bytes; those are
 /// in the text above).
 pub fn json(run: &RunRecord, written: &str) -> String {
-    let steps: Vec<String> = run
-        .steps
-        .iter()
-        .map(|step| {
-            format!(
-                "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
-                json_string(&step.id.to_string()),
-                json_string(step.title),
-                json_string(step.outcome.code()),
-                step.outcome.reason().map_or("null".into(), json_string),
-                step.outcome.technical_note().map_or("null".into(), json_string),
-                step.started.as_deref().map_or("null".into(), json_string),
-                step.duration_ms.map_or("null".into(), |d| d.to_string()),
-                step.retries,
-                step.messages.len(),
-                json_pairs(&step.answers),
-                step.look.as_ref().map_or("null".into(), |look| format!(
-                    "{{\"expected\":{},\"different\":{}}}",
-                    json_string(&look.expected),
-                    look.different.as_deref().map_or("null".into(), json_string),
-                )),
-                json_pairs(&step.checksums),
-                json_list(&step.evidence),
-                json_list(&step.hints),
-            )
-        })
-        .collect();
+    let steps = run.steps.iter().map(json_step).collect::<Vec<_>>();
+    let prior = run.prior_attempts.iter().map(json_step).collect::<Vec<_>>();
     format!(
-        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"rig_state\":{},\"computer\":{},\"devices\":{},\"steps\":[{}]}}",
+        "{{\"report_format\":{REPORT_FORMAT},\"app_version\":{},\"git_commit\":{},\"catalogue_version\":{},\"mode\":{},\"started\":{},\"written\":{},\"finished\":{},\"stopped_at\":{},\"rig_state\":{},\"computer\":{},\"devices\":{},\"steps\":[{}],\"prior_attempts\":[{}]}}",
         json_string(run.app_version),
         run.git_commit.map_or("null".into(), json_string),
         json_string(run.catalogue_version),
@@ -257,7 +242,36 @@ pub fn json(run: &RunRecord, written: &str) -> String {
         json_string(&run.rig_state),
         json_pairs(&run.computer),
         json_pairs(&run.devices),
-        steps.join(",")
+        steps.join(","),
+        prior.join(",")
+    )
+}
+
+fn json_step(step: &StepRecord) -> String {
+    format!(
+        "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
+        json_string(&step.id.to_string()),
+        json_string(step.title),
+        json_string(step.outcome.code()),
+        step.outcome.reason().map_or("null".into(), json_string),
+        step.outcome
+            .technical_note()
+            .map_or("null".into(), json_string),
+        step.started.as_deref().map_or("null".into(), json_string),
+        step.attempt
+            .map_or("null".into(), |number| number.to_string()),
+        step.duration_ms.map_or("null".into(), |d| d.to_string()),
+        step.retries,
+        step.messages.len(),
+        json_pairs(&step.answers),
+        step.look.as_ref().map_or("null".into(), |look| format!(
+            "{{\"expected\":{},\"different\":{}}}",
+            json_string(&look.expected),
+            look.different.as_deref().map_or("null".into(), json_string),
+        )),
+        json_pairs(&step.checksums),
+        json_list(&step.evidence),
+        json_list(&step.hints),
     )
 }
 

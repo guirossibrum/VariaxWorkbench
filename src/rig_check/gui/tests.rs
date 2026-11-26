@@ -280,7 +280,7 @@ fn different_opens_a_field_and_enter_records_exact_text() {
     record.started = Some("practice".into());
     record.outcome = Outcome::Passed;
     record.look_at("Compare the display.", "Practice 5B");
-    let (mut wizard, replies) = wired(Prompt::Finished(record));
+    let (mut wizard, replies) = wired(Prompt::Finished(Box::new(record)));
     let output = ctx.run(
         RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1180.0, 800.0))),
@@ -388,7 +388,7 @@ fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
     current.started = Some("practice".into());
     current.outcome = Outcome::Passed;
     current.show("Channel 1A: Practice 1A");
-    let (mut wizard, rx) = wired(Prompt::Finished(current.clone()));
+    let (mut wizard, rx) = wired(Prompt::Finished(Box::new(current.clone())));
     let mut previous = StepRecord::new(StepId(2, 1));
     previous.outcome = Outcome::Passed;
     previous.show("PODxt Live, firmware 3.01 (verified device)");
@@ -474,7 +474,7 @@ fn backspace_reviews_previous_results_and_c_resumes_the_same_card() {
     let ctx = egui::Context::default();
     let pending = StepId(2, 2);
     let (mut wizard, replies) = wired(Prompt::Card(pending, Mode::Practice));
-    wizard.start_accepted = true;
+    wizard.start_accepted = Some(catalogue::START_NOTICE);
     for id in [StepId(1, 2), StepId(2, 1)] {
         let mut record = StepRecord::new(id);
         record.outcome = Outcome::Passed;
@@ -515,4 +515,20 @@ fn first_card_back_shows_the_already_accepted_start_notice() {
             .any(|line| line == "Accept and continue" || line == "Quit")
     );
     assert!(replies.try_recv().is_err());
+}
+
+#[test]
+fn review_shows_the_start_notice_accepted_for_this_mac() {
+    let ctx = egui::Context::default();
+    let (mut wizard, _) = wired(Prompt::Start(catalogue::MAC_START_NOTICE.into()));
+    wizard.reply(Reply::Accept(true));
+    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Real));
+    wizard.go_back();
+    assert_eq!(wizard.reviewing, Some(Review::Start));
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(
+        texts
+            .iter()
+            .any(|line| line.contains("Rig Check can check this Mac"))
+    );
 }

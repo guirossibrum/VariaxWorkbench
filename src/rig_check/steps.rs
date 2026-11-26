@@ -33,12 +33,13 @@ pub struct RunData {
     pub start_channel: Option<Location>,
     pub podxt_library: Vec<(Location, EditBuffer)>,
     /// Reads from steps 2.3 and 2.4, compared with the backup in 2.5.
-    pub podxt_reads: Vec<(Location, Result<EditBuffer, String>)>,
+    pub podxt_reads: Vec<super::podxt_reads::ChannelRead>,
     pub start_program: Option<Program>,
     /// The 192 settings bytes from step 3.2.
     pub start_settings: Option<[u8; 192]>,
     pub start_preset: Option<Preset>,
     pub variax_library: Vec<(Preset, Program)>,
+    pub variax_backup_folder: Option<String>,
     pub touched_podxt: bool,
     pub touched_variax: bool,
     pub store_state_unknown: bool,
@@ -405,6 +406,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
     // The backup in the shared library's own format, so step 5.2 can verify
     // it with the same code as the editor. Practice mode without an evidence
     // folder uses a private temporary folder.
+    let folder_name = ctx.rec.evidence_folder("podxt-library");
     let root = match ctx.data.evidence_dir.clone() {
         Some(root) => Some(root),
         None if ctx.mode == Mode::Practice => {
@@ -417,7 +419,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
     };
     if let Some(root) = root {
         use line6_devices::backup::BackupFolder;
-        let mut folder = BackupFolder::create(&root, "podxt-library")?;
+        let mut folder = BackupFolder::create(&root, &folder_name)?;
         folder.record(format!(
             "PODxt Live library backup at {} (Rig Check step 2.5)",
             super::record::utc_now()
@@ -428,7 +430,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec.note(format!(
             "Saved the 299-entry backup to {} (manifest SHA-256 {}).",
             if ctx.data.evidence_dir.is_some() {
-                "the evidence folder podxt-library"
+                &folder_name
             } else {
                 "a temporary practice folder"
             },
@@ -447,6 +449,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
             "{content} earlier channel read(s) differ in content from the backup."
         ));
     }
+    ctx.data.start_channel = None;
     if let Some(start) = &ctx.data.start_tone {
         let matches: Vec<Location> = ctx
             .data
@@ -668,9 +671,11 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 )
             })
             .collect();
-        let manifest = evidence::save_folder(&root, "variax-library", &files)?;
+        let folder = ctx.rec.evidence_folder("variax-library");
+        let manifest = evidence::save_folder(&root, &folder, &files)?;
+        ctx.data.variax_backup_folder = Some(folder.clone());
         ctx.rec.note(format!(
-            "Saved {} programs to the evidence folder variax-library (manifest SHA-256 {manifest}).",
+            "Saved {} programs to the evidence folder {folder} (manifest SHA-256 {manifest}).",
             files.len()
         ));
     }

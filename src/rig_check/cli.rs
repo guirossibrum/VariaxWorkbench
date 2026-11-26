@@ -1,6 +1,6 @@
 //! Terminal front end. Every answer defaults to "do not run".
 
-use super::catalogue::{START_NOTICE, SaveNotice, Step, StepId};
+use super::catalogue::{SaveNotice, Step, StepId, accepted_start_notice};
 use super::history::{self, Review};
 use super::record::{Mode, StepRecord, plain_result};
 use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
@@ -13,7 +13,7 @@ pub struct Terminal<R, W> {
     input: R,
     output: W,
     results: Vec<StepRecord>,
-    start_accepted: bool,
+    start_accepted: Option<&'static str>,
     keyboard: Option<Rc<Receiver<String>>>,
     stop: Rc<Cell<bool>>,
 }
@@ -24,7 +24,7 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
             input,
             output,
             results: Vec::new(),
-            start_accepted: false,
+            start_accepted: None,
             keyboard: None,
             stop: Rc::new(Cell::new(false)),
         }
@@ -83,7 +83,9 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
             let previous = match view {
                 Review::Start => {
                     self.say("Start notice (accepted)");
-                    self.say(START_NOTICE);
+                    if let Some(notice) = self.start_accepted {
+                        self.say(notice);
+                    }
                     None
                 }
                 Review::Result(id) => {
@@ -92,7 +94,7 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
                         break;
                     };
                     self.show_result(&record);
-                    history::back(&self.results, Some(id), self.start_accepted)
+                    history::back(&self.results, Some(id), self.start_accepted.is_some())
                 }
             };
             if previous.is_some() {
@@ -165,14 +167,16 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         self.say(notice);
         self.say("\nType accept to start. Anything else quits. [Quit]");
         let accepted = matches!(self.line().to_ascii_lowercase().as_str(), "accept" | "a");
-        self.start_accepted |= accepted && notice == START_NOTICE;
+        if accepted && let Some(notice) = accepted_start_notice(notice) {
+            self.start_accepted = Some(notice);
+        }
         accepted
     }
 
     fn confirm(&mut self, step: &Step, mode: Mode) -> Decision {
         self.stop.set(false);
         let card = card_text(step, mode);
-        let back = history::back(&self.results, None, self.start_accepted);
+        let back = history::back(&self.results, None, self.start_accepted.is_some());
         loop {
             self.say(&card);
             let label = if back.is_some() { "[b] Back   " } else { "" };
@@ -303,12 +307,21 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
             return ResultDecision::Continue;
         }
         let look = record.outcome.passed() && record.look.is_some();
-        let back = history::back(&self.results, Some(record.id), self.start_accepted);
+        let back = history::back(
+            &self.results,
+            Some(record.id),
+            self.start_accepted.is_some(),
+        );
         loop {
             let label = if back.is_some() { "[b] Back   " } else { "" };
             let different = if look { "[d] Different…   " } else { "" };
+            let repeat = if record.can_repeat() {
+                "[r] Repeat this step   "
+            } else {
+                ""
+            };
             self.say(&format!(
-                "{label}[c] Continue   {different}[q] Stop.   Enter = Continue"
+                "{label}[c] Continue   {different}{repeat}[q] Stop.   Enter = Continue"
             ));
             let Some(response) = self.response() else {
                 return ResultDecision::Stop;
@@ -316,6 +329,7 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
             match response.to_ascii_lowercase().as_str() {
                 "" | "c" | "continue" => return ResultDecision::Continue,
                 "q" | "stop" => return ResultDecision::Stop,
+                "r" | "repeat" if record.can_repeat() => return ResultDecision::Repeat,
                 "d" | "different" if look => {
                     self.say("Type exactly what the device shows. Enter alone goes back.");
                     match self.raw_response() {
@@ -333,17 +347,6 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
                 _ => {}
             }
         }
-    }
-
-    fn result_updated(&mut self, record: &StepRecord) {
-        if let Some(previous) = self
-            .results
-            .iter_mut()
-            .find(|previous| previous.id == record.id)
-        {
-            *previous = record.clone();
-        }
-        self.show_result(record);
     }
 
     fn stop_requested(&self) -> bool {
@@ -370,6 +373,24 @@ mod tests {
         let output = String::from_utf8(terminal.into_output()).unwrap();
         assert!(output.contains("[d] Different…"));
         assert!(output.contains("Type exactly what the device shows."));
+    }
+
+    #[test]
+    fn repeat_is_available_for_a_read_but_absent_for_a_save() {
+        for (id, expected) in [
+            (StepId(3, 3), ResultDecision::Repeat),
+            (StepId(5, 1), ResultDecision::Continue),
+        ] {
+            let mut record = StepRecord::new(id);
+            record.started = Some("practice".into());
+            record.attempt = Some(1);
+            record.outcome = Outcome::Passed;
+            let repeatable = expected == ResultDecision::Repeat;
+            let mut terminal = Terminal::new(&b"r\nc\n"[..], Vec::new());
+            assert_eq!(terminal.finished(&record), expected);
+            let transcript = String::from_utf8(terminal.into_output()).unwrap();
+            assert_eq!(transcript.contains("Repeat this step"), repeatable);
+        }
     }
 
     #[test]

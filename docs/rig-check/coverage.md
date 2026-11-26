@@ -36,6 +36,6 @@ for a guided step yet.
 
 The normal run performs reads and guided checks before live edits and
 saves. A failed step disables later live edits and stores. A skipped or
-otherwise unpassed earlier step also disables saves. The conditional
-firmware evidence step is excluded from normal-run prerequisites. If a
+otherwise unpassed earlier step also disables saves. A compatibility check skipped
+automatically on tested firmware permits later steps to proceed. If a
 store outcome is unknown, Rig Check ends with USB release only.

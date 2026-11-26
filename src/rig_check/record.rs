@@ -122,6 +122,7 @@ pub struct StepRecord {
     pub outcome: Outcome,
     /// UTC start, `YYYY-MM-DD HH:MM:SS UTC`.
     pub started: Option<String>,
+    pub attempt: Option<usize>,
     pub duration_ms: Option<u128>,
     /// Questions and the person's answers, in order.
     pub answers: Vec<(String, String)>,
@@ -146,6 +147,7 @@ impl StepRecord {
             title: catalogue::step(id).map_or("?", |s| s.title),
             outcome: Outcome::NotReached,
             started: None,
+            attempt: None,
             duration_ms: None,
             answers: Vec::new(),
             look: None,
@@ -187,6 +189,24 @@ impl StepRecord {
             }
         }
         lines
+    }
+
+    pub fn evidence_folder(&self, base: &str) -> String {
+        match self.attempt {
+            Some(number) if number > 1 => format!("{base}-attempt-{number}"),
+            _ => base.into(),
+        }
+    }
+
+    pub fn can_repeat(&self) -> bool {
+        if self.attempt.is_none() || self.started.is_none() {
+            return false;
+        }
+        catalogue::step(self.id).is_some_and(|step| step.risk != catalogue::Risk::Save)
+            && matches!(
+                self.outcome,
+                Outcome::Passed | Outcome::Failed(_) | Outcome::SkippedByPerson
+            )
     }
 
     pub fn look_at(&mut self, prompt: &'static str, expected: impl Into<String>) {
@@ -261,6 +281,7 @@ pub struct RunRecord {
     pub computer: Vec<(String, String)>,
     pub devices: Vec<(String, String)>,
     pub steps: Vec<StepRecord>,
+    pub prior_attempts: Vec<StepRecord>,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
     pub finished: bool,
@@ -288,6 +309,7 @@ impl RunRecord {
                 .iter()
                 .map(|id| StepRecord::new(*id))
                 .collect(),
+            prior_attempts: Vec::new(),
             rig_state: "Not checked yet.".into(),
             finished: false,
             stopped_at: None,

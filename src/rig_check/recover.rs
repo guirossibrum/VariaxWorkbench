@@ -488,6 +488,42 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_vdi_attempt_can_be_repeated_and_the_pass_unblocks_saves() {
+        use crate::rig_check::run_on;
+        let id = StepId(6, 1);
+        let rig = SimRig::shared(Faults::default());
+        let mut port = PracticePort::new(rig.clone());
+        let mut script = Script::run_all();
+        script.repeat_once = Some(id);
+        let attempt = std::rc::Rc::new(std::cell::Cell::new(0));
+        let card_attempt = attempt.clone();
+        let on_card = rig.clone();
+        script.on_card = Some(Box::new(move |step| {
+            if step == id {
+                card_attempt.set(card_attempt.get() + 1);
+                on_card.borrow_mut().variax.firmware = *b"0310";
+            }
+        }));
+        let on_prepare = rig.clone();
+        script.on_prepare = Some(Box::new(move |step| {
+            if step == id && attempt.get() == 1 && !on_prepare.borrow().variax.connected {
+                on_prepare.borrow_mut().variax.firmware = *b"0309";
+            }
+        }));
+        let (run, _) = run_on(&mut port, &mut script, &mut NoReport, RunData::default());
+        assert_eq!(run.prior_attempts.len(), 1);
+        assert_eq!(run.prior_attempts[0].id, id);
+        assert_eq!(run.prior_attempts[0].attempt, Some(1));
+        assert!(matches!(run.prior_attempts[0].outcome, Outcome::Failed(_)));
+        assert!(run.step(id).outcome.passed());
+        assert_eq!(run.step(id).attempt, Some(2));
+        assert!(run.step(StepId(5, 1)).outcome.passed());
+        assert!(
+            crate::rig_check::report::render_plain(&run, "practice").contains("EARLIER ATTEMPTS")
+        );
+    }
+
+    #[test]
     fn the_vdi_replug_is_noticed_and_the_identity_read_again() {
         let mut person = Script::run_all();
         let (run, _, rig) = crate::rig_check::run_practice(

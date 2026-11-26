@@ -51,6 +51,11 @@ testing the app's matching writes.
 - **Continue** starts with focus on the result screen. It returns to the next
   card, which still requires its own Run choice. **Stop** ends the run and
   offers the closing rig check in a normal run.
+- **Repeat this step** on a current read, guided or live result asks for
+  Start or Run again. Live repeats perform the complete action and verified
+  return. Saves have no repeat control. The report keeps the earlier
+  attempts, and the latest outcome governs later steps. Repeated backups get
+  their own evidence folders.
 - The running screen puts the current action and elapsed time up front.
   Repeated work shows completed and total counts. Confirmation waits, the
   silent-timeout hold and guided windows show time left. During device work,

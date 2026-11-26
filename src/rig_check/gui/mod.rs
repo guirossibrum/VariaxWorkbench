@@ -57,8 +57,7 @@ pub enum Prompt {
     },
     Ask(Question),
     Progress(Progress),
-    Finished(StepRecord),
-    Recorded(StepRecord),
+    Finished(Box<StepRecord>),
     Done {
         run: Box<RunRecord>,
         report: String,
@@ -89,6 +88,7 @@ pub enum Reply {
     Answer(Answer, String),
     Continue(bool),
     Different(String),
+    Repeat,
 }
 
 /// The runner's side: blocks on the window's answer. A closed window
@@ -192,7 +192,7 @@ impl Operator for ChannelOperator {
     }
 
     fn finished(&mut self, record: &StepRecord) -> ResultDecision {
-        let prompt = Prompt::Finished(record.clone());
+        let prompt = Prompt::Finished(Box::new(record.clone()));
         if !prompt.needs_reply() {
             self.send(prompt);
             return ResultDecision::Continue;
@@ -200,12 +200,9 @@ impl Operator for ChannelOperator {
         match self.request(prompt) {
             Some(Reply::Continue(true)) => ResultDecision::Continue,
             Some(Reply::Different(value)) => ResultDecision::Different(value),
+            Some(Reply::Repeat) => ResultDecision::Repeat,
             _ => ResultDecision::Stop,
         }
-    }
-
-    fn result_updated(&mut self, record: &StepRecord) {
-        self.send(Prompt::Recorded(record.clone()));
     }
 
     fn stop_requested(&self) -> bool {
@@ -221,7 +218,7 @@ pub struct Wizard {
     pub running: Option<StepId>,
     pub progress: Vec<StepRecord>,
     reviewing: Option<Review>,
-    start_accepted: bool,
+    start_accepted: Option<&'static str>,
     different_open: bool,
     activity: Option<(Progress, Instant)>,
     guided_action: Option<(Arc<AtomicBool>, Arc<super::guided::ActionClock>)>,
@@ -246,7 +243,7 @@ impl Default for Wizard {
             running: None,
             progress: Vec::new(),
             reviewing: None,
-            start_accepted: false,
+            start_accepted: None,
             different_open: false,
             activity: None,
             guided_action: None,
@@ -323,9 +320,10 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
 impl Wizard {
     fn reply(&mut self, reply: Reply) {
         if matches!(reply, Reply::Accept(true))
-            && matches!(&self.prompt, Some(Prompt::Start(notice)) if notice == catalogue::START_NOTICE)
+            && let Some(Prompt::Start(notice)) = &self.prompt
+            && let Some(notice) = catalogue::accepted_start_notice(notice)
         {
-            self.start_accepted = true;
+            self.start_accepted = Some(notice);
         }
         if let (Some(Prompt::Card(step, _)), Reply::Decision(Decision::Run)) =
             (&self.prompt, &reply)
@@ -379,15 +377,6 @@ impl Wizard {
                     }
                     self.activity = Some((progress, Instant::now()));
                 }
-                Prompt::Recorded(record) => {
-                    if let Some(previous) = self
-                        .progress
-                        .iter_mut()
-                        .find(|previous| previous.id == record.id)
-                    {
-                        *previous = record;
-                    }
-                }
                 Prompt::Finished(record) => {
                     self.running = None;
                     self.activity = None;
@@ -400,7 +389,7 @@ impl Wizard {
                         self.prompt = Some(Prompt::Finished(record.clone()));
                         self.focus_armed = true;
                     }
-                    self.progress.push(record);
+                    self.progress.push(*record);
                 }
                 Prompt::Instruct { step, see, hear } => self.instruction = Some((step, see, hear)),
                 other => {
@@ -503,7 +492,7 @@ impl Wizard {
                 _ => return None,
             },
         };
-        history::back(&self.progress, anchor, self.start_accepted)
+        history::back(&self.progress, anchor, self.start_accepted.is_some())
     }
 
     fn go_back(&mut self) {
@@ -569,7 +558,7 @@ impl Wizard {
             Some(Review::Start) => {
                 section_panel(ui, "Start notice (accepted)", |ui| {
                     ui.label(
-                        RichText::new(catalogue::START_NOTICE)
+                        RichText::new(self.start_accepted.unwrap_or_default())
                             .size(BODY + 1.0)
                             .color(TEXT),
                     );
@@ -642,9 +631,15 @@ impl Wizard {
     fn result(&mut self, ui: &mut egui::Ui, record: &StepRecord, awaiting: bool) {
         let (_, colour) = outcome_tag(&record.outcome);
         ui.label(
-            RichText::new(format!("Step {} result", record.id))
-                .size(SECTION)
-                .color(MUTED),
+            RichText::new(
+                if let Some(attempt) = record.attempt.filter(|attempt| *attempt > 1) {
+                    format!("Step {} result · attempt {attempt}", record.id)
+                } else {
+                    format!("Step {} result", record.id)
+                },
+            )
+            .size(SECTION)
+            .color(MUTED),
         );
         ui.label(
             RichText::new(record.title)
@@ -691,6 +686,7 @@ impl Wizard {
                 let different = record.outcome.passed()
                     && record.look.is_some()
                     && button(ui, "Different…", true).clicked();
+                let repeat = record.can_repeat() && button(ui, "Repeat this step", true).clicked();
                 let stop = button(ui, "Stop", true);
                 let back = button(ui, "Back", self.back_target().is_some());
                 if back.clicked() {
@@ -698,6 +694,8 @@ impl Wizard {
                 } else if different {
                     self.different_open = true;
                     self.focus_armed = true;
+                } else if repeat {
+                    self.reply(Reply::Repeat);
                 } else if next.clicked() {
                     self.reply(Reply::Continue(true));
                 } else if stop.clicked() {
@@ -1224,7 +1222,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     }
     let with_progress = |mut wizard: Wizard, upto: usize| {
         wizard.progress = done[..upto].to_vec();
-        wizard.start_accepted = true;
+        wizard.start_accepted = Some(catalogue::START_NOTICE);
         wizard
     };
     let mut states = vec![
@@ -1311,13 +1309,17 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     ));
     let mut record = StepRecord::new(StepId(2, 3));
     record.started = Some("2026-11-25 22:02:00 UTC".into());
+    record.attempt = Some(1);
     record.outcome = Outcome::Passed;
     record.show("Channel 1A: Practice 1A");
     record.look_at(
         "If the PODxt Live is already on this channel, does its display show the same name?",
         "Practice 1A",
     );
-    let mut difference = with_progress(practice(Some(Prompt::Finished(record.clone()))), 10);
+    let mut difference = with_progress(
+        practice(Some(Prompt::Finished(Box::new(record.clone())))),
+        10,
+    );
     difference.different_open = true;
     difference.typed = "Other tone".into();
     let mut run = RunRecord::new(Mode::Practice, "2026-11-25 22:00:00 UTC".into());
@@ -1338,7 +1340,10 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     );
     summary.preview = true;
     states.push(("10-summary-preview", summary));
-    let mut result = with_progress(practice(Some(Prompt::Finished(record.clone()))), 10);
+    let mut result = with_progress(
+        practice(Some(Prompt::Finished(Box::new(record.clone())))),
+        10,
+    );
     result.progress.push(record);
     result.focus_armed = true;
     states.push(("11-step-result", result));
@@ -1354,7 +1359,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     history.go_back();
     states.push(("12-review-result", history));
     let mut start = practice(Some(Prompt::Card(StepId(0, 1), Mode::Practice)));
-    start.start_accepted = true;
+    start.start_accepted = Some(catalogue::START_NOTICE);
     start.go_back();
     states.push(("13-review-start", start));
     states.push(("14-display-difference", difference));

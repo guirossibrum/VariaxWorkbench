@@ -16,7 +16,9 @@ pub struct Script {
     pub save_overrides: Vec<(StepId, SaveTyping)>,
     pub retry: Retry,
     pub retry_choices: std::collections::VecDeque<Retry>,
+    pub repeat_once: Option<StepId>,
     pub on_card: Option<Box<dyn FnMut(StepId)>>,
+    pub on_prepare: Option<Box<dyn FnMut(StepId)>>,
     pub on_missed: Option<Box<dyn FnMut(StepId)>>,
     pub answer: Answer,
     pub cards: Vec<StepId>,
@@ -50,7 +52,9 @@ impl Script {
             save_overrides: Vec::new(),
             retry: Retry::Skip,
             retry_choices: std::collections::VecDeque::new(),
+            repeat_once: None,
             on_card: None,
+            on_prepare: None,
             on_missed: None,
             answer: Answer::Yes,
             cards: Vec::new(),
@@ -130,7 +134,10 @@ impl Operator for Script {
         self.retry_choices.pop_front().unwrap_or(self.retry)
     }
 
-    fn prepare_action(&mut self, _: StepId, _: &str, _: &str) -> Decision {
+    fn prepare_action(&mut self, step: StepId, _: &str, _: &str) -> Decision {
+        if let Some(callback) = &mut self.on_prepare {
+            callback(step);
+        }
         Decision::Run
     }
 
@@ -155,17 +162,22 @@ impl Operator for Script {
     }
 
     fn finished(&mut self, record: &StepRecord) -> ResultDecision {
+        self.finished.retain(|(id, _)| *id != record.id);
         self.finished.push((record.id, record.outcome.clone()));
-        if let Some((id, value)) = &self.different
-            && *id == record.id
+        if self.repeat_once == Some(record.id) && record.can_repeat() {
+            self.repeat_once = None;
+            return ResultDecision::Repeat;
+        }
+        if self
+            .different
+            .as_ref()
+            .is_some_and(|(id, _)| *id == record.id)
+            && record.outcome.passed()
         {
-            return ResultDecision::Different(value.clone());
+            let (_, value) = self.different.take().expect("display response was present");
+            return ResultDecision::Different(value);
         }
         ResultDecision::Continue
-    }
-
-    fn result_updated(&mut self, record: &StepRecord) {
-        self.finished.last_mut().expect("result was shown").1 = record.outcome.clone();
     }
 
     fn stop_requested(&self) -> bool {
@@ -430,6 +442,72 @@ mod tests {
                 .collect();
             assert_eq!(waits, [receipt, Duration::from_mins(2).as_secs()]);
         }
+    }
+
+    #[test]
+    fn repeating_a_listening_step_sends_and_returns_again_without_repeating_saves() {
+        let id = StepId(4, 3);
+        let mut person = Script::run_all();
+        person.repeat_once = Some(id);
+        let (run, _, rig) = run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        assert_eq!(run.prior_attempts.len(), 1);
+        for step in [&run.prior_attempts[0], run.step(id)] {
+            assert_eq!(step.id, id);
+            assert!(step.outcome.passed());
+            assert!(
+                step.messages
+                    .iter()
+                    .any(|line| line.contains("OUT f0 00 01 0c 07 00 43"))
+            );
+            assert!(
+                !step
+                    .messages
+                    .iter()
+                    .any(|line| line.contains("OUT f0 00 01 0c 07 00 61"))
+            );
+            assert!(
+                step.result
+                    .iter()
+                    .any(|line| line.contains("all 1,092 words match the start"))
+            );
+        }
+        assert!(!run.step(StepId(5, 1)).can_repeat());
+        assert!(at_start(&rig));
+        assert!(
+            super::super::report::json(&run, "practice")
+                .contains(r#""prior_attempts":[{"id":"4.3""#)
+        );
+    }
+
+    #[test]
+    fn repeating_a_library_read_keeps_both_backups_and_uses_the_latest_for_save() {
+        let mut person = Script::run_all();
+        person.repeat_once = Some(StepId(3, 4));
+        let folder = tempfile::tempdir().unwrap();
+        let (run, _, _) = run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData {
+                evidence_dir: Some(folder.path().into()),
+                ..RunData::default()
+            },
+        );
+        for name in ["variax-library", "variax-library-attempt-2"] {
+            line6_devices::backup::verify_manifest(&folder.path().join(name)).unwrap();
+        }
+        assert!(run.step(StepId(5, 1)).outcome.passed());
+        assert!(
+            person
+                .saves
+                .iter()
+                .any(|notice| notice.contains("variax-library-attempt-2/14-Spank-1.bin"))
+        );
     }
 
     #[test]

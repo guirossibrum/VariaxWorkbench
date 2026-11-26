@@ -1,12 +1,19 @@
 //! Steps 2.3 and 2.4 (#254): stored PODxt Live channels by memory location,
 //! and their comparison with the library backup from step 2.5.
 
+use super::catalogue::StepId;
 use super::procedures::{PODXT_LIBRARY, podxt_read_stored, with_podxt_progress};
 use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt::{BankKind, EditBuffer, Location};
 use line6_devices::midi::hex;
 
 /// The channel read by step 2.3 and the bank read by step 2.4.
+pub struct ChannelRead {
+    step: StepId,
+    location: Location,
+    result: Result<EditBuffer, String>,
+}
+
 pub const ONE_CHANNEL: u16 = 0; // 1A
 pub const ONE_BANK: u16 = 0; // 1A-1D
 
@@ -35,6 +42,8 @@ fn record(ctx: &mut Ctx<'_>, location: Location, result: &Result<EditBuffer, Str
 }
 
 fn read_channels(ctx: &mut Ctx<'_>, indices: &[u16]) -> Result<(), String> {
+    let step = ctx.step();
+    ctx.data.podxt_reads.retain(|read| read.step != step);
     let locations: Vec<Location> = indices
         .iter()
         .map(|&i| Location::new(BankKind::Tones, i).expect("tone index"))
@@ -71,7 +80,13 @@ fn read_channels(ctx: &mut Ctx<'_>, indices: &[u16]) -> Result<(), String> {
             failures.push(error.clone());
         }
     }
-    ctx.data.podxt_reads.extend(results);
+    ctx.data
+        .podxt_reads
+        .extend(results.into_iter().map(|(location, result)| ChannelRead {
+            step,
+            location,
+            result,
+        }));
     if failures.is_empty() {
         Ok(())
     } else {
@@ -81,7 +96,10 @@ fn read_channels(ctx: &mut Ctx<'_>, indices: &[u16]) -> Result<(), String> {
 
 pub fn one_channel(ctx: &mut Ctx<'_>) -> Result<(), String> {
     read_channels(ctx, &[ONE_CHANNEL])?;
-    if let Some((_, Ok(tone))) = ctx.data.podxt_reads.last() {
+    if let Some(ChannelRead {
+        result: Ok(tone), ..
+    }) = ctx.data.podxt_reads.last()
+    {
         ctx.rec.look_at(
             "If the PODxt Live is already on this channel, does its display show the same name?",
             tone.name(),
@@ -101,7 +119,12 @@ pub fn one_bank(ctx: &mut Ctx<'_>) -> Result<(), String> {
 pub fn compare_with_backup(ctx: &mut Ctx<'_>) -> usize {
     let reads = std::mem::take(&mut ctx.data.podxt_reads);
     let mut content = 0;
-    for (location, read) in &reads {
+    for ChannelRead {
+        location,
+        result: read,
+        ..
+    } in &reads
+    {
         let backup = ctx
             .data
             .podxt_library

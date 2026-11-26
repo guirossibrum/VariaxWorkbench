@@ -106,7 +106,8 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ),
         backup_step: StepId(3, 4),
         backup_file: format!(
-            "variax-library/{:02}-{}.bin",
+            "{}/{:02}-{}.bin",
+            backup_folder(ctx),
             flash_index(preset),
             super::evidence::file_name(&preset_label(preset))
         ),
@@ -303,9 +304,16 @@ fn require_evidence(ctx: &Ctx<'_>) -> Result<(), String> {
             .evidence_dir
             .as_ref()
             .ok_or("Run with --evidence before offering a real store.")?;
-        line6_devices::backup::verify_manifest(&root.join("variax-library"))?;
+        line6_devices::backup::verify_manifest(&root.join(backup_folder(ctx)))?;
     }
     Ok(())
+}
+
+fn backup_folder<'ctx>(ctx: &'ctx Ctx<'_>) -> &'ctx str {
+    ctx.data
+        .variax_backup_folder
+        .as_deref()
+        .unwrap_or("variax-library")
 }
 
 fn saved_program(ctx: &Ctx<'_>, preset: Preset) -> Result<Program, String> {
@@ -361,7 +369,7 @@ fn confirm_batch(
         device: "Variax",
         slot: label.clone(),
         backup_step: StepId(3, 4),
-        backup_file: "variax-library backup for these slots".into(),
+        backup_file: format!("{} backup for these slots", backup_folder(ctx)),
         backup_sha256: super::record::sha256_hex(&backup),
         confirmation: format!("{action} {label}"),
     };
