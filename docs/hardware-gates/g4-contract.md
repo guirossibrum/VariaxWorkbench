@@ -62,6 +62,57 @@ this with the file descriptor's `O_NONBLOCK`; an empty `-EAGAIN` read is
 reported as zero frames. PCM status errors terminate the take through the
 existing translator.
 
+## Exact-rate request candidate (#118)
+
+The narrowest public libasound rate restriction that retains the POD clock
+is `snd_pcm_hw_params_set_rate(pcm, params, 39062, +1)`. The equivalent
+request is `39063, -1`. In libasound 1.2.16.1 both calls restrict RATE to
+the open, non-integer interval `(39062, 39063)`. A direction of zero
+requests the integer itself and excludes the POD clock. A nearest-rate
+selection can admit alternatives. The open interval also admits other
+fractional rates, so it takes the driver constraint and exact readback to
+identify `78125/2`. [Public rate setters][alsa-pcm] ·
+[Interval construction and parameter selection][alsa-params].
+
+On the pinned Linux source, POD capture open registers the single
+`pod_ratden` knot. `SNDRV_PCM_RATE_KNOT` skips the ordinary integer rate
+list. The ratden rule intersects RATE with `(39062, 39063)`, considers
+that open one-unit interval a singleton, and supplies `rate_num=78125`
+and `rate_den=2`. Libasound's first-rate selection preserves a
+refined singleton. During `HW_PARAMS` the kernel requests refinement
+again and clears the old pair before the rate rules run. The direct
+hardware plugin passes back the ioctl result and libasound saves the
+returned pair in the PCM state. The scalar and direction can still
+describe a boundary of the interval, and a missing pair can fall back
+to an integer over 1. Require the actual pair from the prepared handle.
+[Line 6 capture constraint][linux-line6] · [Ratden rule][linux-lib] ·
+[Kernel refinement and installation][linux-native] ·
+[Libasound interval selection][alsa-interval] · [Direct hardware plugin][alsa-hw].
+
+For a future procedure, the source-derived candidate starts with
+`snd_pcm_hw_params_any` on an independently identified direct `hw`
+capture handle. Select `RW_INTERLEAVED`, `S24_3LE`, and two channels.
+The one-knot driver can already narrow RATE when refining the initial
+configuration, so a separate rate setter can be redundant. If spelling
+out the restriction, use the single directional setter above and
+preserve the returned configuration. Use direct hardware PCM throughout
+to avoid plugin conversion. An example geometry for a bounded setup is
+625 frames per period via `snd_pcm_hw_params_set_period_size` with
+direction zero and a 2,500-frame buffer via
+`snd_pcm_hw_params_set_buffer_size`. This gives four equal periods,
+3,750 bytes per period and 15,000 bytes total, within the driver and
+adapter bounds. The geometry is a fixture choice. The installed handle
+must report a valid whole-frame geometry and the exact `78125/2` pair
+after `snd_pcm_hw_params` prepares it.
+
+The offline interval fixture exercises the two directional requests and
+excludes both adjacent integers and the numerator alone. The fake
+prepared-handle fixture admits the exact pair with the example geometry
+and verifies close before start on rounded, different fractional, or
+missing rational results. These fixtures exercise the rate selection
+model and the existing adapter admission. The live refinement and setup
+return values remain unobserved.
+
 ## Authority and unresolved prerequisites
 
 The inactive native adapter consumes an already configured and prepared
@@ -71,12 +122,27 @@ The app has no issuer for either. It rechecks prepared state and ALSA
 address on that handle, compares route and driver evidence, and checks the
 actual negotiated format, geometry and rational clock before start.
 
-A future acquisition procedure must establish the precise ALSA parameter
-selection that negotiates `78125/2` on the owner's actual kernel and
-libasound. The integer rate interval alone does not identify a request
-that succeeds. It also must establish how discovery ties the verified
-USB attachment and driver to the acquired handle, and verify the Variax
-signal, active Record Send and left/right order. An ALSA card number or
+The unresolved negotiation check requires direct approval for a separately
+reviewed owner procedure that opens one unlinked hardware capture handle,
+refines and installs the candidate, and observes the prepared state and
+`snd_pcm_hw_params_current` readback on that same handle. Record the
+kernel/libasound versions, actual access, format, channels, geometry and
+rational pair, and the close result. Close on any failure or mismatch
+and also after successful readback. The negotiation check needs only
+open, refine, install/prepare, readback and close, ending before any PCM
+start or read. It must establish how discovery ties the verified USB
+attachment and driver to the acquired handle. An ALSA card number or
 display name alone is insufficient because both can survive or recur
-across attachments. [DAW and app capture](../audio-capture-session.md#daw-route-and-in-app-recording)
+across attachments. The Variax signal, active Record Send and physical
+left/right order require separate owner-run signal evidence. In-app
+acceptance stays with [#128]. [DAW and app capture](../audio-capture-session.md#daw-route-and-in-app-recording)
 has the separate server and project-rate constraints.
+
+[#128]: https://github.com/guirossibrum/VariaxWorkbench/issues/128
+[alsa-pcm]: https://github.com/alsa-project/alsa-lib/blob/v1.2.16.1/src/pcm/pcm.c
+[alsa-params]: https://github.com/alsa-project/alsa-lib/blob/v1.2.16.1/src/pcm/pcm_params.c
+[alsa-interval]: https://github.com/alsa-project/alsa-lib/blob/v1.2.16.1/src/pcm/interval.c
+[alsa-hw]: https://github.com/alsa-project/alsa-lib/blob/v1.2.16.1/src/pcm/pcm_hw.c
+[linux-line6]: https://github.com/gregkh/linux/blob/v7.2.15/sound/usb/line6/pcm.c
+[linux-lib]: https://github.com/gregkh/linux/blob/v7.2.15/sound/core/pcm_lib.c
+[linux-native]: https://github.com/gregkh/linux/blob/v7.2.15/sound/core/pcm_native.c

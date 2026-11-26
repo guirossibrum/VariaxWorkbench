@@ -248,6 +248,95 @@ fn rejects_native_format_and_rational_clock_before_start() {
     }
 }
 
+// Model the integer request and the two adjacent open intervals produced by
+// libasound's directional setter. The POD ratden selects from its own list.
+fn rate_request_contains(value: u32, direction: i32, (num, den): (u32, u32)) -> bool {
+    match direction {
+        -1 => (value - 1) * den < num && num < value * den,
+        0 => num == value * den,
+        1 => value * den < num && num < (value + 1) * den,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn directional_rate_request_retains_the_pod_ratden_and_excludes_rounded_rates() {
+    // The alternate fractional rate demonstrates why the readback is required
+    // even when the directional setter succeeds.
+    let candidates = [(39_062, 1), (78_125, 2), (156_249, 4), (39_063, 1)];
+    for (value, direction, expected) in [
+        (39_062, 1, [false, true, true, false]),
+        (39_063, -1, [false, true, true, false]),
+        (39_062, 0, [true, false, false, false]),
+        (39_063, 0, [false, false, false, true]),
+        (78_125, 0, [false, false, false, false]),
+        (39_062, -1, [false, false, false, false]),
+        (39_063, 1, [false, false, false, false]),
+    ] {
+        assert_eq!(
+            candidates.map(|rate| rate_request_contains(value, direction, rate)),
+            expected,
+            "rate request ({value}, {direction})"
+        );
+    }
+}
+
+#[test]
+fn prepared_capture_requires_exact_rational_readback_with_candidate_geometry() {
+    let candidate = AlsaCaptureParams {
+        period_frames: 625,
+        periods: 4,
+        buffer_frames: 2_500,
+        ..PARAMS
+    };
+    let mut fake = Fake::new();
+    fake.params = Ok(candidate);
+    let mut stream = start(&fake, EVIDENCE).unwrap();
+    stream.stop().unwrap();
+    fake.expect(&[
+        Call::Identity,
+        Call::Params,
+        Call::Identity,
+        Call::Nonblock,
+        Call::Start,
+        Call::Drop,
+        Call::Close,
+    ]);
+
+    for (numerator, denominator) in [
+        (39_062, 1),
+        (39_063, 1),
+        (78_125, 1),
+        (156_249, 4),
+        (78_125, 0),
+    ] {
+        let mut fake = Fake::new();
+        fake.params = Ok(AlsaCaptureParams {
+            pcm: AlsaNegotiatedPcm {
+                rate_num: numerator,
+                rate_den: denominator,
+                ..candidate.pcm
+            },
+            ..candidate
+        });
+        let error = start(&fake, EVIDENCE).err().unwrap();
+        assert_eq!(
+            error.cause,
+            AlsaStartFailure::Contract(AlsaAdapterError::InvalidClock {
+                numerator,
+                denominator,
+            })
+        );
+        fake.expect(&[Call::Identity, Call::Params, Call::Close]);
+    }
+
+    let mut fake = Fake::new();
+    fake.params = Err(-22); // EINVAL when the rational getter has no pair.
+    let error = start(&fake, EVIDENCE).err().unwrap();
+    assert_eq!(error.cause, AlsaStartFailure::Negotiation(-22));
+    fake.expect(&[Call::Identity, Call::Params, Call::Close]);
+}
+
 #[test]
 fn makes_reads_nonblocking_and_closes_after_terminal_read() {
     let fake = Fake::new();
