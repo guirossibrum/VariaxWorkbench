@@ -111,11 +111,7 @@ impl Workbench {
             ui,
             "Detect devices",
             self.detection.is_some(),
-            if cfg!(target_os = "macos") {
-                variax_workbench::MAC_CONNECTION_UNAVAILABLE
-            } else {
-                chrome::DETECTION_UNAVAILABLE
-            },
+            variax_workbench::offline_device_notice().unwrap_or(chrome::DETECTION_UNAVAILABLE),
         );
         #[cfg(test)]
         {

@@ -752,8 +752,9 @@ impl Workbench {
             if self.has_prompt() || self.picker.is_open() {
                 ui.disable();
             }
-            if cfg!(target_os = "macos") && self.device_check.mode() == ProbeMode::ThisComputer {
-                let notice = variax_workbench::MAC_CONNECTION_UNAVAILABLE;
+            if self.device_check.mode() == ProbeMode::ThisComputer
+                && let Some(notice) = variax_workbench::offline_device_notice()
+            {
                 ui.label(notice);
                 #[cfg(test)]
                 {
@@ -1763,11 +1764,8 @@ mod tests {
     fn device_check_window_opens_on_this_computer_and_declines_by_default() {
         let (context, mut app) = device_check_app();
         assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
-        if cfg!(target_os = "macos") {
-            assert_eq!(
-                app.device_check_visible,
-                variax_workbench::MAC_CONNECTION_UNAVAILABLE
-            );
+        if let Some(notice) = variax_workbench::offline_device_notice() {
+            assert_eq!(app.device_check_visible, notice);
             assert!(app.device_check.finished());
             assert!(!app.device_check_buttons.contains_key("yes"));
             assert!(!app.device_check_buttons.contains_key("no"));
@@ -1832,13 +1830,10 @@ mod tests {
 
     #[test]
     fn device_check_defaults_to_no_on_each_new_consent() {
-        if cfg!(target_os = "macos") {
+        if let Some(notice) = variax_workbench::offline_device_notice() {
             let (context, mut app) = device_check_app();
             press_device_check_enter(&context, &mut app);
-            assert_eq!(
-                app.device_check_visible,
-                variax_workbench::MAC_CONNECTION_UNAVAILABLE
-            );
+            assert_eq!(app.device_check_visible, notice);
             for stage in Stage::LADDER {
                 assert_eq!(app.device_check.status(stage), StageStatus::NotRun);
             }

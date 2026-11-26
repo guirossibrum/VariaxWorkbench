@@ -9,6 +9,7 @@
 //! * The report sink is called after every step so a crash leaves evidence.
 
 use super::approvals;
+use super::catalogue::WINDOWS_START_NOTICE;
 use super::catalogue::{
     self, Kind, MAC_START_NOTICE, PODXT_COMPATIBILITY, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE,
     SaveNotice, Step, StepId, VARIAX_EVIDENCE,
@@ -239,7 +240,9 @@ impl<'a> Runner<'a> {
     /// Run the catalogue. Returns the record of the whole run.
     pub fn run(mut self) -> (RunRecord, RunData) {
         self.write_report();
-        let start_notice = if cfg!(target_os = "macos") && self.run.mode == Mode::Real {
+        let start_notice = if cfg!(target_os = "windows") && self.run.mode == Mode::Real {
+            WINDOWS_START_NOTICE
+        } else if cfg!(target_os = "macos") && self.run.mode == Mode::Real {
             MAC_START_NOTICE
         } else {
             START_NOTICE
@@ -337,8 +340,11 @@ impl<'a> Runner<'a> {
     fn step(&mut self, id: StepId) -> bool {
         let step = catalogue::step(id).expect("run order uses catalogue IDs");
         if let Some(outcome) = self.precheck(step) {
-            if cfg!(target_os = "macos") && id == RIG_GUARD && self.run.mode == Mode::Real {
-                self.run.rig_state = crate::MAC_CONNECTION_UNAVAILABLE.into();
+            if id == RIG_GUARD
+                && self.run.mode == Mode::Real
+                && let Some(notice) = crate::offline_device_notice()
+            {
+                self.run.rig_state = notice.into();
             }
             self.finish(id, outcome, None, None);
             return false;
@@ -459,11 +465,11 @@ impl<'a> Runner<'a> {
 
     /// Why a step cannot be offered, without asking.
     fn precheck(&self, step: &Step) -> Option<Outcome> {
-        if cfg!(target_os = "macos") && self.run.mode == Mode::Real && step.needs_device_approval()
+        if self.run.mode == Mode::Real
+            && step.needs_device_approval()
+            && let Some(notice) = crate::offline_device_notice()
         {
-            return Some(Outcome::NotAvailable(
-                crate::MAC_CONNECTION_UNAVAILABLE.into(),
-            ));
+            return Some(Outcome::NotAvailable(notice.into()));
         }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
@@ -502,7 +508,10 @@ impl<'a> Runner<'a> {
                 }
             }
         }
+        let windows_builtin_engine =
+            cfg!(target_os = "windows") && self.run.mode == Mode::Real && step.id == StepId(0, 3);
         if matches!(step.id, StepId(0, 3) | StepId(4, 3..=5) | StepId(5, 3))
+            && !windows_builtin_engine
             && !self.model_data_available()
         {
             return Some(Outcome::SkippedNotApplicable(

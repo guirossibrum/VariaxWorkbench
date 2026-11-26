@@ -76,6 +76,14 @@ fn compare_clips(args: &[String]) -> Result<(), String> {
 }
 
 fn default_out() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Rig Check")
+            .join("reports");
+    }
     if cfg!(target_os = "macos") {
         return std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -176,7 +184,7 @@ fn window(options: Options) {
         }
         let run = if mode == Mode::Practice {
             rig_check::run_practice(Faults::default(), &mut op, &mut sink, data).0
-        } else if cfg!(target_os = "macos") {
+        } else if variax_workbench::offline_device_notice().is_some() {
             rig_check::run_on(&mut RealPort::default(), &mut op, &mut sink, data).0
         } else {
             let mut port = RealPort::default();
@@ -263,7 +271,7 @@ fn main() {
     let mut person = Terminal::from_stdin(io::stdout());
     let run = if options.practice == Some(true) {
         rig_check::run_practice(Faults::default(), &mut person, &mut sink, data).0
-    } else if cfg!(target_os = "macos") {
+    } else if variax_workbench::offline_device_notice().is_some() {
         rig_check::run_on(&mut RealPort::default(), &mut person, &mut sink, data).0
     } else {
         let mut port = RealPort::default();

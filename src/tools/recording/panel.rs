@@ -101,11 +101,9 @@ impl Workbench {
                     ui.disable();
                 }
                 ui.label(recording::OFFLINE_BANNER);
-                ui.label(if cfg!(all(target_os = "macos", not(test))) {
-                    variax_workbench::MAC_CONNECTION_UNAVAILABLE
-                } else {
-                    recording::DEVICE_CAPTURE_LOCKED
-                });
+                let capture_notice = variax_workbench::offline_device_notice()
+                    .unwrap_or(recording::DEVICE_CAPTURE_LOCKED);
+                ui.label(capture_notice);
                 ui.label(recording::NO_AUTO_START);
                 ui.label(self.recorder.phase_label());
                 ui.label(self.recorder.meter_line());
@@ -231,7 +229,7 @@ impl Workbench {
                     self.recording_visible = format!(
                         "{}\n{}\n{}\n{}\n{}\n{}\n{}",
                         recording::OFFLINE_BANNER,
-                        recording::DEVICE_CAPTURE_LOCKED,
+                        capture_notice,
                         recording::NO_AUTO_START,
                         self.recorder.phase_label(),
                         self.recorder.meter_line(),

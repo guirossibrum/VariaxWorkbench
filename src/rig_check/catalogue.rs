@@ -422,11 +422,13 @@ pub fn step(id: StepId) -> Option<&'static Step> {
 
 pub const MAC_START_NOTICE: &str = "Before you start. Rig Check can check this Mac and run the offline engine comparison. The Mac connection isn't available in this version yet. The audio check lists devices and opens no stream. Each check waits for you to choose Run.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
 
+pub const WINDOWS_START_NOTICE: &str = "Before you start. Rig Check can check this Windows computer and run the offline engine comparison. The Windows connection isn't available in this version yet. The audio check lists devices and opens no stream. Each check waits for you to choose Run.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
+
 pub const START_NOTICE: &str = "Before you start. Rig Check tests your PODxt Live and Variax with the same code the editor uses. Each step tells you what it will do and waits for you. Nothing runs until you choose Run.\n\nMost steps only ask the devices questions. Some steps briefly change the sound you hear and put it back. Saving steps come later and have their own warning.\n\nYour PODxt Live and Variax are old and cannot be replaced. Keep both powered and connected until Rig Check says it has finished. Do not touch the selector, knobs or footswitches unless a step asks you to.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
 
 /// Only the run-start notices can be reopened from the first card.
 pub fn accepted_start_notice(notice: &str) -> Option<&'static str> {
-    [START_NOTICE, MAC_START_NOTICE]
+    [START_NOTICE, MAC_START_NOTICE, WINDOWS_START_NOTICE]
         .into_iter()
         .find(|text| *text == notice)
 }

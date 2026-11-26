@@ -664,12 +664,8 @@ impl Workbench {
                         status_line(ui, "No file open", theme::MUTED);
                         chrome::status_chip(ui, chrome::LinkState::NoDevice);
                     }
-                    if cfg!(target_os = "macos") {
-                        status_line(
-                            ui,
-                            variax_workbench::MAC_CONNECTION_UNAVAILABLE,
-                            theme::MUTED,
-                        );
+                    if let Some(notice) = variax_workbench::offline_device_notice() {
+                        status_line(ui, notice, theme::MUTED);
                     }
                     if let Some(error) = &self.detection_status {
                         status_line(ui, error, theme::DANGER);
