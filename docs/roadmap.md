@@ -4,7 +4,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
-- [ ] #284 offline Variax snapshot validation and subsequent first-connection library cache implementation. The offline checkpoint maps existing captures and defines receipt publication, startup, and fake-transport acceptance. Editor and connection integration await review of the offer policy. [Design and Lane 3 handoff](first-connection-cache.md).
+- [ ] First-connection library cache receipt publication, offline startup, and editor and connection integration. Offline Variax snapshot validation is complete (#284). The consent-based offer awaits review. [Design and Lane 3 handoff](first-connection-cache.md).
 
 - [ ] #206 editor integration and owner verification of global string levels. All device approvals are closed. The 0x57 comparison shows RAM state. Flash persistence needs separate owner verification. [API and owner verification draft](variax-string-levels.md).
 - [ ] #274 owner-approved identity run on M1 following successful native USB linkage verification on arm64 and x86_64. The direct USB switch remains closed. [Mac owner test card](podxt-macos-usb-test-card.md).

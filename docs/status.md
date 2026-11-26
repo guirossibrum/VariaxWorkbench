@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #284 validates complete Variax 3.10 metadata and full-program snapshots for the offline cache. It checks identity, the manifest, all 60 slots and 12 bank names, and firmware checksums for full programs. Automatic cache eligibility requires same-capture evidence, verified switch-back, and successful cleanup. Fake transport and file tests cover both coverage modes and rejection cases. Explicit imports retain their existing compatibility rules. [Cache design](first-connection-cache.md).
+
 - [x] [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279) pins the PODxt transfer test fixture to LF. [Windows artifact run 45767518187](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/45767518187) on `691ab0e` passed 940 app tests, then stopped when four device-library tests could not find transcript case headers. A synthetic checkout with Git's Windows line-ending setting reproduced the same lookup failure and passed with the fixture rule. The run produced no ZIP or verification report. Native packaging and owner desktop checks remain pending.
 
 - [x] #274 native macOS arm64 and x86_64 builds verified the vendored static libusb archive, deployment targets and system-only dynamic dependencies with the USB and audio approvals closed. [Build-only verification](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/45767046149).
