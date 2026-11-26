@@ -9,6 +9,7 @@
 //! [`chrome::chain_slot`] so a rack image is not fitted into a stomp-sized box.
 //! #224 and #188–#191 compose [`body_canvas`] and [`tuning_panel`]. The caller
 //! owns the pickup and tuning values; those widgets only report gestures.
+//! #280 places that body and the tuning band with [`editor_layout`].
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +17,7 @@ pub mod assets;
 pub mod body_canvas;
 pub mod chrome;
 pub mod controls;
+pub mod editor_layout;
 pub mod gallery;
 pub mod knob;
 pub mod theme;

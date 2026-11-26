@@ -7,6 +7,7 @@ use super::body_canvas::{
 };
 use super::chrome::{self, DialogButton, DialogEvent, Family, LinkState};
 use super::controls::{Selector, Switch};
+use super::editor_layout::{self, EditorRegions};
 use super::gallery::GalleryState;
 use super::knob::{self, Knob};
 use super::theme::{
@@ -104,6 +105,33 @@ impl Harness {
                 egui::CentralPanel::default().show(ctx, |ui| draw(ctx, ui));
             },
         )
+    }
+
+    fn run_screen(
+        &mut self,
+        screen: Vec2,
+        pixels_per_point: f32,
+        events: Vec<egui::Event>,
+        mut draw: impl FnMut(&egui::Context, &mut egui::Ui),
+    ) -> egui::FullOutput {
+        let time = self.time;
+        self.time += 0.05;
+        let mut input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+            events,
+            time: Some(time),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(pixels_per_point);
+        self.ctx.run(input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| draw(ctx, ui));
+        })
     }
 }
 
@@ -2177,4 +2205,318 @@ fn fitted_stage_keeps_aspect_and_uses_the_tighter_side() {
         body_canvas::fitted_stage(egui::vec2(0.0, 10.0), egui::vec2(50.0, 50.0)),
         egui::vec2(5.0, 50.0)
     );
+}
+
+fn assert_aspect(art: Vec2, size: Vec2) {
+    assert!(
+        (size.x / size.y - art.x / art.y).abs() < 1.0e-3,
+        "art {art:?} drew {size:?}"
+    );
+}
+
+fn assert_inside(outer: Rect, inner: Rect) {
+    assert!(
+        inner.min.x >= outer.min.x - 0.05
+            && inner.min.y >= outer.min.y - 0.05
+            && inner.max.x <= outer.max.x + 0.05
+            && inner.max.y <= outer.max.y + 0.05,
+        "{inner:?} outside {outer:?}"
+    );
+}
+
+fn assert_regions_fit(workspace: Rect, art: Vec2, regions: EditorRegions) {
+    assert_inside(workspace, regions.body);
+    assert_inside(workspace, regions.inspector);
+    assert_inside(workspace, regions.tuning);
+    assert_aspect(art, regions.body_art);
+    assert!(
+        (regions.body.size() - regions.body_art).length() < 1.0e-3,
+        "{regions:?}"
+    );
+    assert!(regions.inspector.left() >= regions.body.right() - 0.1);
+    assert!(regions.tuning.width() <= workspace.width() + 0.1);
+    let (_, tune_max) = editor_layout::tuning_width_bounds(regions.twelve_string_width > 0.0);
+    assert!(
+        regions.tuning.width() <= tune_max + 0.1,
+        "tuning {} cap {tune_max}",
+        regions.tuning.width()
+    );
+}
+
+#[test]
+fn editor_regions_keep_a_useful_body_and_a_contained_neck_on_the_laptop() {
+    let art = body_canvas::DEFAULT_ART;
+    let workspace = editor_layout::laptop_workspace();
+    assert!((workspace.width() - 1120.0).abs() < 1.0e-3);
+    assert!((workspace.height() - 527.0).abs() < 1.0e-3);
+    assert!((editor_layout::SHELL_FOOTER_HEIGHT - 29.0).abs() < 1.0e-3);
+
+    let collapsed = editor_layout::editor_regions(workspace, art, false);
+    assert_eq!(collapsed.twelve_string_width, 0.0);
+    assert_regions_fit(workspace, art, collapsed);
+    let body_scale = collapsed.body_art.x / art.x;
+    assert!(
+        body_scale >= 1.0,
+        "laptop body scale {body_scale}, well {:?}",
+        collapsed.body
+    );
+    assert!(
+        collapsed.body.width() >= workspace.width() * 0.45,
+        "body {} workspace {}",
+        collapsed.body.width(),
+        workspace.width()
+    );
+    assert!(collapsed.body.height() + 0.1 >= workspace.height());
+    assert!(collapsed.tuning.left() >= collapsed.body.right());
+    assert!(collapsed.tuning.width() <= workspace.width() - 400.0);
+    let neck = collapsed.tuning.width()
+        - editor_layout::TUNING_TABLE_WIDTH
+        - editor_layout::TUNING_CHROME_WIDTH;
+    assert!(
+        (editor_layout::NECK_MIN..=editor_layout::NECK_MAX).contains(&neck),
+        "neck {neck}"
+    );
+    assert!(collapsed.inspector.width() >= editor_layout::INSPECTOR_MIN_WIDTH);
+
+    let open = editor_layout::editor_regions(workspace, art, true);
+    assert_eq!(
+        open.twelve_string_width,
+        editor_layout::TWELVE_STRING_COLUMN
+    );
+    assert_regions_fit(workspace, art, open);
+    let open_scale = open.body_art.x / art.x;
+    assert!(open_scale >= editor_layout::SIDE_MIN_SCALE, "{open_scale}");
+    let open_neck = open.tuning.width()
+        - open.twelve_string_width
+        - editor_layout::TUNING_TABLE_WIDTH
+        - editor_layout::TUNING_CHROME_WIDTH;
+    assert!(
+        open_neck + 0.1 >= editor_layout::NECK_MIN,
+        "twelve-string neck {open_neck}"
+    );
+    assert!(open.tuning.left() >= open.body.right());
+
+    let wide = editor_layout::editor_regions(
+        Rect::from_min_size(Pos2::ZERO, egui::vec2(1680.0, 860.0)),
+        art,
+        false,
+    );
+    assert_regions_fit(
+        Rect::from_min_size(Pos2::ZERO, egui::vec2(1680.0, 860.0)),
+        art,
+        wide,
+    );
+    let (_, wide_cap) = editor_layout::tuning_width_bounds(false);
+    assert!((wide.tuning.width() - wide_cap).abs() < 0.1);
+
+    let narrow = editor_layout::editor_regions(
+        Rect::from_min_size(Pos2::ZERO, egui::vec2(720.0, 400.0)),
+        art,
+        false,
+    );
+    assert_regions_fit(
+        Rect::from_min_size(Pos2::ZERO, egui::vec2(720.0, 400.0)),
+        art,
+        narrow,
+    );
+    assert_eq!(narrow.twelve_string_width, 0.0);
+    assert!(narrow.tuning.top() >= narrow.body.bottom() - 0.1);
+
+    let again = editor_layout::editor_regions(workspace, art, false);
+    assert_eq!(collapsed, again);
+    let broken = editor_layout::editor_regions(
+        Rect::from_min_size(Pos2::ZERO, egui::vec2(f32::NAN, -20.0)),
+        egui::vec2(f32::INFINITY, 0.0),
+        false,
+    );
+    assert!(broken.body.width().is_finite() && broken.tuning.height().is_finite());
+}
+
+#[test]
+fn editor_regions_preserve_pickup_mapping_and_hit_testing_at_both_densities() {
+    let art = body_canvas::DEFAULT_ART;
+    let placement = PickupPlacement::default();
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let workspace = editor_layout::laptop_workspace();
+    let regions = editor_layout::editor_regions(workspace, art, false);
+    let mut centers = Vec::new();
+    let mut arts = Vec::new();
+    for pixels_per_point in [1.0_f32, 2.0] {
+        let mut harness = Harness::new();
+        let mut art_rect = Rect::NOTHING;
+        let screen = workspace.size();
+        harness.run_screen(screen, pixels_per_point, vec![], |_, ui| {
+            let laid = editor_layout::editor_regions(ui.max_rect(), art, false);
+            assert_eq!(laid.body.size(), regions.body.size());
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("body", pixels_per_point.to_bits()))
+                    .max_rect(laid.body),
+            );
+            let sprites = [PickupSprite {
+                position_inches: 1.8,
+                angle_degrees: 8.7,
+                enabled: true,
+                selected: true,
+                image: &pickup,
+            }];
+            art_rect = BodyCanvas::new(&body, &sprites)
+                .placement(placement)
+                .show(&mut child)
+                .art_rect;
+        });
+        assert!(
+            (harness.ctx.pixels_per_point() - pixels_per_point).abs() < 0.01,
+            "{}",
+            harness.ctx.pixels_per_point()
+        );
+        assert_aspect(art, art_rect.size());
+        assert!(
+            (art_rect.width() - regions.body.width()).abs() < 1.0,
+            "ppp {pixels_per_point} art {} well {}",
+            art_rect.width(),
+            regions.body.width()
+        );
+        assert!(
+            (art_rect.height() - regions.body.height()).abs() < 1.0,
+            "ppp {pixels_per_point} art height {}",
+            art_rect.height()
+        );
+        let scale = placement.screen_scale(art_rect);
+        assert!((scale - art_rect.width() / placement.art.x).abs() < 1.0e-3);
+        assert!((art_rect.height() / placement.art.y - scale).abs() < 1.0e-2);
+        let center = placement.screen_point(art_rect, 1.8);
+        let mapped = art_rect.min + placement.position_to_art(1.8).to_vec2() * scale;
+        assert!((center - mapped).length() < 0.05, "{center} vs {mapped}");
+        let mut reported = Vec::new();
+        harness.run_screen(
+            screen,
+            pixels_per_point,
+            vec![egui::Event::PointerMoved(center), pointer(center, true)],
+            |_, ui| {
+                let laid = editor_layout::editor_regions(ui.max_rect(), art, false);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("body", pixels_per_point.to_bits()))
+                        .max_rect(laid.body),
+                );
+                let sprites = [PickupSprite {
+                    position_inches: 1.8,
+                    angle_degrees: 8.7,
+                    enabled: true,
+                    selected: true,
+                    image: &pickup,
+                }];
+                reported = BodyCanvas::new(&body, &sprites)
+                    .placement(placement)
+                    .show(&mut child)
+                    .events;
+            },
+        );
+        assert!(
+            reported
+                .iter()
+                .any(|event| matches!(event, BodyEvent::PickupClicked { index: 0 })),
+            "ppp {pixels_per_point} events {reported:?}"
+        );
+        centers.push(center);
+        arts.push(art_rect);
+    }
+    assert!((arts[0].size() - arts[1].size()).length() < 0.5);
+    assert!((centers[0] - centers[1]).length() < 0.5);
+}
+
+#[test]
+fn editor_regions_omit_the_unavailable_twelve_string_column() {
+    let art = body_canvas::DEFAULT_ART;
+    let workspace = editor_layout::laptop_workspace();
+    for (twelve, pixels_per_point) in [(false, 1.0_f32), (false, 2.0), (true, 1.0), (true, 2.0)] {
+        let regions = editor_layout::editor_regions(workspace, art, twelve);
+        let mut harness = Harness::new();
+        let mut neck = Rect::NOTHING;
+        let rows = [TuningRow {
+            id: 0,
+            name: "Low E",
+            shift: 0,
+            shift_label: "0 semitones",
+            note: "E",
+        }];
+        let output = harness.run_screen(workspace.size(), pixels_per_point, vec![], |_, ui| {
+            let laid = editor_layout::editor_regions(ui.max_rect(), art, twelve);
+            assert_eq!(laid.twelve_string_width, regions.twelve_string_width);
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("tuning", twelve, pixels_per_point.to_bits()))
+                    .max_rect(laid.tuning),
+            );
+            child.horizontal_top(|ui| {
+                if laid.twelve_string_width > 0.0 {
+                    ui.add_space(laid.twelve_string_width);
+                }
+                neck = TuningPanel::new(&rows).show(ui).neck;
+            });
+        });
+        assert!((output.pixels_per_point - pixels_per_point).abs() < 0.01);
+        let labels = texts(&output);
+        assert!(
+            labels.iter().all(|label| label != "No 12-String available"),
+            "{labels:?}"
+        );
+        assert!(labels.iter().any(|label| label == "Low E"));
+        assert!(labels.iter().any(|label| label == "Enable"));
+        assert!(
+            regions.tuning.contains_rect(neck.shrink(1.0)),
+            "ppp {pixels_per_point} twelve {twelve} neck {neck:?} band {:?}",
+            regions.tuning
+        );
+        assert!(
+            neck.width() <= editor_layout::NECK_MAX + 1.0,
+            "neck {}",
+            neck.width()
+        );
+        let from_band = neck.left() - regions.tuning.left();
+        let table_and_frame =
+            editor_layout::TUNING_TABLE_WIDTH + editor_layout::TUNING_CHROME_WIDTH;
+        if twelve {
+            assert!(
+                from_band >= regions.twelve_string_width + editor_layout::TUNING_TABLE_WIDTH - 24.0,
+                "twelve-string neck starts at {from_band}"
+            );
+        } else {
+            assert!(
+                (table_and_frame - 24.0..=table_and_frame + 24.0).contains(&from_band),
+                "collapsed neck starts at {from_band}, not after a 204-point column"
+            );
+        }
+        let enable = label_center(&output, "Enable").expect("Enable");
+        let mut clicked = Vec::new();
+        harness.run_screen(
+            workspace.size(),
+            pixels_per_point,
+            vec![
+                egui::Event::PointerMoved(enable),
+                pointer(enable, true),
+                pointer(enable, false),
+            ],
+            |_, ui| {
+                let laid = editor_layout::editor_regions(ui.max_rect(), art, twelve);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("tuning", twelve, pixels_per_point.to_bits()))
+                        .max_rect(laid.tuning),
+                );
+                child.horizontal_top(|ui| {
+                    if laid.twelve_string_width > 0.0 {
+                        ui.add_space(laid.twelve_string_width);
+                    }
+                    clicked = TuningPanel::new(&rows).show(ui).events;
+                });
+            },
+        );
+        assert!(
+            clicked.contains(&TuningEvent::Enable),
+            "ppp {pixels_per_point} twelve {twelve} {clicked:?}"
+        );
+    }
 }
