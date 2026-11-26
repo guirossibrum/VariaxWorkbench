@@ -13,6 +13,7 @@ use variax::{
     tests::{bank_reply, encode_reply},
 };
 
+mod custom_restore;
 mod snapshot;
 
 const BRIDGE_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7];
