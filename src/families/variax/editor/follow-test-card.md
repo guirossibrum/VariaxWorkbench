@@ -4,7 +4,8 @@ Use the verified Variax 600 3.10 tab through the supported PODxt Live. Open a
 12-bank guitar library in the tab and make a local edit so you can verify
 that Follow preserves it.
 
-1. Turn on **Follow**. Move the model knob and pickup selector. Compare the
+1. After identity verification, confirm **Follow** starts automatically.
+   Move the model knob and pickup selector. Compare the
    guitar preset indicator and the selected bank and slot. The indicator waits
    for the first preset message, and the editor selects a clean slot after about
    300 ms or an edited slot after about one second.
@@ -20,7 +21,13 @@ that Follow preserves it.
    editor reports the disconnect and switches Follow off. If the PODxt sends
    no notice, turn Follow off and use **Refresh guitar** on the PODxt tab to
    detect the disconnect. After reconnecting and verifying identity, check that
-   the tab still contains the local edits before you restart Follow.
+   the tab still contains the local edits. Follow should resume if its
+   checkbox was left on.
+6. With Follow on, run Device Check. Check that it can use the rig and
+   that Follow resumes after the operation gives the interface back. In
+   separate builds approved for live editing and stores, check the same
+   handoff for those operations. An unknown store outcome must leave
+   Follow stopped.
 
 Follow opens the verified attachment for a G3 read session. It sends no
 preset changes, preset edits or store commands.
