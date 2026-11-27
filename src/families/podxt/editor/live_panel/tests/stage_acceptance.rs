@@ -170,7 +170,7 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
     );
     assert!(!visible.contains("Playing Tone"), "{visible}");
     assert!(app.podxt().live.snapshot.tone.is_none());
-    assert!(app.podxt().live.snapshot.library.is_empty());
+    assert_eq!(app.podxt().live.snapshot.library.len(), 128);
     assert!(!app.podxt().live.connected());
     assert!(!app.podxt().live.live_editing);
     assert_eq!(app.podxt().live.device_requests, requests);
@@ -298,6 +298,7 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
     let stop = Arc::new(AtomicBool::new(false));
     let (finish, wait) = std::sync::mpsc::channel();
     panel.worker = Some(Worker {
+        acquired: None,
         command: ReadCommand::Follow,
         device: panel.device.clone().unwrap(),
         stop: Arc::clone(&stop),
@@ -430,4 +431,59 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
     finish.send(()).unwrap();
     let mut worker = editor.live.worker.take().unwrap();
     worker.thread.take().unwrap().join().unwrap().unwrap();
+}
+
+#[test]
+fn connection_sync_adopts_only_a_complete_released_result() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = current_fixture(&ctx);
+    let panel = &mut app.podxt_mut().live;
+    let slot = Location::all(&[BankKind::Tones]).next().unwrap();
+
+    for (count, result, stopped, expected) in [
+        (19, Ok(()), false, "ended after 19 entries"),
+        (
+            128,
+            Err("USB release failed".into()),
+            false,
+            "USB release failed",
+        ),
+        (128, Ok(()), true, "read cancelled"),
+        (128, Ok(()), false, ""),
+    ] {
+        let mut snapshot = Snapshot::default();
+        snapshot.apply(ReadUpdate::LibraryStarted, Instant::now());
+        for location in Location::all(&[BankKind::Tones]).take(count) {
+            snapshot
+                .library
+                .insert(location.address(), valid_dump("New snapshot"));
+        }
+        snapshot.library_count = Some(count);
+        let thread = std::thread::spawn(move || result);
+        while !thread.is_finished() {
+            std::thread::yield_now();
+        }
+        panel.worker = Some(Worker {
+            command: ReadCommand::ToneBank,
+            device: panel.device.clone().unwrap(),
+            stop: Arc::new(AtomicBool::new(stopped)),
+            acquired: Some(Arc::new(AtomicBool::new(true))),
+            snapshot: Arc::new(Mutex::new(snapshot)),
+            thread: Some(thread),
+        });
+        panel.poll(&ctx);
+        match panel.connection_sync_update().unwrap() {
+            SyncUpdate::Finished(Ok(())) => {
+                assert!(expected.is_empty());
+                assert_eq!(panel.stored_tone(slot).unwrap().name(), "New snapshot");
+            }
+            SyncUpdate::Finished(Err(error)) => {
+                assert!(!expected.is_empty() && error.contains(expected), "{error}");
+                assert_eq!(panel.stored_tone(slot).unwrap().name(), "Saved Channel");
+            }
+            _ => panic!("worker should have finalized"),
+        }
+        assert_eq!(panel.snapshot.library.len(), 128);
+        assert!(panel.connection_sync_update().is_none());
+    }
 }

@@ -1360,13 +1360,15 @@ impl FamilyTab for VariaxEditor {
         {
             // The shell supplies the tab kind after opening the editor.
             if std::mem::take(&mut self.startup_fallback) && device.is_some() {
+                #[cfg(test)]
                 if self
                     .library_origin
-                    .take()
-                    .is_some_and(|origin| origin.is_guitar_library())
+                    .as_ref()
+                    .is_some_and(LibraryOrigin::is_guitar_library)
                 {
                     self.refresh.require_explicit_download();
                 }
+                self.library_origin = None;
                 self.document = None;
             }
             self.refresh.observe(device);
@@ -1384,6 +1386,7 @@ impl FamilyTab for VariaxEditor {
             self.poll_device_sync(ctx);
             // Apply any queued disconnect before accepting a completed download.
             self.observe_follow(ctx);
+            #[cfg(test)]
             self.start_automatic_download();
             self.poll_refresh(ctx);
             self.advance_follow(ctx);
@@ -1396,6 +1399,22 @@ impl FamilyTab for VariaxEditor {
         if self.is_reading() {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
+    }
+    #[cfg(feature = "usb")]
+    fn connection_sync_admission(&self, consent: bool) -> crate::editor::tabs::SyncAdmission {
+        self.connection_sync_admission(consent)
+    }
+    #[cfg(feature = "usb")]
+    fn start_connection_sync(&mut self, _ctx: &egui::Context) -> Result<(), String> {
+        self.start_connection_sync()
+    }
+    #[cfg(feature = "usb")]
+    fn connection_sync_update(&mut self) -> Option<crate::editor::tabs::SyncUpdate> {
+        self.connection_sync_update()
+    }
+    #[cfg(feature = "usb")]
+    fn cancel_connection_sync(&mut self) {
+        VariaxEditor::cancel_connection_sync(self);
     }
     #[cfg(feature = "usb")]
     fn take_device_event(&mut self) -> Option<crate::editor::tabs::DeviceEvent> {

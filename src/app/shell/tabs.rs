@@ -108,6 +108,24 @@ pub(super) enum DeviceEvent {
     GuitarDisconnected(DeviceKey),
 }
 
+#[cfg_attr(not(feature = "usb"), allow(dead_code))]
+pub(super) enum SyncAdmission {
+    Busy,
+    Blocked(&'static str),
+    Consent(&'static str),
+    Ready(std::num::NonZeroUsize),
+    Unavailable(&'static str),
+}
+
+#[cfg_attr(not(feature = "usb"), allow(dead_code))]
+pub(super) enum SyncUpdate {
+    WaitingForRig,
+    Reading(usize),
+    Finished(Result<(), String>),
+}
+
+pub(super) const PODXT_SYNC_RESOURCE: &str = "the PODxt Live connection";
+
 pub(super) trait FamilyTab: std::any::Any {
     fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>);
     fn dirty(&self) -> bool;
@@ -129,6 +147,16 @@ pub(super) trait FamilyTab: std::any::Any {
     fn take_device_event(&mut self) -> Option<DeviceEvent> {
         None
     }
+    fn connection_sync_admission(&self, _consent: bool) -> SyncAdmission {
+        SyncAdmission::Unavailable("Library download is unavailable for this connection.")
+    }
+    fn start_connection_sync(&mut self, _ctx: &egui::Context) -> Result<(), String> {
+        Err("Library download is unavailable for this connection.".into())
+    }
+    fn connection_sync_update(&mut self) -> Option<SyncUpdate> {
+        None
+    }
+    fn cancel_connection_sync(&mut self) {}
     fn local_prompt(&mut self, _ctx: &egui::Context, _services: &mut EditorServices<'_>) {}
     fn busy(&self) -> bool {
         false

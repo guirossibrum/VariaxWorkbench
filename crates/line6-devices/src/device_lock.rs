@@ -63,6 +63,15 @@ impl DeviceLock {
         Ok(guard)
     }
 
+    /// Wait for the same foreground lock used by discovery and device tools.
+    /// A busy result is safe to retry because the link has not been opened.
+    pub fn acquire_for_download(
+        cancelled: impl Fn() -> bool,
+        acquired: &AtomicBool,
+    ) -> Result<Self, String> {
+        wait_for_download(cancelled, acquired, Self::acquire, std::thread::sleep)
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn acquire_test_lock(path: &Path) -> Result<Self, LockError> {
         acquire_at(path)
@@ -82,6 +91,26 @@ impl DeviceLock {
             &lock_path(std::env::var_os("XDG_RUNTIME_DIR")),
         )
     }
+}
+
+fn wait_for_download<T>(
+    cancelled: impl Fn() -> bool,
+    acquired: &AtomicBool,
+    mut acquire: impl FnMut() -> Result<T, LockError>,
+    mut pause: impl FnMut(Duration),
+) -> Result<T, String> {
+    while !cancelled() {
+        match acquire() {
+            Ok(guard) if !cancelled() => {
+                acquired.store(true, Ordering::Release);
+                return Ok(guard);
+            }
+            Ok(_) => break,
+            Err(LockError::Busy | LockError::BusyHere) => pause(Duration::from_millis(60)),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Download cancelled before opening the connection.".into())
 }
 
 fn lock_path(runtime: Option<std::ffi::OsString>) -> PathBuf {
@@ -420,6 +449,56 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux {
     use super::*;
+
+    #[test]
+    fn queued_download_uses_the_existing_lock_and_checks_for_cancellation() {
+        use std::cell::{Cell, RefCell};
+
+        let folder =
+            std::env::temp_dir().join(format!("variax-download-lock-test-{}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let shared = folder.join("shared.lock");
+        let independent = folder.join("independent.lock");
+        let acquired = AtomicBool::new(false);
+        let holder = RefCell::new(Some(acquire_at(&shared).unwrap()));
+        let released = Cell::new(false);
+        let independent_guard = wait_for_download(
+            || false,
+            &AtomicBool::new(false),
+            || acquire_at(&independent),
+            |_| unreachable!(),
+        )
+        .unwrap();
+
+        let next = wait_for_download(
+            || false,
+            &acquired,
+            || acquire_at(&shared),
+            |_| {
+                assert!(!acquired.load(Ordering::Acquire));
+                released.set(true);
+                drop(holder.borrow_mut().take());
+            },
+        )
+        .unwrap();
+        assert!(released.get() && acquired.load(Ordering::Acquire));
+        assert!(matches!(acquire_at(&shared), Err(LockError::Busy)));
+
+        let cancelled = Cell::new(false);
+        let acquired = AtomicBool::new(false);
+        let error = wait_for_download(
+            || cancelled.get(),
+            &acquired,
+            || acquire_at(&shared),
+            |_| cancelled.set(true),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(!acquired.load(Ordering::Acquire));
+        drop((next, independent_guard));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn tracked_lock_distinguishes_this_process_from_untracked_contenders() {

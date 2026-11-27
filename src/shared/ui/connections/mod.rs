@@ -66,6 +66,8 @@ enum Status {
     UnverifiedFirmware(String),
     Unsupported,
     Waiting,
+    Consent(&'static str),
+    Skipped(&'static str),
     Reading {
         read: Read,
         done: usize,
@@ -80,6 +82,7 @@ struct Row {
     attachment: Attachment,
     device: Device,
     status: Status,
+    wait_reason: Option<&'static str>,
     reconnected: bool,
     shown: bool,
 }
@@ -148,6 +151,7 @@ impl Connections {
             attachment,
             device,
             status: Status::Checking,
+            wait_reason: None,
             reconnected: existing.is_some(),
             shown: true,
         };
@@ -171,11 +175,17 @@ impl Connections {
         if matches!(verification, Verification::Verified)
             && matches!(
                 row.status,
-                Status::Waiting | Status::Reading { .. } | Status::Complete | Status::Failed(_)
+                Status::Waiting
+                    | Status::Consent(_)
+                    | Status::Skipped(_)
+                    | Status::Reading { .. }
+                    | Status::Complete
+                    | Status::Failed(_)
             )
         {
             return;
         }
+        row.wait_reason = None;
         row.status = match verification {
             Verification::Checking => Status::Checking,
             Verification::Verified => Status::Connected,
@@ -193,12 +203,64 @@ impl Connections {
         }
     }
 
+    pub fn waiting_for_editor(&mut self, attachment: Attachment) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Consent(_) | Status::Waiting
+            )
+        {
+            row.status = Status::Waiting;
+            row.wait_reason = Some("the editor’s current operation");
+        }
+    }
+
+    pub fn consent(&mut self, attachment: Attachment, prompt: &'static str) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_)
+            )
+        {
+            row.status = Status::Consent(prompt);
+        }
+    }
+
+    pub fn skip(&mut self, attachment: Attachment, reason: &'static str) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_)
+            )
+        {
+            row.status = Status::Skipped(reason);
+        }
+    }
+
+    pub fn fail_to_start(&mut self, attachment: Attachment, reason: String) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_)
+            )
+        {
+            row.wait_reason = None;
+            row.status = Status::Failed(reason);
+        }
+    }
+
+    pub fn waiting_for_rig(&mut self, read: Read, resource: &'static str) {
+        if let Some(row) = self.reading_mut(read) {
+            row.wait_reason = Some(resource);
+        }
+    }
+
     /// Call only when an existing authorized reader starts. The total is the
     /// selected reader scope, including setup entries if those are being read.
     pub fn started(&mut self, attachment: Attachment, total: NonZeroUsize) -> Option<Read> {
         if !matches!(
             self.row_mut(attachment)?.status,
-            Status::Waiting | Status::Connected
+            Status::Waiting | Status::Connected | Status::Consent(_)
         ) {
             return None;
         }
@@ -207,7 +269,9 @@ impl Connections {
             attachment,
             sequence: self.read_sequence,
         };
-        self.row_mut(attachment)?.status = Status::Reading {
+        let row = self.row_mut(attachment)?;
+        row.wait_reason = None;
+        row.status = Status::Reading {
             read,
             done: 0,
             total,
@@ -221,6 +285,7 @@ impl Connections {
             && (*done..=total.get()).contains(&completed)
         {
             *done = completed;
+            row.wait_reason = None;
         }
     }
 
@@ -231,6 +296,7 @@ impl Connections {
         let Some(row) = self.reading_mut(read) else {
             return;
         };
+        row.wait_reason = None;
         row.status = match result {
             Ok(()) => Status::Complete,
             Err(reason) => Status::Failed(reason),
@@ -245,6 +311,7 @@ impl Connections {
             return false;
         };
         if matches!(row.status, Status::Failed(_)) {
+            row.wait_reason = None;
             row.status = Status::Waiting;
             true
         } else {

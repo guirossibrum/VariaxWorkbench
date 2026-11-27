@@ -12,6 +12,9 @@ pub enum Action {
     EditOffline,
     OpenOfflineEditor(&'static str),
     Retry(Attachment),
+    AllowDownload(Attachment),
+    SkipDownload(Attachment),
+    CancelDownload(Attachment),
 }
 
 /// Render after draining discovery and read events. A Retry action is a
@@ -156,6 +159,8 @@ fn device_row(
                         row.status,
                         Status::Connected
                             | Status::Unsupported
+                            | Status::Consent(_)
+                            | Status::Skipped(_)
                             | Status::Waiting
                             | Status::Reading { .. }
                             | Status::Complete
@@ -197,14 +202,35 @@ fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
             ui.label("Live connection not supported");
             return offline_editor(ui, row);
         }
-        Status::Waiting => ui.label("Waiting to sync"),
+        Status::Consent(prompt) => {
+            ui.label(*prompt);
+            return ui
+                .horizontal_wrapped(|ui| {
+                    let download = ui.add(action_button("Download")).clicked();
+                    let skip = ui.add(action_button("Skip")).clicked();
+                    if download {
+                        Some(Action::AllowDownload(row.attachment))
+                    } else if skip {
+                        Some(Action::SkipDownload(row.attachment))
+                    } else {
+                        None
+                    }
+                })
+                .inner;
+        }
+        Status::Skipped(reason) => ui.label(*reason),
+        Status::Waiting => return waiting(ui, row),
         Status::Reading { done, total, .. } => {
+            if row.wait_reason.is_some() {
+                return waiting(ui, row);
+            }
             ui.label(format!("Model Sync {done} of {total}"));
             ui.add(
                 egui::ProgressBar::new(*done as f32 / total.get() as f32)
                     .desired_width(ui.available_width())
                     .desired_height(theme::SPACE_8),
-            )
+            );
+            return cancel(ui, row);
         }
         Status::Complete => ui.label("Model Sync Complete"),
         Status::Failed(reason) => {
@@ -218,6 +244,21 @@ fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
         Status::Disconnected => ui.label("Disconnected"),
     };
     None
+}
+
+fn waiting(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
+    if let Some(resource) = row.wait_reason {
+        ui.label(format!("Waiting to sync · {resource}"));
+    } else {
+        ui.label("Waiting to sync");
+    }
+    cancel(ui, row)
+}
+
+fn cancel(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
+    ui.add(action_button("Cancel download"))
+        .clicked()
+        .then_some(Action::CancelDownload(row.attachment))
 }
 
 fn offline_editor(ui: &mut egui::Ui, row: &Row) -> Option<Action> {

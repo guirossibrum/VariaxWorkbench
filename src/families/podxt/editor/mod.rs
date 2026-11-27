@@ -3923,6 +3923,22 @@ impl FamilyTab for PodxtEditor {
     fn cancel_operation(&mut self) {
         self.live.cancel();
     }
+    #[cfg(feature = "usb")]
+    fn connection_sync_admission(&self, _consent: bool) -> tabs::SyncAdmission {
+        self.live.connection_sync_admission()
+    }
+    #[cfg(feature = "usb")]
+    fn start_connection_sync(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        self.live.start_connection_sync(ctx)
+    }
+    #[cfg(feature = "usb")]
+    fn connection_sync_update(&mut self) -> Option<tabs::SyncUpdate> {
+        self.live.connection_sync_update()
+    }
+    #[cfg(feature = "usb")]
+    fn cancel_connection_sync(&mut self) {
+        self.live.cancel_connection_sync();
+    }
     fn poll(&mut self, _ctx: &egui::Context) {
         #[cfg(feature = "usb")]
         self.live.poll(_ctx);

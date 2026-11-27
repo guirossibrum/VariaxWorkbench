@@ -440,6 +440,7 @@ impl Workbench {
         for (tab, event) in device_events {
             self.apply_device_event(tab, event);
         }
+        self.poll_connection_sync(ctx);
         self.frame_count += 1;
         if self.screenshot.is_some() && self.frame_count <= 5 {
             ctx.request_repaint();
@@ -862,8 +863,7 @@ impl Workbench {
         self.recording_window(ctx);
         self.device_check_window(ctx);
         self.detect_dialog(ctx);
-        // Read scheduling consumes Retry in a separate integration.
-        let _retry_request = self.connection_window(ctx);
+        self.connection_window(ctx);
         // Window closes discard their actions before any late picker result runs.
         self.poll_picker(ctx);
     }
@@ -883,7 +883,7 @@ impl Workbench {
         self.detect_button(ui, start_panel);
     }
 
-    fn connection_window(&mut self, ctx: &egui::Context) -> Option<connections::Attachment> {
+    fn connection_window(&mut self, ctx: &egui::Context) {
         let action = connections::show(
             ctx,
             &mut self.connections,
@@ -907,10 +907,9 @@ impl Workbench {
                     self.new_tab(*family);
                 }
             }
-            Some(connections::Action::Retry(attachment)) => return Some(attachment),
+            Some(action) => self.connection_sync_action(action, ctx),
             None => {}
         }
-        None
     }
 
     fn home_page(&mut self, ui: &mut egui::Ui) {

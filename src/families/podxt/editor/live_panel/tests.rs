@@ -102,6 +102,7 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
         ..Snapshot::default()
     };
     app.podxt_mut().live.worker = Some(Worker {
+        acquired: None,
         command: ReadCommand::Follow,
         device: device.clone(),
         stop: Arc::clone(&cancel),

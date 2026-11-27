@@ -1804,7 +1804,16 @@ fn connection_window_updates_after_startup_and_keeps_the_open_editor() {
     let verified = frame(&ctx, &mut app, vec![]);
     assert!(has_label(&verified.shapes, "PODxt Live Connected"));
     assert!(has_label(&verified.shapes, "Variax 300/600 Connected"));
-    assert!(has_label(&verified.shapes, "Library sync has not started"));
+    #[cfg(feature = "usb")]
+    assert!(has_label(
+        &verified.shapes,
+        "PODxt library download is unavailable in this build."
+    ));
+    #[cfg(not(feature = "usb"))]
+    assert!(has_label(
+        &verified.shapes,
+        "Library download is unavailable for this connection."
+    ));
     assert_eq!(source.0.borrow().completed.len(), 1);
     assert_eq!(app.tabs.active, Some(editor));
     assert_eq!(
@@ -1892,4 +1901,159 @@ fn unsupported_only_startup_keeps_no_supported_device_summary() {
         "the startup summary disappeared when only an offline-only device was present"
     );
     assert!(has_label(&started.shapes, "Edit offline"));
+}
+
+#[derive(Default)]
+struct FakeSync {
+    starts: usize,
+    cancellations: usize,
+    update: Option<tabs::SyncUpdate>,
+}
+
+struct SyncEditor {
+    state: Rc<RefCell<FakeSync>>,
+    total: std::num::NonZeroUsize,
+    consent: bool,
+}
+
+impl FamilyTab for SyncEditor {
+    fn show(&mut self, _: &mut egui::Ui, _: &mut EditorServices<'_>) {}
+    fn dirty(&self) -> bool {
+        false
+    }
+    fn close_prompt(&mut self, _: &egui::Context, _: &mut EditorServices<'_>) {}
+    fn status(&self) -> (&str, Option<&str>) {
+        ("", None)
+    }
+    fn save_copy(&mut self, _: &egui::Context, _: &mut EditorServices<'_>) {}
+
+    fn connection_sync_admission(&self, consent: bool) -> tabs::SyncAdmission {
+        if self.consent && !consent {
+            tabs::SyncAdmission::Consent("Temporarily switch presets?")
+        } else {
+            tabs::SyncAdmission::Ready(self.total)
+        }
+    }
+
+    fn start_connection_sync(&mut self, _: &egui::Context) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        state.starts += 1;
+        state.update = Some(tabs::SyncUpdate::WaitingForRig);
+        Ok(())
+    }
+
+    fn connection_sync_update(&mut self) -> Option<tabs::SyncUpdate> {
+        let mut state = self.state.borrow_mut();
+        match state.update {
+            Some(tabs::SyncUpdate::Reading(count)) => Some(tabs::SyncUpdate::Reading(count)),
+            Some(tabs::SyncUpdate::WaitingForRig) => Some(tabs::SyncUpdate::WaitingForRig),
+            _ => state.update.take(),
+        }
+    }
+
+    fn cancel_connection_sync(&mut self) {
+        self.state.borrow_mut().cancellations += 1;
+    }
+}
+
+#[test]
+fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_continues() {
+    use tabs::SyncUpdate::{Finished, Reading, WaitingForRig};
+
+    let (ctx, mut app, source) = fixture();
+    source.usb_paths(&["8-2.1", "8-4"], false);
+    tick(&ctx, &mut app);
+    let relay = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    let independent = app.detection.as_ref().unwrap().attachment_key("8-4");
+    source.guitar(relay.clone());
+    source.finish(independent, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+
+    let mut fake = std::collections::BTreeMap::new();
+    for entry in &mut app.tabs.entries {
+        let Some(device) = &entry.device else {
+            continue;
+        };
+        let key = &device.device.key;
+        let is_guitar = key.family_id == "variax";
+        let state = Rc::new(RefCell::new(FakeSync::default()));
+        entry.editor = Box::new(SyncEditor {
+            state: state.clone(),
+            total: if is_guitar { 60 } else { 128 }.try_into().unwrap(),
+            consent: is_guitar,
+        });
+        fake.insert((key.attachment.path.as_str(), key.family_id), state);
+    }
+    let pod = fake[&("8-2.1", "podxt")].clone();
+    let guitar = fake[&("8-2.1", "variax")].clone();
+    let other = fake[&("8-4", "podxt")].clone();
+    drop(fake);
+    app.connection_inventory = Default::default();
+    app.connections = Default::default();
+    tick(&ctx, &mut app);
+    let window = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&window.shapes, "Temporarily switch presets?"));
+    assert_eq!(guitar.borrow().starts, 0);
+    assert_eq!(pod.borrow().starts, 1);
+    assert_eq!(other.borrow().starts, 1);
+
+    let guitar_attachment = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "variax");
+    app.connection_sync_action(connections::Action::AllowDownload(guitar_attachment), &ctx);
+    pod.borrow_mut().update = Some(Reading(127));
+    other.borrow_mut().update = Some(Reading(17));
+    let overlapping = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&overlapping.shapes, "Model Sync 127 of 128"));
+    assert!(has_label(&overlapping.shapes, "Model Sync 17 of 128"));
+    assert!(has_label(
+        &overlapping.shapes,
+        "Waiting to sync · the PODxt Live connection"
+    ));
+
+    // Reporting the last entry is still in progress. Checked release is the
+    // separate success event and the queued transport can then acquire.
+    pod.borrow_mut().update = Some(Reading(128));
+    guitar.borrow_mut().update = Some(WaitingForRig);
+    other.borrow_mut().update = Some(Reading(41));
+    let finishing = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&finishing.shapes, "Model Sync 128 of 128"));
+    assert!(!has_label(&finishing.shapes, "Model Sync Complete"));
+    assert!(has_label(
+        &finishing.shapes,
+        "Waiting to sync · the PODxt Live connection"
+    ));
+
+    pod.borrow_mut().update = Some(Finished(Ok(())));
+    guitar.borrow_mut().update = Some(Reading(19));
+    other.borrow_mut().update = Some(Finished(Err("Partial read".into())));
+    let partial = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&partial.shapes, "Model Sync Complete"));
+    assert!(has_label(&partial.shapes, "Model Sync 19 of 60"));
+    assert!(has_label(&partial.shapes, "Partial read"));
+    assert!(has_label(&partial.shapes, "Retry"));
+
+    let other_attachment = app.connection_inventory.attachment_for_test("8-4", "podxt");
+    app.connection_sync_action(connections::Action::Retry(other_attachment), &ctx);
+    guitar.borrow_mut().update = Some(Reading(23));
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(other.borrow().starts, 2);
+
+    source.usb_paths(&["8-4"], false);
+    guitar.borrow_mut().update = Some(Finished(Ok(())));
+    other.borrow_mut().update = Some(Reading(62));
+    tick(&ctx, &mut app);
+    other.borrow_mut().update = Some(Reading(62));
+    let lost = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&lost.shapes, "Disconnected"));
+    assert!(!has_label(&lost.shapes, "Model Sync Complete"));
+    assert!(has_label(&lost.shapes, "Model Sync 62 of 128"));
+
+    app.connection_sync_action(connections::Action::Retry(guitar_attachment), &ctx);
+    app.connection_sync_action(connections::Action::CancelDownload(other_attachment), &ctx);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert_eq!(other.borrow().cancellations, 1);
+    other.borrow_mut().update = Some(Finished(Err("Download cancelled.".into())));
+    let cancelled = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&cancelled.shapes, "Download cancelled."));
 }

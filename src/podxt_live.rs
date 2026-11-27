@@ -1239,6 +1239,30 @@ pub fn with_workbench_link<T>(
     }
 }
 
+/// Open the generation verified by discovery after a queued library read
+/// acquires the rig. A reused port or USB address cannot select a new device.
+#[cfg(all(target_os = "macos", not(test), feature = "usb"))]
+pub fn with_verified_workbench_link<T>(
+    rig: &line6_devices::device_lock::DeviceLock,
+    path: &str,
+    address: u8,
+    registry_id: u64,
+    run: impl FnOnce(&mut dyn Link) -> Result<T, String>,
+) -> Result<T, String> {
+    use line6_devices::transport::usb::{UsbInterfaceLink, macos};
+
+    if !workbench_link_available() {
+        return Err("PODxt USB is unavailable in this build.".into());
+    }
+    let expected = macos::Attachment {
+        path: path.into(),
+        address,
+    };
+    let mut link =
+        macos::open_ready_attachment(rig, macos::PODXT_MIDI, registry_id, &expected, || Ok(()))?;
+    finish_workbench_link(&mut link, |link| run(link), UsbInterfaceLink::finish)
+}
+
 #[cfg(any(test, target_os = "macos"))]
 fn finish_workbench_link<L: Link, T>(
     link: &mut L,

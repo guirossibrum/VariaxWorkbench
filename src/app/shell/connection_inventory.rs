@@ -1,14 +1,28 @@
 //! Project current detector outcomes into the connection window.
 use super::super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
-use super::{Workbench, card_icon, registry};
+use super::tabs::{Connection, PODXT_SYNC_RESOURCE, SyncAdmission, SyncUpdate};
+use super::{Workbench, card_icon, egui, registry};
 use std::collections::BTreeMap;
-use variax_workbench::ui::connections::{Attachment, Connections, Device, Verification};
+use variax_workbench::ui::connections::{
+    Action, Attachment, Connections, Device, Read, Verification,
+};
 
 type RowKey = (String, &'static str);
 
 struct Row {
     attachment: Attachment,
     current: Option<DeviceKey>,
+    sync: Sync,
+}
+
+#[derive(Default)]
+enum Sync {
+    #[default]
+    Pending,
+    Consent,
+    Approved,
+    Running(Read),
+    Settled,
 }
 
 #[derive(Default)]
@@ -35,9 +49,156 @@ impl Workbench {
         self.connection_inventory
             .reconcile(&mut self.connections, devices);
     }
+
+    pub(super) fn poll_connection_sync(&mut self, ctx: &egui::Context) {
+        let allow_start = !self.has_prompt() && !self.permit_close;
+        for row in self.connection_inventory.rows.values_mut() {
+            let Some(key) = &row.current else {
+                continue;
+            };
+            let Some(entry) = self.tabs.entries.iter_mut().find(|entry| {
+                entry
+                    .device
+                    .as_ref()
+                    .is_some_and(|device| &device.device.key == key)
+            }) else {
+                if let Sync::Running(read) = row.sync {
+                    self.connections
+                        .finished(read, Err("The device tab was closed.".into()));
+                    row.sync = Sync::Settled;
+                }
+                continue;
+            };
+            let device = entry.device.as_ref().expect("matched device tab");
+            let verified = device.connection == Connection::Present
+                && matches!(device.device.support, DeviceSupport::Verified(_));
+            if let Sync::Running(read) = row.sync {
+                let update = if verified {
+                    entry.editor.connection_sync_update()
+                } else {
+                    entry.editor.cancel_connection_sync();
+                    Some(SyncUpdate::Finished(Err(
+                        "Device verification was lost.".into()
+                    )))
+                };
+                let update = update.unwrap_or_else(|| {
+                    SyncUpdate::Finished(Err("The download is no longer active.".into()))
+                });
+                row.apply_update(&mut self.connections, read, update);
+                continue;
+            }
+            if !verified || !allow_start || !matches!(row.sync, Sync::Pending | Sync::Approved) {
+                continue;
+            }
+            match entry
+                .editor
+                .connection_sync_admission(matches!(row.sync, Sync::Approved))
+            {
+                SyncAdmission::Busy => {
+                    self.connections.waiting_for_editor(row.attachment);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(80));
+                }
+                SyncAdmission::Consent(prompt) => {
+                    self.connections.consent(row.attachment, prompt);
+                    row.sync = Sync::Consent;
+                }
+                SyncAdmission::Blocked(reason) => {
+                    self.connections
+                        .fail_to_start(row.attachment, reason.into());
+                    row.sync = Sync::Settled;
+                }
+                SyncAdmission::Unavailable(reason) => {
+                    self.connections.skip(row.attachment, reason);
+                    row.sync = Sync::Settled;
+                }
+                SyncAdmission::Ready(total) => {
+                    if let Some(read) = self.connections.started(row.attachment, total) {
+                        match entry.editor.start_connection_sync(ctx) {
+                            Ok(()) => {
+                                self.connections.waiting_for_rig(read, PODXT_SYNC_RESOURCE);
+                                row.sync = Sync::Running(read);
+                                ctx.request_repaint();
+                            }
+                            Err(error) => row.apply_update(
+                                &mut self.connections,
+                                read,
+                                SyncUpdate::Finished(Err(error)),
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn connection_sync_action(&mut self, action: Action, ctx: &egui::Context) {
+        let attachment = match action {
+            Action::AllowDownload(attachment)
+            | Action::SkipDownload(attachment)
+            | Action::CancelDownload(attachment)
+            | Action::Retry(attachment) => attachment,
+            _ => return,
+        };
+        let Some(row) = self
+            .connection_inventory
+            .rows
+            .values_mut()
+            .find(|row| row.attachment == attachment && row.current.is_some())
+        else {
+            return;
+        };
+        match action {
+            Action::AllowDownload(_) if matches!(row.sync, Sync::Consent) => {
+                row.sync = Sync::Approved;
+            }
+            Action::SkipDownload(_) if matches!(row.sync, Sync::Consent) => {
+                self.connections.skip(attachment, "Download skipped");
+                row.sync = Sync::Settled;
+            }
+            Action::Retry(_) if self.connections.accept_retry(attachment) => {
+                row.sync = Sync::Pending
+            }
+            Action::CancelDownload(_) => match row.sync {
+                Sync::Running(_) => {
+                    if let Some(entry) = self.tabs.entries.iter_mut().find(|entry| {
+                        entry.device.as_ref().map(|device| &device.device.key)
+                            == row.current.as_ref()
+                    }) {
+                        entry.editor.cancel_connection_sync();
+                    }
+                }
+                Sync::Pending | Sync::Approved => {
+                    self.connections
+                        .fail_to_start(attachment, "Download cancelled.".into());
+                    row.sync = Sync::Settled;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        ctx.request_repaint();
+    }
+}
+
+impl Row {
+    fn apply_update(&mut self, connections: &mut Connections, read: Read, update: SyncUpdate) {
+        match update {
+            SyncUpdate::WaitingForRig => connections.waiting_for_rig(read, PODXT_SYNC_RESOURCE),
+            SyncUpdate::Reading(count) => connections.progress(read, count),
+            SyncUpdate::Finished(result) => {
+                connections.finished(read, result);
+                self.sync = Sync::Settled;
+            }
+        }
+    }
 }
 
 impl ConnectionInventory {
+    #[cfg(test)]
+    pub(super) fn attachment_for_test(&self, path: &str, family: &'static str) -> Attachment {
+        self.rows[&(path.to_owned(), family)].attachment
+    }
+
     fn reconcile(
         &mut self,
         connections: &mut Connections,
@@ -79,6 +240,7 @@ impl ConnectionInventory {
                     generation: 0,
                 },
                 current: None,
+                sync: Sync::Pending,
             });
             if row.current.as_ref() != Some(&key) {
                 row.attachment.generation += 1;
@@ -92,6 +254,10 @@ impl ConnectionInventory {
                     },
                 );
                 row.current = Some(key);
+                row.sync = Sync::Pending;
+            }
+            if !matches!(verification, Verification::Verified) {
+                row.sync = Sync::Pending;
             }
             connections.verified(row.attachment, verification);
         }

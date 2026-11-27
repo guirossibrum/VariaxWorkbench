@@ -34,7 +34,9 @@ Earlier captures from floating windows using test presets with device discovery 
   saves copies. Only a few settings on nine effect models can be edited; the
   rest is kept as is. There is no HD editor page or device support yet.
 - **Device connection.** Linux detection and device tabs have been tested on
-  the Variax 600 and PODxt Live. Offline tabs work with the rig disconnected.
+  the Variax 600 and PODxt Live. The startup connection window shows each
+  device’s library download, and asks before the guitar temporarily switches
+  presets. Offline tabs work with the rig disconnected.
 - **Rig Check.** Rehearse the checks in Practice or run the guided checks on a
   supported rig. Open a saved report at launch to continue a compatible run
   after verifying its starting state and backup evidence. On Mac, new reports
