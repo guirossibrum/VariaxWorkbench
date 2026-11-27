@@ -21,7 +21,7 @@ use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
 #[path = "families/variax/editor/mod.rs"]
 mod variax_panel;
-use variax_workbench::ui::theme;
+use variax_workbench::ui::{connections::Connections, theme};
 
 #[path = "families/hd500x/editor/mod.rs"]
 mod hd500x_panel;
@@ -332,6 +332,7 @@ struct Workbench {
     #[cfg(test)]
     recording_capture_attempts: u32,
     tabs: Tabs,
+    connections: Connections,
     detection: Option<DetectionService>,
     detect_confirmation: Option<DetectConfirmation>,
     next_detection: Instant,

@@ -16,6 +16,7 @@
 pub mod assets;
 pub mod body_canvas;
 pub mod chrome;
+pub mod connections;
 pub mod controls;
 pub mod editor_layout;
 pub mod gallery;

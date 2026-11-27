@@ -62,7 +62,8 @@ fn default_startup_renders_an_empty_shell_with_offline_entry_points() {
         "Test recording…",
         "Device check…",
         "Help",
-        "Open a file or start an offline tab",
+        "Home",
+        "Edit offline",
         "No file open",
         "No device",
     ] {
@@ -840,7 +841,8 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
                                 "Device check…",
                                 "Test recording…",
                                 "Help",
-                                "Open a file or start an offline tab",
+                                "Home",
+                                "Edit offline",
                             ]
                         };
                         for label in required {
@@ -1075,4 +1077,111 @@ fn shell_icon_keeps_aspect_and_a_missing_file_stays_in_its_slot() {
         "{:?} outside {missing_slot:?}",
         mark.1
     );
+}
+
+#[test]
+fn home_and_editor_tabs_keep_keyboard_focus_and_unsaved_edits_during_connection_updates() {
+    use variax_workbench::ui::connections::{Attachment, Detection, Device, Verification};
+
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(registry::LEGACY_STARTUP);
+    let editor = app.tabs.active.unwrap();
+    guitar_editor(&mut app, editor, "Unsaved edit");
+    assert!(app.tabs.entries[0].editor.dirty());
+
+    fn draw(app: &mut Workbench, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1120.0, 760.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
+    fn key(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+
+    draw(&mut app, &ctx, vec![]);
+    draw(&mut app, &ctx, vec![]);
+    let pos = app.tab_buttons["home"].center();
+    let pointer = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    draw(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(pos), pointer(true)],
+    );
+    draw(&mut app, &ctx, vec![pointer(false)]);
+    assert!(app.tabs.active.is_none());
+    let home_focus = (0..20)
+        .find_map(|_| {
+            draw(&mut app, &ctx, vec![key(egui::Key::Tab, true)]);
+            draw(&mut app, &ctx, vec![key(egui::Key::Tab, false)]);
+            let focused = ctx.memory(|memory| memory.focused())?;
+            let response = ctx.read_response(focused)?;
+            (response.rect == app.tab_buttons["home"]).then_some(focused)
+        })
+        .expect("Home is keyboard focusable");
+
+    let pod = Attachment {
+        device: 1,
+        generation: 1,
+    };
+    app.connections.detection(Detection::Checking);
+    app.connections.arrived(
+        pod,
+        Device {
+            name: "PODxt Live".into(),
+            artwork: Some("shell/podxt-live.png"),
+            offline_editor: Some("podxt"),
+            upstream: None,
+        },
+    );
+    app.connections.verified(pod, Verification::Verified);
+    app.connections.detection(Detection::Complete);
+    let read = app
+        .connections
+        .started(pod, 299.try_into().unwrap())
+        .unwrap();
+    draw(&mut app, &ctx, vec![]);
+    draw(&mut app, &ctx, vec![]);
+    assert_eq!(ctx.memory(|memory| memory.focused()), Some(home_focus));
+    assert!(app.tabs.active.is_none());
+
+    app.connections.progress(read, 128);
+    draw(&mut app, &ctx, vec![key(egui::Key::Tab, true)]);
+    draw(
+        &mut app,
+        &ctx,
+        vec![key(egui::Key::Tab, false), key(egui::Key::Enter, true)],
+    );
+    assert_eq!(app.tabs.active, Some(editor));
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert!(app.tabs.entries[0].editor.dirty());
+    app.with_tab(editor, |entry, _| {
+        let editor = (&mut *entry.editor as &mut dyn std::any::Any)
+            .downcast_mut::<VariaxEditor>()
+            .unwrap();
+        assert_eq!(
+            editor.document.as_ref().unwrap().preset().name(),
+            "Unsaved edit"
+        );
+    });
 }
