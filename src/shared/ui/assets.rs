@@ -1,4 +1,6 @@
-//! Load committed UI art from `assets/ui`, with embedded artwork for the shell.
+//! Load committed UI art from `assets/ui` or from the executable.
+
+mod bundled_variax;
 
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
@@ -104,6 +106,18 @@ pub fn load(ctx: &egui::Context, root: &Path, relative: &str) -> UiImage {
         texture: Some(texture),
         missing: false,
     }
+}
+
+/// Decode a Variax editor image. An optional local image takes precedence
+/// over the embedded Workbench artwork. Pickup hit testing uses the
+/// unmultiplied alpha from the returned pixels.
+pub fn load_variax_rgba(root: &Path, relative: &str) -> Option<image::RgbaImage> {
+    let path = contained(root, relative)?;
+    let decoded = image::open(path).ok().or_else(|| {
+        let png = bundled_variax::png(relative)?;
+        image::load_from_memory_with_format(png, ImageFormat::Png).ok()
+    })?;
+    Some(decoded.into_rgba8())
 }
 
 fn embedded_shell_png(relative: &str) -> Option<&'static [u8]> {
@@ -243,6 +257,111 @@ mod tests {
             assert_eq!(format!("{:x}", Sha256::digest(png)), digest, "{name}");
         }
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn bundled_variax_art_resolves_every_key_without_a_source_tree() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let install = tempfile::tempdir().unwrap();
+        let absent_override = install.path().join("user data/artwork");
+        let provenance: BTreeMap<_, _> = include_str!("../../../assets/ui/SOURCES.md")
+            .lines()
+            .filter_map(|line| {
+                let mut columns = line.strip_prefix("| `")?.split(" | ");
+                let file = columns.next()?.strip_suffix('`')?;
+                let digest = columns.last()?.strip_prefix('`')?.strip_suffix("` |")?;
+                Some((file, digest))
+            })
+            .collect();
+        let mut keys = BTreeSet::new();
+        for &(key, file) in bundled_variax::KEYS {
+            assert!(keys.insert(key), "duplicate {key}");
+            let png = bundled_variax::png(key).unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(png)),
+                provenance[file],
+                "{key}"
+            );
+            let rgba = load_variax_rgba(&absent_override, key).expect(key);
+            let size = if key.starts_with("bodies/buttons/") {
+                (42, 50)
+            } else if key.starts_with("bodies/wireframe/") {
+                (238, 148)
+            } else if key.starts_with("bodies/") {
+                (426, 412)
+            } else if key == "pickups/chromep90.png" {
+                (56, 130)
+            } else {
+                assert!(key.starts_with("pickups/"), "{key}");
+                (120, 120)
+            };
+            assert_eq!(rgba.dimensions(), size, "{key}");
+            if key.starts_with("pickups/") {
+                assert!(rgba.pixels().any(|pixel| pixel[3] == 0), "{key}");
+                assert!(rgba.pixels().any(|pixel| pixel[3] == 255), "{key}");
+            }
+        }
+
+        let catalog: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../assets/model-ui.json")).unwrap();
+        let mut required = BTreeSet::new();
+        for model in &catalog {
+            required.insert(model["image"].as_str().unwrap());
+            if model["kind"] == "body" {
+                let id = u32::try_from(model["id"].as_u64().unwrap()).unwrap();
+                required.insert(super::super::body_canvas::wireframe_path(id));
+            }
+        }
+        assert_eq!(
+            keys.iter()
+                .copied()
+                .filter(|key| !key.starts_with("bodies/buttons/"))
+                .collect::<BTreeSet<_>>(),
+            required
+        );
+        assert_eq!(keys.len(), 88);
+        for key in [
+            "bodies/telecustom.png",
+            "bodies/tele.png",
+            "bodies/lester.png",
+            "bodies/ricky.png",
+            "bodies/acoustic.png",
+            "pickups/telebridge.png",
+            "pickups/chromep90.png",
+            "bodies/buttons/tele.png",
+            "bodies/wireframe/tele.png",
+        ] {
+            assert!(keys.contains(key), "{key}");
+        }
+        assert!(!absent_override.exists());
+    }
+
+    #[test]
+    fn variax_art_prefers_a_valid_override_and_checks_the_runtime_path() {
+        let install = tempfile::tempdir().unwrap();
+        let root = install.path().join("artwork");
+        let key = "bodies/telecustom.png";
+        let path = root.join(key);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let custom = image::RgbaImage::from_pixel(2, 3, image::Rgba([20, 40, 60, 128]));
+        custom.save(&path).unwrap();
+        assert_eq!(load_variax_rgba(&root, key), Some(custom));
+        std::fs::write(&path, b"invalid PNG").unwrap();
+        assert_eq!(
+            load_variax_rgba(&root, key).unwrap().dimensions(),
+            (426, 412)
+        );
+
+        for key in [
+            "bodies/missing.png",
+            "../artwork/bodies/telecustom.png",
+            "bodies/../bodies/telecustom.png",
+            "/bodies/telecustom.png",
+            "",
+        ] {
+            assert!(load_variax_rgba(&root, key).is_none(), "{key}");
+        }
     }
 
     #[test]
