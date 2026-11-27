@@ -1,0 +1,218 @@
+name: Release packages
+run-name: Release ${{ inputs.request_id || github.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Full master commit SHA (blank uses this workflow's master commit)"
+        type: string
+        default: ""
+      request_id:
+        description: "Unique release command identifier"
+        type: string
+        default: ""
+      alpha_number:
+        description: "Publish the verified set as untested alpha N (blank for artifact only)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: "1.99.1"
+
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+      tag: ${{ steps.source.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin and validate release source
+        id: source
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision }}
+          ALPHA_NUMBER: ${{ inputs.alpha_number }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master ]] || { echo 'Dispatch from master.'; exit 1; }
+          revision=${REQUESTED_REVISION:-$GITHUB_SHA}
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git cat-file -t "$revision")" == commit ]]
+          git merge-base --is-ancestor "$revision" "$GITHUB_SHA"
+          git cat-file -e "$revision:packaging/release_manifest.py"
+          git cat-file -e "$revision:packaging/linux/build-apps.sh"
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          if [[ -n "$ALPHA_NUMBER" ]]; then
+            [[ "$ALPHA_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            version=$(git show "$revision:Cargo.toml" | sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p')
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            printf 'tag=v%s-alpha.%s\n' "$version" "$ALPHA_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+  native:
+    needs: pin
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, runner: ubuntu-24.04 }
+          - { platform: macos, runner: macos-15 }
+          - { platform: windows, runner: windows-2025 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      RELEASE_REVISION: ${{ needs.pin.outputs.revision }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.pin.outputs.revision }}
+          persist-credentials: false
+      - name: Verify the checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_REVISION"
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: "1.99.1"
+      - name: Offline app and device checks (Unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_DATA_HOME="$(mktemp -d "$RUNNER_TEMP/variax-data.XXXXXX")"
+          export VARIAX_WORKBENCH_DATA_DIR="$XDG_DATA_HOME"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo fetch --locked --target "$host"
+          cargo test --offline --locked --target "$host" --no-default-features --features gui,portable-math
+          (cd crates/line6-devices && cargo test --offline --locked --target "$host" --no-default-features)
+          cargo run --offline --locked --target "$host" --no-default-features --features portable-math --example verify_variax_models
+          PYTHONDONTWRITEBYTECODE=1 python3 packaging/test_release_manifest.py
+      - name: Offline app and device checks (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $data = Join-Path $env:RUNNER_TEMP ("variax-data-" + [guid]::NewGuid())
+          New-Item -ItemType Directory $data | Out-Null
+          $env:XDG_DATA_HOME = $data
+          $env:VARIAX_WORKBENCH_DATA_DIR = $data
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          $target = "x86_64-pc-windows-msvc"
+          cargo fetch --locked --target $target
+          cargo test --offline --locked --target $target --no-default-features --features gui,portable-math
+          cargo test --offline --locked --target $target --manifest-path crates/line6-devices/Cargo.toml --no-default-features
+          cargo run --offline --locked --target $target --no-default-features --features portable-math --example verify_variax_models
+          python packaging/test_release_manifest.py
+      - name: Build Linux package
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/package"
+          bash packaging/linux/build-apps.sh "$RELEASE_REVISION" offline "$RUNNER_TEMP/linux-apps"
+          cp "$RUNNER_TEMP/linux-apps/verification.txt" "$RUNNER_TEMP/package/linux-verification.txt"
+          archive="$RUNNER_TEMP/package/Variax-Workbench-linux-x64.tar.gz"
+          tar -czf "$archive" -C "$RUNNER_TEMP" linux-apps
+          smoke=$(mktemp -d "$RUNNER_TEMP/linux-package-smoke.XXXXXX")
+          tar -xzf "$archive" -C "$smoke"
+          cd "$smoke"
+          linux-apps/variax-workbench-gui --version > version.txt
+          grep -Fq 'Variax Workbench' version.txt
+          linux-apps/rig-check --catalogue > catalogue.txt
+          grep -q '^0\.1 ' catalogue.txt
+          test -s linux-apps/assets/ui/shell/variax.png
+          printf 'Packaged Linux command-line smoke checks passed.\nPackage SHA-256 %s\n' \
+            "$(sha256sum "$archive" | cut -d' ' -f1)" >> "$RUNNER_TEMP/package/linux-verification.txt"
+      - name: Build macOS package
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 packaging/macos/test_package.py
+          bash packaging/macos/build.sh "$RUNNER_TEMP/native-output"
+          mkdir "$RUNNER_TEMP/package"
+          cp "$RUNNER_TEMP/native-output/"*/*.dmg "$RUNNER_TEMP/package/Variax-Workbench-macos-universal.dmg"
+          cp "$RUNNER_TEMP/native-output/"*/verification.txt "$RUNNER_TEMP/package/macos-verification.txt"
+      - name: Build Windows package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          python packaging/windows/test_package.py
+          python packaging/windows/build.py (Join-Path $env:RUNNER_TEMP 'native-output')
+          $package = New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'package')
+          Copy-Item "$env:RUNNER_TEMP/native-output/*/*.zip" -Destination $package.FullName
+          Copy-Item "$env:RUNNER_TEMP/native-output/*/verification.txt" -Destination (Join-Path $package.FullName "windows-verification.txt")
+      - name: Record package provenance and checksums
+        shell: bash
+        run: python packaging/release_manifest.py "$RELEASE_REVISION" "$RUNNER_TEMP/package" --record "$RELEASE_PLATFORM"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staged-${{ matrix.platform }}
+          path: ${{ runner.temp }}/package/
+          if-no-files-found: error
+
+  verify:
+    needs: [pin, native]
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_REVISION: ${{ needs.pin.outputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.pin.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: staged-*
+          path: staging
+      - name: Verify the complete release
+        run: |
+          set -euo pipefail
+          mkdir release
+          for platform in linux macos windows; do
+            mv "staging/staged-$platform" "release/$platform"
+          done
+          python packaging/release_manifest.py "$RELEASE_REVISION" release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-set-${{ needs.pin.outputs.revision }}
+          path: release/
+          if-no-files-found: error
+
+  publish-alpha:
+    needs: [pin, verify]
+    if: needs.pin.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.pin.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-set-${{ needs.pin.outputs.revision }}
+          path: release
+      - name: Publish the verified untested alpha set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.pin.outputs.tag }}
+          RELEASE_REVISION: ${{ needs.pin.outputs.revision }}
+        run: |
+          set -euo pipefail
+          python3 packaging/release_manifest.py "$RELEASE_REVISION" release --check
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            --raw-field "ref=refs/tags/$RELEASE_TAG" --raw-field "sha=$RELEASE_REVISION" >/dev/null
+          gh release create "$RELEASE_TAG" --verify-tag release/linux/*.tar.gz release/macos/*.dmg release/windows/*.zip release/*/*-verification.txt release/release-manifest.json \
+            --target "$RELEASE_REVISION" --prerelease \
+            --title "Variax Workbench $RELEASE_TAG — untested alpha" \
+            --notes "Untested offline alpha from $RELEASE_REVISION. Includes Linux x64, macOS universal and Windows x64 builds of Workbench and Rig Check."

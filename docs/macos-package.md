@@ -73,28 +73,10 @@ and verifies the manifest and every image again on the mounted disk image.
 Workbench can load this artwork from Applications or another folder without
 a source checkout.
 
-## Build from Linux using GitHub Actions
+## Release and owner USB packages
 
-From the repository checkout with the GitHub CLI authenticated, run:
-
-```sh
-gh workflow run macos-package.yml --ref master
-gh run list --workflow macos-package.yml
-gh run watch RUN_ID --exit-status
-gh run download RUN_ID -n macos-universal -D macos-package
-```
-
-Replace `RUN_ID` with the ID from the list. The macOS runner tests the offline
-package profile and runs the same build script. The artifact contains the disk
-image and the verification report. A successful build verifies the package structure and links,
-and checks command-line startup on the runner’s architecture. App launch, the Finder layout and dialogs on each target
-macOS version require a separate smoke test.
-
-To additionally publish a GitHub pre-release labelled **untested alpha**,
-the owner supplies a positive alpha number:
-
-```sh
-gh workflow run macos-package.yml --ref master -f alpha_number=1
-```
-
-The tag uses the version in `Cargo.toml`, for example `v0.9.0-alpha.1`.
+Use the [unified release command](release-build.md) to build the official
+offline set on native GitHub runners or the private Linux and macOS USB
+pair. The hosted macOS job tests the offline profile, checks the disk image
+and its bundles, and checks command-line startup on the runner's architecture.
+Desktop launch, Finder layout and dialogs still need target-specific verification.

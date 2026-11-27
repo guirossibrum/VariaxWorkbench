@@ -70,21 +70,9 @@ and runs a command-line smoke test from the extracted ZIP.
 `verification.txt` records the target, compiler, system DLL imports, sizes,
 and smoke results.
 
-After the workflow is on the default branch, build and download it from a
-checkout authenticated with the GitHub CLI:
-
-```sh
-gh workflow run windows-package.yml --ref master
-gh run list --workflow windows-package.yml
-gh run watch RUN_ID --exit-status
-gh run download RUN_ID -n windows-x64 -D windows-package
-```
-
-The Windows runner executes the offline tests before building. A regular
-dispatch produces an artifact. The owner may opt in to a GitHub pre-release
-labelled **untested alpha** by passing `-f alpha_number=N`. Use an unused
-alpha number for the version, since macOS and Windows releases use the same
-tag format. [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+Use the [unified release command](release-build.md) for the hosted offline
+set. Its native Windows runner executes the offline suite and packages the
+Windows x64 ZIP from the same commit as the Linux and macOS jobs.
 
 ## Native verification
 

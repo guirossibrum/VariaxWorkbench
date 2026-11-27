@@ -38,31 +38,11 @@ ABI/architecture; older libc installations may need a build on their own
 baseline. Desktop/graphics/portal interfaces remain OS dependencies. Ordinary
 Rust operation needs neither Python nor the research environment.
 
-## Matching private Linux and Mac builds
+## Release and owner USB packages
 
-Run from the repository on Linux:
-
-```sh
-bash packaging/build-owner-pair.sh
-```
-
-The command fetches and pins `origin/master` once. Use `--revision COMMIT` to
-build a particular commit already present locally. Both builds include USB and
-use the portable math profile. Linux builds both apps for the current host.
-The native Mac build creates a universal DMG. The script checks the recorded
-commit on both platforms and verifies the package hashes before delivery.
-
-The Linux executables, a local DMG copy and verification files go in a new
-directory under `backups/packages`. The verified DMG also goes in the Mac's
-Downloads folder. Each run has its own name, so earlier builds remain
-available. The command neither installs nor starts the apps.
-
-The Linux host needs Rust 1.99.1, a complete locked Cargo cache, OpenSSH and
-`flock`. The Mac needs working SSH access, Xcode command-line tools, and
-network access for Rust toolchain components and the pinned DMG build tools.
-The default Mac SSH alias is `guilhermes-macbook-pro-1`. Use
-`--mac-host HOST` or `--output DIR` to change the destination host or the
-local output directory.
+Use the [unified release command](release-build.md). Its hosted offline
+profile includes Linux. Its private USB profile delivers matching Linux
+and macOS builds from one revision.
 
 ## Install and remove
 

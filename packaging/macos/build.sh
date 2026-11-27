@@ -157,6 +157,7 @@ if [[ "$profile" == offline ]]; then
 fi
 hdiutil detach "$mount"
 mounted=no
+printf 'Package SHA-256 %s\n' "$(shasum -a 256 "$image" | awk '{ print $1 }')" | tee -a "$report"
 
 # Publish only fully verified output, atomically and without overwriting prior builds.
 release="$output/Variax-Workbench-$version-${revision:0:8}-${scratch##*.}"

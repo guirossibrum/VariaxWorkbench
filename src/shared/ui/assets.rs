@@ -25,25 +25,36 @@ impl UiImage {
     }
 }
 
-/// The running macOS bundle's artwork directory, or the source tree for development.
+/// Artwork shipped with the executable, or the source tree for development.
 pub fn workspace_root() -> PathBuf {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
+        #[cfg(target_os = "linux")]
+        let package_artwork = linux_package_artwork;
+        #[cfg(target_os = "macos")]
+        let package_artwork = macos_bundle_artwork;
+
         static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         ROOT.get_or_init(|| {
             std::env::current_exe()
                 .ok()
-                .and_then(|exe| macos_bundle_artwork(&exe))
+                .and_then(|exe| package_artwork(&exe))
                 .unwrap_or_else(source_artwork)
         })
         .clone()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     source_artwork()
 }
 
 fn source_artwork() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/ui")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_package_artwork(exe: &Path) -> Option<PathBuf> {
+    let directory = exe.parent()?.join("assets/ui");
+    directory.is_dir().then_some(directory)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -153,6 +164,20 @@ pub fn fitted_size(pixels: [usize; 2], bounds: Vec2) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_home_artwork_next_to_a_relocated_linux_executable() {
+        let scratch = tempfile::tempdir().unwrap();
+        let exe = scratch.path().join("variax-workbench-gui");
+        assert!(linux_package_artwork(&exe).is_none());
+        let artwork = scratch.path().join("assets/ui");
+        std::fs::create_dir_all(artwork.join("shell")).unwrap();
+        let photo = "shell/variax.png";
+        std::fs::copy(source_artwork().join(photo), artwork.join(photo)).unwrap();
+
+        assert_eq!(linux_package_artwork(&exe), Some(artwork.clone()));
+        assert!(!load(&egui::Context::default(), &artwork, photo).missing);
+    }
 
     #[test]
     fn loads_home_artwork_from_a_relocated_app_bundle() {

@@ -45,6 +45,17 @@ package acceptance, and later feedback on the issue while the completed lane
 moves on. All offline checks, hardware permissions, and publication rules
 below apply.
 
+## Release builds
+
+Use [the unified release command](docs/release-build.md) for releases and
+owner deliveries. Resolve the Git source once to a full commit SHA. Every
+requested platform builds that exact checkout and records its SHA, target,
+profile and package checksums. Deliver the set only after all requested
+packages verify. Platform scripts are native build workers and local checks.
+The private owner USB profile covers Linux and macOS. The hosted offline
+profile covers Linux, macOS and Windows. Publication and hardware approvals
+follow their existing rules.
+
 ## Hardware boundary — user requirement
 
 PODxt Live and Variax 600 are irreplaceable. Live device operations are divided
