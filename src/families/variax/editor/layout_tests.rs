@@ -60,6 +60,174 @@ fn text_bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
 }
 
 #[test]
+fn populated_bank_slots_show_names_and_keep_their_controls_at_both_densities() {
+    let artwork = tempfile::tempdir().unwrap();
+    let directory = artwork.path().join("bodies/buttons");
+    std::fs::create_dir_all(&directory).unwrap();
+    image::RgbaImage::from_pixel(27, 32, image::Rgba([200, 220, 255, 255]))
+        .save(directory.join("strat.png"))
+        .unwrap();
+    let long_name = "Écho WWWWWWWWWWWWWWWWWWWW";
+    let names = [
+        "T-Model example",
+        long_name,
+        "Lester example",
+        "R-Billy example",
+        "Twelve-string example",
+    ];
+    for size in SIZES {
+        for pixels_per_point in [1.0, 2.0] {
+            let (ctx, mut app) = app();
+            app.clear_window_controls = true;
+            let editor = app.variax_mut();
+            editor.open_example();
+            editor.choose_artwork(artwork.path().into());
+            let document = editor.document.as_mut().unwrap();
+            document.select(0, 1).unwrap();
+            document
+                .apply(|preset| preset.set_stored_name(long_name))
+                .unwrap();
+            document.select(0, 0).unwrap();
+            let frame = |app: &mut Workbench, events| {
+                render(
+                    app,
+                    &ctx,
+                    size,
+                    pixels_per_point,
+                    events,
+                    egui::Modifiers::NONE,
+                )
+            };
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            assert_eq!(output.pixels_per_point, pixels_per_point);
+            let editor = app.variax();
+            assert_eq!(editor.bank_slots.len(), names.len());
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let mut previous = editor.bank_dropdown.unwrap();
+            for (index, name) in names.into_iter().enumerate() {
+                let slot = editor.bank_slots[&index];
+                assert!(screen.contains_rect(slot), "{size:?}: {slot:?}");
+                assert!(
+                    previous.right() <= slot.left() && slot.y_range().contains(previous.center().y),
+                    "{size:?} at {pixels_per_point}: slot {} {slot:?} after {previous:?}",
+                    index + 1
+                );
+                previous = slot;
+                let number = (index + 1).to_string();
+                let label = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == name => {
+                            Some((text, shape.clip_rect))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{size:?} at {pixels_per_point}: missing {name:?}"));
+                let bounds = label.0.galley.rect.translate(label.0.pos.to_vec2());
+                assert!(
+                    slot.intersect(label.1).contains_rect(bounds),
+                    "{name:?}: {bounds:?} in {slot:?}"
+                );
+                assert!(bounds.is_positive());
+                assert_eq!(label.0.galley.elided, name == long_name, "{name:?}");
+                for marker in [Some(number.as_str()), (name == long_name).then_some("!")]
+                    .into_iter()
+                    .flatten()
+                {
+                    assert!(
+                        output.shapes.iter().any(|shape| {
+                            text_bounds(&shape.shape, marker).is_some_and(|marker| {
+                                slot.intersect(shape.clip_rect).contains_rect(marker)
+                                    && marker.right() < bounds.left()
+                            })
+                        }),
+                        "missing {marker:?} in slot {}",
+                        index + 1
+                    );
+                }
+            }
+            let unsaved = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Unsaved" => {
+                        let bounds = text.visual_bounding_rect();
+                        (bounds.top() >= previous.top()).then_some((bounds, shape.clip_rect))
+                    }
+                    _ => None,
+                })
+                .expect("bank header Unsaved indicator");
+            assert!(
+                previous.right() <= unsaved.0.left()
+                    && previous.y_range().contains(unsaved.0.center().y)
+                    && screen.intersect(unsaved.1).contains_rect(unsaved.0),
+                "{size:?} at {pixels_per_point}: Unsaved {unsaved:?} should fit after the last slot {previous:?}"
+            );
+            let target = editor.bank_slots[&1];
+            let texture = editor.textures["bodies/buttons/strat.png"].handle.id();
+            assert!(output.shapes.iter().any(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                    target
+                        .intersect(shape.clip_rect)
+                        .contains_rect(mesh.calc_bounds())
+                }
+                _ => false,
+            }));
+
+            let name_position = egui::pos2(target.right() - 15.0, target.center().y);
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(name_position),
+                    pointer(name_position, true),
+                ],
+            );
+            let output = frame(&mut app, vec![pointer(name_position, false)]);
+            assert_eq!(
+                app.variax().document.as_ref().unwrap().selection(),
+                Some((0, 1))
+            );
+            let announcement = format!(
+                "Slot 2 · {long_name} · differs from the last saved file · modified since the library was opened"
+            );
+            assert!(
+                output.platform_output.events.iter().any(|event| {
+                    matches!(event, egui::output::OutputEvent::Clicked(info)
+                    if info.selected == Some(false) && info.label.as_deref() == Some(&announcement))
+                }),
+                "slot activation must announce the full name and dirty state"
+            );
+            let output = frame(&mut app, vec![]);
+            assert!(
+                output.shapes.iter().any(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.rect == target => {
+                        rect.fill == egui::Color32::from_rgb(60, 39, 18)
+                    }
+                    _ => false,
+                }),
+                "the clicked slot must be highlighted"
+            );
+            let modified = text_rect(&output, "Modified · not stored on guitar")
+                .expect("selected dirty slot's status");
+            assert!(
+                previous.right() <= modified.left()
+                    && previous.y_range().contains(modified.center().y)
+                    && screen.contains_rect(modified),
+                "{size:?} at {pixels_per_point}: Modified notice {modified:?} after {previous:?}"
+            );
+            let editor = app.variax();
+            println!(
+                "{size:?} at {pixels_per_point} px/point: dropdown {:?}, slots 1–5 {:?}",
+                editor.bank_dropdown.unwrap(),
+                editor.bank_slots[&0].union(editor.bank_slots[&4])
+            );
+        }
+    }
+}
+
+#[test]
 fn twelve_string_metadata_header_fits_and_accepts_input_at_both_densities() {
     let name = "Twelve-string example";
     let notice = format!("Model: {}", legacy_text_issue(name, true).unwrap());

@@ -389,6 +389,7 @@ impl VariaxEditor {
         let mut import = false;
         let mut command = None;
         ui.horizontal_wrapped(|ui| {
+            let unsaved = egui::Label::new(egui::RichText::new("Unsaved").color(FRET_MARKER));
             if let (Some(banks), Some((bank_index, selected))) = (document.banks(), next) {
                 let bank = &banks[bank_index];
                 ui.add_enabled_ui(available, |ui| {
@@ -511,6 +512,18 @@ impl VariaxEditor {
                         });
                     }
                 });
+                // Keep both notices inside the slot row when the selected preset changes.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.add_visible(
+                        document.slot_is_unsent(bank_index, selected),
+                        egui::Label::new(
+                            egui::RichText::new("Modified · not stored on guitar").small(),
+                        )
+                        .extend(),
+                    );
+                    ui.add_visible(document.is_dirty(), unsaved);
+                });
             } else {
                 if let Some(path) = &self.source_path
                     && let Some(filename) = path.file_name()
@@ -523,17 +536,8 @@ impl VariaxEditor {
                 } else {
                     ui.strong("Individual preset");
                 }
+                ui.add_visible(document.is_dirty(), unsaved);
             }
-            if document
-                .selection()
-                .is_some_and(|(bank, slot)| document.slot_is_unsent(bank, slot))
-            {
-                ui.label("Modified · not stored on guitar");
-            }
-            ui.add_visible(
-                document.is_dirty(),
-                egui::Label::new(egui::RichText::new("Unsaved").color(FRET_MARKER)),
-            );
         });
 
         if let Some((position, SlotCommand::Select | SlotCommand::Rename)) = &command {
@@ -1149,7 +1153,12 @@ fn bank_slot(
     changed: bool,
     unsent: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(43.0, theme::TARGET), Sense::click());
+    const ART_WIDTH: f32 = 24.0;
+    const SLOT_WIDTH: f32 = 96.0;
+    const NAME_PADDING: f32 = 1.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(SLOT_WIDTH, theme::TARGET), Sense::click());
+    let art = Rect::from_min_size(rect.min, egui::vec2(ART_WIDTH, rect.height()));
     let mut description = format!("Slot {position} · {name}");
     if changed {
         description.push_str(" · differs from the last saved file");
@@ -1181,7 +1190,7 @@ fn bank_slot(
     };
     painter.rect(rect, 5, fill, stroke, egui::StrokeKind::Inside);
     if let Some(texture) = thumbnail {
-        let icon = Rect::from_center_size(rect.center(), egui::vec2(26.88, 32.0));
+        let icon = Rect::from_center_size(art.center(), egui::vec2(20.16, 24.0));
         let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         let tint = if active || response.hovered() {
             Color32::WHITE
@@ -1191,7 +1200,7 @@ fn bank_slot(
         painter.image(texture.id(), icon, uv, tint);
         let digits = position.ilog10() + 1;
         let badge = Rect::from_min_size(
-            rect.min + egui::vec2(1.0, 1.0),
+            art.min + egui::vec2(1.0, 1.0),
             egui::vec2(6.0 + 6.0 * digits as f32, 13.0),
         );
         painter.rect_filled(
@@ -1212,7 +1221,7 @@ fn bank_slot(
         );
     } else {
         painter.text(
-            rect.center(),
+            art.center(),
             egui::Align2::CENTER_CENTER,
             position,
             egui::FontId::proportional(15.0),
@@ -1225,13 +1234,28 @@ fn bank_slot(
     }
     if changed {
         painter.text(
-            rect.right_bottom() - egui::vec2(4.0, 2.0),
+            art.right_bottom() - egui::vec2(0.0, 2.0),
             egui::Align2::RIGHT_BOTTOM,
             "!",
             egui::FontId::proportional(15.0),
             FRET_MARKER,
         );
     }
+    let color = visuals.text_color();
+    let mut label = egui::text::LayoutJob::simple(
+        name.to_owned(),
+        egui::FontId::proportional(11.0),
+        color,
+        SLOT_WIDTH - ART_WIDTH - 2.0 * NAME_PADDING,
+    );
+    label.wrap.max_rows = 2;
+    label.break_on_newline = false;
+    let galley = painter.layout_job(label);
+    let label_pos = Pos2::new(
+        art.right() + NAME_PADDING,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    painter.galley(label_pos, galley, color);
     response.on_hover_text(description)
 }
 
