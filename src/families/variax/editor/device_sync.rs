@@ -75,7 +75,7 @@ impl DeviceSync {
     pub(super) fn observe(&mut self, attachment: Option<Attachment>) {
         if self.attachment != attachment {
             self.cancel();
-            self.prompt = None;
+            self.dismiss_prompt();
             self.attachment = attachment;
         }
     }
@@ -90,6 +90,10 @@ impl DeviceSync {
 
     pub(super) fn prompting(&self) -> bool {
         self.prompt.is_some()
+    }
+
+    pub(super) fn dismiss_prompt(&mut self) {
+        self.prompt = None;
     }
 
     pub(super) fn cancel(&self) {
@@ -364,8 +368,14 @@ use unavailable as execute;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::super::refresh::tests::{
+        attach, download, download_and_keep, verified_rig, verified_tab_for,
+    };
     use super::super::{LibraryOrigin, refresh::tests::verified_tab};
     use super::*;
+    #[cfg(target_os = "linux")]
+    use crate::editor::tests::app;
     use std::time::SystemTime;
     use variax_workbench::{bundle::BundleFile, document::SlotBuffer};
 
@@ -429,5 +439,106 @@ mod tests {
         assert!(!Action::WriteSelected.permitted());
         assert!(!Action::Sync.permitted());
         assert!(Action::ReadUnmodified.permitted());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn retained_download_does_not_admit_preset_actions_for_the_historical_library() {
+        use crate::editor::registry::DEVICE_PROFILES;
+
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let mut rig = verified_rig();
+        let first = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&first));
+        download(editor, &ctx);
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let document = editor.document.as_ref().unwrap();
+        let position = document.selection().unwrap();
+        let before = document.as_bytes().to_vec();
+        assert_eq!(editor.modified_guitar_positions(), [position]);
+
+        editor.confirm_position_action(Action::ReadUnmodified, position);
+        assert!(editor.device_sync.prompting());
+        rig.report_guitar_disconnect(&first.device.key, DEVICE_PROFILES)
+            .unwrap();
+        assert!(rig.queue_guitar_refresh(&first.device.key.attachment, false));
+        let replacement = verified_tab_for(&mut rig);
+        assert_eq!(
+            first.device.key.attachment,
+            replacement.device.key.attachment
+        );
+        assert_ne!(first.device.key, replacement.device.key);
+        editor.observe_device(Some(&replacement));
+        assert!(!editor.device_sync.prompting());
+        download_and_keep(editor, &ctx);
+
+        assert!(editor.has_historical_guitar_library());
+        assert!(editor.modified_guitar_positions().is_empty());
+        for action in [Action::ReadUnmodified, Action::WriteSelected, Action::Sync] {
+            assert!(!editor.sync_ready(action));
+            editor.confirm_position_action(action, position);
+            assert!(!editor.device_sync.prompting());
+            assert!(editor.start_device_sync(action, &[position]).is_err());
+        }
+        assert!(!editor.device_sync.busy());
+        let document = editor.document.as_ref().unwrap();
+        assert!(document.as_bytes() == before);
+        assert!(document.is_dirty() && document.can_undo());
+        assert!(document.slot_is_unsent(position.0, position.1));
+
+        editor.open_download();
+        assert!(editor.has_current_guitar_library());
+        assert!(editor.sync_ready(Action::ReadUnmodified));
+        assert!(!editor.sync_ready(Action::WriteSelected));
+        assert!(!editor.sync_ready(Action::Sync));
+        assert!(!editor.device_sync.prompting());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_confirmation_cancels_on_escape_and_on_follow_disconnect() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        attach(editor);
+        download(editor, &ctx);
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let document = editor.document.as_ref().unwrap();
+        let position = document.selection().unwrap();
+        let before = document.as_bytes().to_vec();
+
+        editor.confirm_position_action(Action::ReadUnmodified, position);
+        assert!(editor.device_sync.prompting());
+        let _ = ctx.run(Default::default(), |ctx| editor.sync_dialog(ctx));
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ctx| editor.sync_dialog(ctx),
+        );
+        assert!(!editor.device_sync.prompting());
+        assert!(!editor.device_sync.busy());
+        assert_eq!(editor.modified_guitar_positions(), [position]);
+        assert!(editor.document.as_ref().unwrap().as_bytes() == before);
+
+        editor.confirm_position_action(Action::ReadUnmodified, position);
+        assert!(editor.device_sync.prompting());
+        editor.follow.queue_disconnect(&ctx);
+        FamilyTab::poll(editor, &ctx);
+        assert!(!editor.sync_ready(Action::ReadUnmodified));
+        assert!(!editor.device_sync.prompting());
+        assert!(!editor.blocking_prompt());
+        assert!(!editor.device_sync.busy());
+        let document = editor.document.as_ref().unwrap();
+        assert!(document.as_bytes() == before);
+        assert!(document.is_dirty() && document.can_undo());
+        assert!(document.slot_is_unsent(position.0, position.1));
     }
 }

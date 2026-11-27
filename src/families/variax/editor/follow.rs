@@ -448,6 +448,9 @@ impl VariaxEditor {
             self.follow.set_following(false);
         }
         self.follow.listen(ctx);
+        if self.follow.disconnected() {
+            self.device_sync.dismiss_prompt();
+        }
     }
 
     pub(super) fn advance_follow(&mut self, ctx: &egui::Context) {
