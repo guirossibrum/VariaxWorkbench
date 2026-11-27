@@ -1,9 +1,10 @@
 # Legacy electric preset edit domains
 
-`src/edit.rs` defines explicit edits shared by `PresetFile::set_parameter`, the
-CLI and GUI. It implements the original Workbench 1.75 UI domains for legacy
-electric devices `0x70000`/`0x70004`. Opening, copying and renaming a file do not
-normalize existing values. Unknown chunks, fields, types, model IDs and dormant
+`src/families/variax/file/edit.rs` defines the domains for explicit edits
+through `PresetFile::set_parameter` and the CLI. The GUI uses these domains
+for the controls it exposes. These domains come from Workbench 1.75 for
+legacy electric devices `0x70000`/`0x70004`. Opening, copying and renaming a file
+preserve existing values. Unknown chunks, fields, types, model IDs and dormant
 settings remain lossless. Explicit edits of unknown parameters/models are refused.
 Failures occur before buffer mutation; grouped document edits are transactional.
 
@@ -13,8 +14,8 @@ domains. See [POD presets](pod-presets.md).
 Recovered from `L6VariaxParamDefs.Set`, `L6VariaxParamFormats.Set`,
 `L6VariaxParamMap` and `L6VariaxEditor.UpdateBodyImage`, `UpdateTuningPanel`,
 `UpdateToneKnobPanel` and the controls' parent panels. Static `javap -c -p`
-checks of the original classes agree with the local decompilation. Original JAR
-SHA-256: `053b1a9c469472d4733711a102a3bddb9f4a105d1cdd70c3936a5885139f16ba`.
+checks of the original classes agree with the local decompilation. The original
+macOS JAR has SHA-256 `053b1a9c469472d4733711a102a3bddb9f4a105d1cdd70c3936a5885139f16ba`.
 
 | File slot / parameter | Stored edit domain | Units |
 | --- | --- | --- |
@@ -31,7 +32,7 @@ SHA-256: `053b1a9c469472d4733711a102a3bddb9f4a105d1cdd70c3936a5885139f16ba`.
 | `02010005`, `200000`..`200005` | integer -12..12 | semitones, low E to high E |
 | Same, `200006`..`20000b` | float -100..100 | cents, twelve-string detune |
 | Same, `20000c`..`200011` | float 0..1 | twelve-string mix fraction |
-| Same, `200012` | float 0..25 | stored spread; original percent formatter does not establish physical units |
+| Same, `200012` | float 0..25 | stored Spread, with a percent formatter in the original parameter metadata |
 
 All bounds are inclusive. New floats must be finite. Discrete new float edits
 must equal a canonical float32 choice; imported 24-bit-truncated representations
@@ -48,9 +49,10 @@ pickup 2 and alternate tuning have editable enable flags.
 Acoustic bodies `03100012`..`03100017`, `0310001a`, `0310001b` disable virtual
 pickup selection/enables/parameters and electrical controls. Output trim remains
 editable: its original panel is separate. Sitar body `03100018` disables tuning.
-Detune, mix and spread require a twelve-string body: `0310000d`, `03100013` or
-`03100015`. This follows the original legacy default with `ENABLE_ALL_12STR`
-disabled; no developer-switch or Tyler tuning-override behavior is inferred.
+Explicit detune, mix and Spread edits require a twelve-string body when a
+body is present (`0310000d`, `03100013` or `03100015`). This follows the original
+legacy default with `ENABLE_ALL_12STR` disabled. Developer-switch and Tyler
+tuning-override behavior fall outside these rules.
 Tone position requires the saved-tone flag to be enabled. Body changes retain
 dormant pickup/electrical/tuning data instead of clearing it. Partial imported
 documents without a body can still edit known existing scalar fields; no body
@@ -66,7 +68,19 @@ when rendered. Nonfinite slider values are displayed as stored data with an
 explicit reset action; they are not passed to an egui slider, which otherwise
 changed a NaN position during the first regression run. Drag values also avoid
 clamping on display. Body restrictions disable editing; GUI rendering creates no
-document history. Twelve-string detune/mix/spread use the same validation path.
+document history.
+
+Static inspection of Workbench 1.75 on Windows and macOS shows Mix and
+Detune knobs and value labels for each secondary string. Spread is defined
+in the tuning model as float parameter `200012`. Its percent formatter is
+parameter metadata and leaves the physical unit unspecified.
+The [approved editor mapping](design/element-mapping.md#variax-editor)
+keeps Spread off the standard-guitar page. On a supported twelve-string
+body, the current editor shows Mix and Detune controls and Zero detune.
+Spread stays hidden in the editor and retains its original bytes through
+opening, renaming, copying and edits to other tuning fields. The explicit
+file/CLI edit still accepts finite Spread values from 0 to 25 when allowed
+by the body rules above.
 
 ## Offline verification
 
