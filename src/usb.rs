@@ -439,17 +439,26 @@ fn identity_on<T: IdentityTransport>(
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn read_macos_identity(
     rig: &DeviceLock,
-    (path, address): (&str, u8),
+    observed: &line6_devices::transport::usb::macos_inventory::ObservedPodxt,
     open_error: &mut Option<String>,
 ) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
+    use line6_devices::transport::usb::macos_inventory;
+
     let cancel = AtomicBool::new(false);
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
             Ok(identity_on(
                 || {
-                    UsbInterfaceLink::open_attachment_borrowed(USB, path, address, rig)
-                        .map(|link| MacIdentity::new(link, UsbInterfaceLink::finish))
-                        .inspect_err(|error| *open_error = Some(error.clone()))
+                    macos_inventory::with_observed_attachment(rig, observed, |attachment| {
+                        UsbInterfaceLink::open_attachment_borrowed(
+                            USB,
+                            &attachment.path,
+                            attachment.address,
+                            rig,
+                        )
+                    })
+                    .map(|link| MacIdentity::new(link, UsbInterfaceLink::finish))
+                    .inspect_err(|error| *open_error = Some(error.clone()))
                 },
                 &cancel,
                 identity_stage::run_identity_exchange,

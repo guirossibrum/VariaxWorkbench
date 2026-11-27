@@ -668,7 +668,7 @@ impl Recognition {
                 sound_cards,
             } => {
                 if crate::macos_usb_available() {
-                    return format!("PODxt Live found at USB {}.", device.sysfs_name);
+                    return format!("PODxt Live found at {}.", device.sysfs_name);
                 }
                 let interfaces = device
                     .interfaces
@@ -1042,7 +1042,7 @@ pub struct HostRig<S: OsMetadataSource> {
     #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
     mac_live: bool,
     #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
-    mac_attachment: Option<line6_devices::transport::usb::macos::Attachment>,
+    mac_observation: Option<line6_devices::transport::usb::macos_inventory::ObservedPodxt>,
     #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
     mac_open_error: Option<String>,
 }
@@ -1058,7 +1058,7 @@ impl<S: OsMetadataSource> HostRig<S> {
             #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
             mac_live: false,
             #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
-            mac_attachment: None,
+            mac_observation: None,
             #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
             mac_open_error: None,
         }
@@ -1116,23 +1116,26 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
     fn recognise_usb(&mut self) -> Result<Recognition, String> {
         #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
         {
-            use line6_devices::{device_lock::DeviceLock, transport::usb::macos};
+            use line6_devices::{device_lock::DeviceLock, transport::usb::macos_inventory};
 
             if !self.mac_live {
                 return Err(host_refusal());
             }
             self.calls.os_reads += 1;
-            self.mac_attachment = None;
+            self.mac_observation = None;
             return hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
                 let _rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
-                let attachments = macos::attachments()?;
-                match attachments.as_slice() {
+                let devices = macos_inventory::inventory()?;
+                match devices.as_slice() {
                     [] => Ok(Recognition::Absent),
-                    [attachment] => {
-                        self.mac_attachment = Some(attachment.clone());
+                    [observed] => {
+                        let label = observed
+                            .route()
+                            .map_or_else(|| observed.label(), |path| format!("USB {path}"));
+                        self.mac_observation = Some(observed.clone());
                         Ok(Recognition::Recognised {
                             device: UsbDevice {
-                                sysfs_name: attachment.path.clone(),
+                                sysfs_name: label,
                                 vendor_id: PODXT_LIVE_USB.0,
                                 product_id: PODXT_LIVE_USB.1,
                                 product: Some("PODxt Live".into()),
@@ -1142,7 +1145,7 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
                             sound_cards: Vec::new(),
                         })
                     }
-                    _ => Ok(Recognition::Several(attachments.len())),
+                    _ => Ok(Recognition::Several(devices.len())),
                 }
             });
         }
@@ -1159,10 +1162,10 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
 
     fn identification_ready(&self, device: &UsbDevice) -> bool {
         #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
-        return self
-            .mac_attachment
-            .as_ref()
-            .is_some_and(|attachment| attachment.path == device.sysfs_name);
+        {
+            let _ = device;
+            return self.mac_observation.is_some();
+        }
         #[cfg(not(all(target_os = "macos", feature = "usb", not(test))))]
         expected_driver_binding(device)
     }
@@ -1177,18 +1180,18 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
                 return Err(IdentifyError::Locked);
             }
             self.mac_open_error = None;
-            let attachment = self.mac_attachment.as_ref().ok_or(IdentifyError::Locked)?;
+            let Some(observed) = self.mac_observation.as_ref() else {
+                self.mac_open_error =
+                    Some("Run Device Check step 1 again to select the PODxt Live.".into());
+                return Err(crate::usb::open_stopped(IdentityFailure::OpenFailed));
+            };
             let rig = DeviceLock::acquire().map_err(|error| {
                 crate::usb::open_stopped(match error {
                     LockError::Busy | LockError::BusyHere => IdentityFailure::RigBusy,
                     LockError::Unavailable(_) => IdentityFailure::LockUnavailable,
                 })
             })?;
-            crate::usb::read_macos_identity(
-                &rig,
-                (&attachment.path, attachment.address),
-                &mut self.mac_open_error,
-            )
+            crate::usb::read_macos_identity(&rig, observed, &mut self.mac_open_error)
         }
         #[cfg(all(feature = "usb", not(all(target_os = "macos", not(test)))))]
         {
@@ -1217,10 +1220,14 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         {
             #[cfg(all(target_os = "macos", not(test)))]
             let both = {
-                let attachment = self.mac_attachment.as_ref().ok_or_else(host_refusal)?;
+                let observed = self.mac_observation.as_ref().ok_or_else(host_refusal)?;
+                let (path, address) = observed
+                    .route()
+                    .zip(observed.address)
+                    .ok_or_else(host_refusal)?;
                 let rig = line6_devices::device_lock::DeviceLock::acquire()
                     .map_err(|error| error.to_string())?;
-                crate::live_families::read_both_on(&attachment.path, attachment.address, &rig)?
+                crate::live_families::read_both_on(path, address, &rig)?
             };
             #[cfg(not(all(target_os = "macos", not(test))))]
             let both = crate::live_families::read_both()?;

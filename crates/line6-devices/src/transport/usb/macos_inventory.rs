@@ -131,6 +131,27 @@ pub fn verify_candidate(
     }
 }
 
+/// Recheck an observation from a passive scan before opening its USB interface.
+/// The caller holds the rig lock through the scan and the exact USB open.
+pub fn with_observed_attachment<T>(
+    _rig: &DeviceLock,
+    observed: &ObservedPodxt,
+    open: impl FnOnce(Attachment) -> Result<T, String>,
+) -> Result<T, String> {
+    open_observed_attachment(observed, &inventory()?, open)
+}
+
+fn open_observed_attachment<T>(
+    observed: &ObservedPodxt,
+    devices: &[ObservedPodxt],
+    open: impl FnOnce(Attachment) -> Result<T, String>,
+) -> Result<T, String> {
+    let attachment = observed.attachment(devices).ok_or(
+        "The PODxt Live USB attachment changed or its interfaces are unavailable. Run Device Check step 1 again.",
+    )?;
+    open(attachment)
+}
+
 fn candidate_matches(devices: &[ObservedPodxt], registry_id: u64, expected: &Attachment) -> bool {
     devices.iter().any(|device| {
         device.registry_id == registry_id && device.attachment(devices).as_ref() == Some(expected)
@@ -217,5 +238,45 @@ mod tests {
                 .iter()
                 .all(|device| device.attachment(&ambiguous).is_none())
         );
+    }
+
+    #[test]
+    fn manual_identity_refuses_missing_replaced_ambiguous_or_unready_attachments_before_open() {
+        let observed = record(11, 0x01430000, 3, &[4, 3], false).podxt().unwrap();
+        let matching = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        let replacement = record(12, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+
+        for current in [
+            vec![],
+            vec![replacement.clone()],
+            vec![matching, replacement],
+            vec![observed.clone()],
+        ] {
+            let error = open_observed_attachment::<()>(&observed, &current, |_| {
+                panic!("a refused generation must never reach the USB opener")
+            })
+            .unwrap_err();
+            assert!(error.contains("Run Device Check step 1 again."));
+        }
+    }
+
+    #[test]
+    fn manual_identity_opens_the_same_generation_once_after_interfaces_publish() {
+        let observed = record(11, 0x01430000, 3, &[4, 3], false).podxt().unwrap();
+        assert_eq!(observed.route(), Some("1-4.3"));
+        assert!(!observed.midi_interfaces_present);
+        let current = [
+            record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap(),
+            record(12, 0x01450000, 4, &[4, 5], true).podxt().unwrap(),
+        ];
+        let mut opens = 0;
+        let result = open_observed_attachment(&observed, &current, |attachment| {
+            opens += 1;
+            assert_eq!(attachment.path, "1-4.3");
+            assert_eq!(attachment.address, 3);
+            Ok("identity link")
+        });
+        assert_eq!(result.as_deref(), Ok("identity link"));
+        assert_eq!(opens, 1);
     }
 }
