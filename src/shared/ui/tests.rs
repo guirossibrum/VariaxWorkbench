@@ -2033,6 +2033,69 @@ fn tuning_panel_reports_neck_drags_and_the_table_controls() {
     );
 }
 
+#[test]
+fn clipped_tuning_controls_follow_tab_focus_in_both_directions() {
+    let labels = std::array::from_fn(|_| "0 semitones".to_owned());
+    let rows = open_rows(&labels);
+    let mut harness = Harness::new();
+
+    let mut frame = |events, modifiers| {
+        let mut result = None;
+        harness.run(events, modifiers, |ctx, ui| {
+            let scroll = egui::ScrollArea::vertical()
+                .max_height(42.0)
+                .animated(false)
+                .show(ui, |ui| TuningPanel::new(&rows).lock(true, false).show(ui));
+            let output = scroll.inner;
+            let response = ctx
+                .memory(|memory| memory.focused())
+                .and_then(|id| ctx.read_response(id));
+            result = Some((scroll.inner_rect, output, response));
+        });
+        result.unwrap()
+    };
+    let mut tab = |modifiers| {
+        for pressed in [true, false] {
+            frame(
+                vec![egui::Event::Key {
+                    key: egui::Key::Tab,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+        }
+        frame(vec![], Modifiers::NONE)
+    };
+    let assert_visible = |viewport: Rect, control, focused: Option<egui::Response>| {
+        let focused = focused.expect("tuning control has focus");
+        assert_eq!(focused.rect, control);
+        assert_eq!(focused.interact_rect, control);
+        assert!(viewport.contains_rect(control));
+    };
+
+    // Enable, Presets and five Shift cells precede the last Shift cell.
+    for _ in 0..7 {
+        tab(Modifiers::NONE);
+    }
+    for control in [0, 1, 2] {
+        let (viewport, tuning, focus) = tab(Modifiers::NONE);
+        let rect = [tuning.rows[5].shift_cell, tuning.lock, tuning.reset][control];
+        assert_visible(viewport, rect, focus);
+        assert!(tuning.events.is_empty());
+    }
+    // Leave the footer, then traverse the same controls in reverse.
+    tab(Modifiers::NONE);
+    for control in [2, 1, 0] {
+        let (viewport, tuning, focus) = tab(Modifiers::SHIFT);
+        let rect = [tuning.rows[5].shift_cell, tuning.lock, tuning.reset][control];
+        assert_visible(viewport, rect, focus);
+        assert!(tuning.events.is_empty());
+    }
+}
+
 fn click_at(harness: &mut Harness, pos: Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
     harness.run(
         vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
