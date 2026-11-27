@@ -1,7 +1,7 @@
 //! Device-level observations. Registry presence establishes neither a usable
 //! configuration nor access to a USB interface.
 
-use super::macos::Attachment;
+use super::macos::{Attachment, passive_readiness_message};
 #[cfg(any(target_os = "macos", test))]
 use super::{attachment_path, macos::PODXT_MIDI};
 use crate::device_lock::DeviceLock;
@@ -37,7 +37,12 @@ pub fn assess_candidate(
             route: current.route.is_none(),
         });
     };
-    let matches = current.coordinate_matches(inventory).count();
+    let matches = inventory
+        .iter()
+        .filter(|record| {
+            record.location_id == current.location_id || record.route.as_ref() == Some(path)
+        })
+        .count();
     if matches != 1 {
         return Err(PassiveReadinessBlock::Ambiguous { matches });
     }
@@ -87,23 +92,13 @@ impl ObservedPodxt {
     /// A candidate for the existing exact libusb opener. This is not
     /// confirmation that its active descriptor or ownership checks will pass.
     pub fn attachment(&self, inventory: &[Self]) -> Option<Attachment> {
-        let (index, current) = self.coordinate_matches(inventory).next()?;
-        if !current.matches_generation(self) {
-            return None;
-        }
-        assess_candidate(inventory, index).ok()
+        assess_candidate(inventory, self.generation_index(inventory)?).ok()
     }
 
-    fn coordinate_matches<'a>(
-        &self,
-        inventory: &'a [Self],
-    ) -> impl Iterator<Item = (usize, &'a Self)> {
-        inventory.iter().enumerate().filter(|(_, record)| {
-            record.location_id == self.location_id
-                || self
-                    .route()
-                    .is_some_and(|route| record.route() == Some(route))
-        })
+    fn generation_index(&self, inventory: &[Self]) -> Option<usize> {
+        inventory
+            .iter()
+            .position(|record| record.matches_generation(self))
     }
 }
 
@@ -195,9 +190,13 @@ fn open_observed_attachment<T>(
     devices: &[ObservedPodxt],
     open: impl FnOnce(Attachment) -> Result<T, String>,
 ) -> Result<T, String> {
-    let attachment = observed.attachment(devices).ok_or(
-        "The PODxt Live USB attachment changed or its interfaces are unavailable. Run Device Check step 1 again.",
+    let index = observed.generation_index(devices).ok_or(
+        "The PODxt Live USB attachment selected in Device Check step 1 could not be matched in this scan. Run Device Check step 1 again.",
     )?;
+    let attachment = assess_candidate(devices, index).map_err(|reason| {
+        let message = passive_readiness_message(Some(reason));
+        format!("{message} Run Device Check step 1 again.")
+    })?;
     open(attachment)
 }
 
@@ -406,22 +405,67 @@ mod tests {
     }
 
     #[test]
-    fn manual_identity_refuses_missing_replaced_ambiguous_or_unready_attachments_before_open() {
+    fn manual_identity_refuses_unmatched_or_ambiguous_attachments_before_open() {
         let observed = record(11, 0x01430000, 3, &[4, 3], false).podxt().unwrap();
         let matching = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
         let replacement = record(12, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        let changed_location = record(11, 0x01431000, 3, &[4, 3], true).podxt().unwrap();
 
-        for current in [
-            vec![],
-            vec![replacement.clone()],
-            vec![matching, replacement],
-            vec![observed.clone()],
+        for (current, message) in [
+            (vec![], "could not be matched in this scan"),
+            (
+                vec![replacement.clone()],
+                "could not be matched in this scan",
+            ),
+            (vec![changed_location], "could not be matched in this scan"),
+            (
+                vec![replacement, matching],
+                "Multiple USB records match this location or route",
+            ),
         ] {
             let error = open_observed_attachment::<()>(&observed, &current, |_| {
                 panic!("a refused generation must never reach the USB opener")
             })
             .unwrap_err();
-            assert!(error.contains("Run Device Check step 1 again."));
+            assert!(error.contains(message), "{error}");
+            assert!(error.ends_with("Run Device Check step 1 again."));
+        }
+    }
+
+    #[test]
+    fn manual_identity_reports_same_attachment_readiness_before_open() {
+        let observed = record(11, 0x01430000, 3, &[4, 3], false).podxt().unwrap();
+        let mut current = observed.clone();
+        for (interfaces, message) in [
+            (
+                PublishedInterfaces::IncompleteChildren {
+                    seen: [true, false],
+                },
+                "macOS USB interface list could not be read",
+            ),
+            (
+                PublishedInterfaces::Read {
+                    seen: [true, false],
+                    unknown_number: true,
+                },
+                "macOS USB interface publication could not be determined",
+            ),
+            (
+                PublishedInterfaces::Read {
+                    seen: [true, false],
+                    unknown_number: false,
+                },
+                "USB interface 1 was absent from this scan",
+            ),
+        ] {
+            current.interfaces = interfaces;
+            let error =
+                open_observed_attachment::<()>(&observed, std::slice::from_ref(&current), |_| {
+                    panic!("an unready attachment must never reach the USB opener")
+                })
+                .unwrap_err();
+            assert!(error.contains(message), "{error}");
+            assert!(error.ends_with("Run Device Check step 1 again."));
         }
     }
 
