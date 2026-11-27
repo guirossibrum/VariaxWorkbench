@@ -334,6 +334,9 @@ fn confirm_pending(
         }
         let _lock = lock_checkpoint(&path)?;
         verify_pending_state(&path, &state)?;
+        if selected.is_some() && super::resume::no_pending_store(&report, &state) {
+            continue;
+        }
         confirm_manual_recovery(op, &report, "Another Rig Check was interrupted.")?;
     }
     Ok(())

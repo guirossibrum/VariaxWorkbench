@@ -58,7 +58,7 @@ struct SavedReport {
     prior_attempts: Vec<SavedStep>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct SavedStep {
     id: String,
     title: String,
@@ -825,6 +825,58 @@ fn proven_pre_send(step: &StepRecord, current: Option<StepId>, legacy: bool) -> 
                             | Outcome::SkippedNotApplicable(_)
                     ))
         }
+}
+
+/// An unrelated unfinished run matters to Resume only if its stored state is
+/// uncertain. Older reports can establish this without supplying a baseline.
+pub(super) fn no_pending_store(path: &Path, state: &RigState) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Some(json) = super::report::json_block(&text) else {
+        return false;
+    };
+    let Ok(saved) = serde_json::from_str::<SavedReport>(json) else {
+        return false;
+    };
+    if saved.report_format != super::report::REPORT_FORMAT
+        || !matches!(saved.catalogue_version.as_str(), "1.5" | CATALOGUE_VERSION)
+        || saved.started != state.started
+        || saved.finished != state.finished
+        || state
+            .report_sha256
+            .as_ref()
+            .is_some_and(|hash| *hash != sha256_hex(text.as_bytes()))
+    {
+        return false;
+    }
+    let current = super::report::interrupted_step(&text);
+    let legacy = saved.catalogue_version == "1.5";
+    let store_is_known = |step: &SavedStep| {
+        if step.never_ran() && step.save_phase.is_none() && current != StepId::parse(&step.id) {
+            return true;
+        }
+        step.clone().record().is_ok_and(|record| {
+            (record.outcome.passed() && record.save_phase != Some(SavePhase::PreSend))
+                || proven_pre_send(&record, current, legacy)
+        })
+    };
+    RUN_ORDER
+        .iter()
+        .filter(|&&id| catalogue::step(id).is_some_and(|step| step.risk == Risk::Save))
+        .all(|&id| {
+            let mut records = saved
+                .steps
+                .iter()
+                .filter(|step| StepId::parse(&step.id) == Some(id));
+            records.next().is_some_and(store_is_known)
+                && records.next().is_none()
+                && saved
+                    .prior_attempts
+                    .iter()
+                    .filter(|step| StepId::parse(&step.id) == Some(id))
+                    .all(store_is_known)
+        })
 }
 
 fn incomplete_live_edit(run: &RunRecord, current: Option<StepId>) -> bool {

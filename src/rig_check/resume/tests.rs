@@ -417,19 +417,28 @@ fn same_root_interrupted_store_blocks_resume_before_revalidation() {
         interrupted.last
     );
 
-    // With only the harmless interrupted source present, the held source
-    // lock is sufficient and revalidation can go ahead.
+    // An older working-state check cannot put a saved slot in doubt.
     std::fs::remove_file(path).unwrap();
+    let mut legacy = Fixture::new();
+    legacy.stop_after(KNOBS, true);
+    legacy.run.finished = false;
+    legacy.run.current = Some(KNOBS);
+    legacy.save(true);
+    let legacy_state = legacy.sink.path.with_extension("state");
+    let legacy_bytes = std::fs::read(&legacy_state).unwrap();
     let mut person = Script::run_all();
+    person.start_decisions = [true, true, false].into();
     person.overrides.push((FIRST_SAVE, Decision::Stop));
     let (run, _) = continue_in(
         output.path(),
-        Some(source.dir.path().to_owned()),
+        Some(legacy.dir.path().to_owned()),
         open(&source.sink.path).unwrap(),
         &rig,
         &mut person,
     );
     assert!(run.step(KNOBS).outcome.passed(), "{}", run.rig_state);
+    assert_eq!(person.notices.len(), 2);
+    assert_eq!(std::fs::read(legacy_state).unwrap(), legacy_bytes);
     assert_eq!(person.cards.first(), Some(&KNOBS));
     assert!(source.sink.path.with_extension("continuation").is_file());
     assert_eq!(std::fs::read(source_state).unwrap(), source_bytes);
