@@ -1988,6 +1988,7 @@ fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_cont
     let guitar = fake[&("8-2.1", "variax")].clone();
     let other = fake[&("8-4", "podxt")].clone();
     drop(fake);
+    app.startup_connection = true;
     app.connection_inventory = Default::default();
     app.connections = Default::default();
     tick(&ctx, &mut app);
@@ -2056,4 +2057,139 @@ fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_cont
     other.borrow_mut().update = Some(Finished(Err("Download cancelled.".into())));
     let cancelled = frame(&ctx, &mut app, vec![]);
     assert!(has_label(&cancelled.shapes, "Download cancelled."));
+}
+
+fn click_startup_label(ctx: &egui::Context, app: &mut Workbench, label: &str) -> egui::FullOutput {
+    fn position(shape: &egui::Shape, label: &str) -> Option<Pos2> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            egui::Shape::Vec(children) => children.iter().find_map(|shape| position(shape, label)),
+            _ => None,
+        }
+    }
+    let view = frame(ctx, app, vec![]);
+    let pos = view
+        .shapes
+        .iter()
+        .find_map(|shape| {
+            position(&shape.shape, label).filter(|pos| shape.clip_rect.contains(*pos))
+        })
+        .unwrap_or_else(|| panic!("{label} is not visible"));
+    let pointer = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    frame(
+        ctx,
+        app,
+        vec![egui::Event::PointerMoved(pos), pointer(true)],
+    );
+    frame(ctx, app, vec![pointer(false)])
+}
+
+#[test]
+fn launch_splash_is_first_then_returns_to_the_movable_popup_after_reconnect() {
+    let ctx = egui::Context::default();
+    let directory = tempfile::tempdir().unwrap();
+    let options = parse_options(
+        ["--data-dir".into(), directory.path().display().to_string()],
+        directory.path(),
+    )
+    .unwrap();
+    let mut app = Workbench::from_options(&ctx, options);
+    let source = FakePresence::default();
+    app.detection = Some(DetectionService::new(Box::new(source.clone())));
+    source.usb(true, false);
+
+    let first = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&first.shapes, "Device connections"));
+    assert!(has_label(&first.shapes, "Checking connection…"));
+    assert!(has_label(&first.shapes, "Edit offline"));
+    assert!(!has_label(&first.shapes, "Home"));
+    assert!(!has_label(&first.shapes, "Detect devices"));
+
+    let old = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    let pod = Rc::new(RefCell::new(FakeSync::default()));
+    app.tabs.entries[0].editor = Box::new(SyncEditor {
+        state: pod.clone(),
+        total: 128.try_into().unwrap(),
+        consent: true,
+    });
+    source.finish(old.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    let consent = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&consent.shapes, "Temporarily switch presets?"));
+    assert!(!has_label(&consent.shapes, "Home"));
+    assert_eq!(pod.borrow().starts, 0);
+
+    click_startup_label(&ctx, &mut app, "Download");
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(pod.borrow().starts, 1);
+    pod.borrow_mut().update = Some(tabs::SyncUpdate::Reading(29));
+    let progress = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&progress.shapes, "Model Sync 29 of 128"));
+    assert!(!has_label(&progress.shapes, "Home"));
+
+    pod.borrow_mut().update = Some(tabs::SyncUpdate::Finished(Err(
+        "Injected read failure".into()
+    )));
+    let failed = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&failed.shapes, "Injected read failure"));
+    assert!(has_label(&failed.shapes, "Retry"));
+    assert!(has_label(&failed.shapes, "Edit offline"));
+    assert!(!has_label(&failed.shapes, "Home"));
+    click_startup_label(&ctx, &mut app, "Retry");
+    frame(&ctx, &mut app, vec![]);
+    assert!(app.startup_connection);
+    click_startup_label(&ctx, &mut app, "Download");
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(pod.borrow().starts, 2);
+
+    let entry_frame = click_startup_label(&ctx, &mut app, "Edit offline");
+    assert!(!has_label(&entry_frame.shapes, "Home"));
+    assert_eq!(pod.borrow().cancellations, 1);
+    let home = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&home.shapes, "Home"));
+    assert!(!has_label(&home.shapes, "Device connections"));
+
+    let retired = app.tabs.entries[0]
+        .device
+        .as_ref()
+        .unwrap()
+        .device
+        .key
+        .clone();
+    source.usb(false, false);
+    tick(&ctx, &mut app);
+    frame(&ctx, &mut app, vec![]);
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let new = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.finish(new, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    let reconnected = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&reconnected.shapes, "Home"));
+    assert!(has_label(&reconnected.shapes, "Device connections"));
+    assert!(has_label(
+        &reconnected.shapes,
+        "Reconnected after disconnect"
+    ));
+    assert!(has_label(&reconnected.shapes, "Close"));
+    app.apply_device_event(
+        app.tabs.entries[0].id,
+        tabs::DeviceEvent::GuitarCleanupWarning {
+            attachment: retired,
+            message: "USB release could not be verified.".into(),
+        },
+    );
+    let diagnostic = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(
+        &diagnostic.shapes,
+        "Earlier Variax download on USB 8-2.1: USB release could not be verified."
+    ));
+    assert!(has_label(&diagnostic.shapes, "PODxt Live Connected"));
 }

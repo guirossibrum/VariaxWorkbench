@@ -23,6 +23,7 @@ enum Sync {
     Approved,
     Running(Read),
     Settled,
+    Skipped,
 }
 
 #[derive(Default)]
@@ -131,6 +132,26 @@ impl Workbench {
         }
     }
 
+    pub(super) fn skip_startup_sync(&mut self) {
+        for row in self.connection_inventory.rows.values_mut() {
+            match row.sync {
+                Sync::Pending | Sync::Consent | Sync::Approved | Sync::Running(_) => {
+                    if let Some(entry) = self.tabs.entries.iter_mut().find(|entry| {
+                        entry.device.as_ref().map(|device| &device.device.key)
+                            == row.current.as_ref()
+                            && row.current.is_some()
+                    }) {
+                        entry.editor.cancel_connection_sync();
+                    }
+                    self.connections
+                        .skip(row.attachment, "Startup download skipped");
+                    row.sync = Sync::Skipped;
+                }
+                Sync::Settled | Sync::Skipped => {}
+            }
+        }
+    }
+
     pub(super) fn connection_sync_action(&mut self, action: Action, ctx: &egui::Context) {
         let attachment = match action {
             Action::AllowDownload(attachment)
@@ -153,7 +174,7 @@ impl Workbench {
             }
             Action::SkipDownload(_) if matches!(row.sync, Sync::Consent) => {
                 self.connections.skip(attachment, "Download skipped");
-                row.sync = Sync::Settled;
+                row.sync = Sync::Skipped;
             }
             Action::Retry(_) if self.connections.accept_retry(attachment) => {
                 row.sync = Sync::Pending
@@ -256,10 +277,15 @@ impl ConnectionInventory {
                 row.current = Some(key);
                 row.sync = Sync::Pending;
             }
-            if !matches!(verification, Verification::Verified) {
+            if !matches!(verification, Verification::Verified) && !matches!(row.sync, Sync::Skipped)
+            {
                 row.sync = Sync::Pending;
             }
+            let verified = matches!(verification, Verification::Verified);
             connections.verified(row.attachment, verification);
+            if verified && matches!(row.sync, Sync::Skipped) {
+                connections.skip(row.attachment, "Download skipped");
+            }
         }
     }
 }

@@ -33,6 +33,7 @@ pub(super) struct LivePanel {
     store: store::StorePanel,
     locker: locker::Locker,
     snapshot: Snapshot,
+    historical_library: std::collections::BTreeMap<u16, EditBuffer>,
     show_values: bool,
     startup: Option<Startup>,
     sync_result: Option<Result<(), String>>,
@@ -450,10 +451,8 @@ impl LivePanel {
             self.panel = None;
         }
         self.editor.set_live(false);
-        self.snapshot = Snapshot {
-            library: std::mem::take(&mut self.snapshot.library),
-            ..Snapshot::default()
-        };
+        self.historical_library.append(&mut self.snapshot.library);
+        self.snapshot = Snapshot::default();
         self.message = None;
         self.device.is_some()
     }
@@ -537,10 +536,14 @@ impl LivePanel {
                     worker_acquired.as_deref(),
                     |update| {
                         if !worker_stop.load(Ordering::Acquire) {
-                            worker_snapshot
-                                .lock()
-                                .expect("snapshot mutex")
-                                .apply(update, Instant::now());
+                            let mut snapshot = worker_snapshot.lock().expect("snapshot mutex");
+                            if command == ReadCommand::Follow
+                                && let ReadUpdate::Stored(stored) = &update
+                                && !snapshot.library.contains_key(&stored.location.address())
+                            {
+                                return;
+                            }
+                            snapshot.apply(update, Instant::now());
                             repaint.request_repaint();
                         }
                     },
@@ -788,6 +791,10 @@ impl LivePanel {
 
     pub(super) fn stored_tone(&self, slot: Location) -> Option<&EditBuffer> {
         self.snapshot.library.get(&slot.address())
+    }
+
+    pub(super) fn historical_tone(&self, slot: Location) -> Option<&EditBuffer> {
+        self.historical_library.get(&slot.address())
     }
 
     pub(super) fn refresh_current(&mut self, ctx: &egui::Context) {

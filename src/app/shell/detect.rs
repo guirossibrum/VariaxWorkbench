@@ -29,7 +29,9 @@ impl Workbench {
         if self.detection.is_none() {
             // A file or editor chosen at launch can be used immediately in
             // an offline build. Show the unavailable state when Home opens.
-            if self.tabs.active.is_none() && self.connections.begin_detection() {
+            if (self.startup_connection || self.tabs.active.is_none())
+                && self.connections.begin_detection()
+            {
                 let reason = variax_workbench::offline_device_notice()
                     .unwrap_or(chrome::DETECTION_UNAVAILABLE);
                 self.connections
@@ -78,7 +80,21 @@ impl Workbench {
     }
 
     pub(super) fn apply_device_event(&mut self, tab: TabId, event: DeviceEvent) {
-        let DeviceEvent::GuitarDisconnected(key) = event;
+        let key = match event {
+            DeviceEvent::GuitarDisconnected(key) => key,
+            DeviceEvent::GuitarCleanupWarning {
+                attachment,
+                message,
+            } => {
+                // This outcome belongs to the finished worker, even if this
+                // tab has since reattached or has no verified device.
+                self.connections.report_diagnostic(format!(
+                    "Earlier Variax download on USB {}: {message}",
+                    attachment.attachment.path,
+                ));
+                return;
+            }
+        };
         let Some(device) = self
             .tabs
             .index(tab)

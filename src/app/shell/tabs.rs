@@ -106,6 +106,11 @@ impl EditorServices<'_> {
 pub(super) enum DeviceEvent {
     #[cfg_attr(not(any(feature = "usb", test)), allow(dead_code))]
     GuitarDisconnected(DeviceKey),
+    #[cfg_attr(not(any(feature = "usb", test)), allow(dead_code))]
+    GuitarCleanupWarning {
+        attachment: DeviceKey,
+        message: String,
+    },
 }
 
 #[cfg_attr(not(feature = "usb"), allow(dead_code))]

@@ -50,6 +50,20 @@ fn default_startup_renders_an_empty_shell_with_offline_entry_points() {
     .unwrap();
     let mut app = Workbench::from_options(&ctx, options);
     app.theme_polled = Instant::now();
+    let first = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
+    let mut first_labels = Vec::new();
+    for shape in &first.shapes {
+        text(&shape.shape, &mut first_labels);
+    }
+    assert!(
+        first_labels
+            .iter()
+            .any(|label| label == "Device connections")
+    );
+    assert!(!first_labels.iter().any(|label| label == "Home"));
+    assert!(!first_labels.iter().any(|label| label == "Open file…"));
+    app.startup_connection = false;
+    app.connections.dismiss();
     let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
     let mut labels = Vec::new();
     output

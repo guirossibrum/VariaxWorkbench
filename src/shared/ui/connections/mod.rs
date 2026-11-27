@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 mod view;
-pub use view::{Action, show};
+pub use view::{Action, show, show_startup};
 
 #[cfg(test)]
 mod tests;
@@ -91,6 +91,7 @@ struct Row {
 pub struct Connections {
     detection: Detection,
     rows: Vec<Row>,
+    diagnostics: Vec<String>,
     visible: bool,
     manual_close: bool,
     completed_read: bool,
@@ -230,9 +231,10 @@ impl Connections {
         if let Some(row) = self.row_mut(attachment)
             && matches!(
                 row.status,
-                Status::Connected | Status::Waiting | Status::Consent(_)
+                Status::Connected | Status::Waiting | Status::Consent(_) | Status::Reading { .. }
             )
         {
+            row.wait_reason = None;
             row.status = Status::Skipped(reason);
         }
     }
@@ -381,9 +383,17 @@ impl Connections {
         }
     }
 
-    fn dismiss(&mut self) {
+    pub fn report_diagnostic(&mut self, message: String) {
+        self.open();
+        self.diagnostics.push(message);
+        self.manual_close = true;
+        self.close_at = None;
+    }
+
+    pub fn dismiss(&mut self) {
         self.visible = false;
         self.close_at = None;
+        self.diagnostics.clear();
     }
 
     fn shown_rows(&self) -> impl Iterator<Item = &Row> {

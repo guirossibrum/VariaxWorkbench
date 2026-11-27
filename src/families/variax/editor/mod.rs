@@ -1418,7 +1418,9 @@ impl FamilyTab for VariaxEditor {
     }
     #[cfg(feature = "usb")]
     fn take_device_event(&mut self) -> Option<crate::editor::tabs::DeviceEvent> {
-        self.follow.take_device_event()
+        self.follow
+            .take_device_event()
+            .or_else(|| self.take_refresh_warning())
     }
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);

@@ -170,7 +170,8 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
     );
     assert!(!visible.contains("Playing Tone"), "{visible}");
     assert!(app.podxt().live.snapshot.tone.is_none());
-    assert_eq!(app.podxt().live.snapshot.library.len(), 128);
+    assert!(app.podxt().live.snapshot.library.is_empty());
+    assert_eq!(app.podxt().live.historical_library.len(), 128);
     assert!(!app.podxt().live.connected());
     assert!(!app.podxt().live.live_editing);
     assert_eq!(app.podxt().live.device_requests, requests);
@@ -486,4 +487,77 @@ fn connection_sync_adopts_only_a_complete_released_result() {
         assert_eq!(panel.snapshot.library.len(), 128);
         assert!(panel.connection_sync_update().is_none());
     }
+}
+
+#[test]
+fn same_port_replacement_keeps_failed_and_cancelled_downloads_as_historical() {
+    let ctx = egui::Context::default();
+    let (mut app, presence) = current_fixture(&ctx);
+    let tab = app.tabs.active.unwrap();
+    let old = app.podxt().live.device.clone().unwrap();
+    let slot = Location::new(BankKind::Tones, 0).unwrap();
+    presence.attached.set(false);
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    presence.attached.set(true);
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    let replacement = app.podxt().live.device.clone().unwrap();
+    assert_eq!(app.tabs.active, Some(tab));
+    assert_eq!(replacement.attachment.path, old.attachment.path);
+    assert_ne!(replacement, old);
+
+    for (result, cancelled) in [(Err("failed read".into()), false), (Ok(()), true)] {
+        let panel = &mut app.podxt_mut().live;
+        // Even a complete captured buffer needs a successful worker and release.
+        let worker = std::thread::spawn(move || result);
+        while !worker.is_finished() {
+            std::thread::yield_now();
+        }
+        let mut captured = Snapshot::default();
+        captured.apply(ReadUpdate::LibraryStarted, Instant::now());
+        for location in Location::all(&[BankKind::Tones]) {
+            captured.apply(
+                ReadUpdate::Stored(StoredTone {
+                    location,
+                    tone: valid_dump("Replacement"),
+                }),
+                Instant::now(),
+            );
+        }
+        panel.worker = Some(Worker {
+            command: ReadCommand::ToneBank,
+            device: replacement.clone(),
+            acquired: Some(Arc::new(AtomicBool::new(true))),
+            stop: Arc::new(AtomicBool::new(cancelled)),
+            snapshot: Arc::new(Mutex::new(captured)),
+            thread: Some(worker),
+        });
+        panel.snapshot.channel = Some(slot);
+        panel.snapshot.tone = Some(valid_dump("Replacement current"));
+        panel.live_editing = true;
+        let visible = stage_frame(&ctx, &mut app);
+        assert!(
+            visible.contains("Previous PODxt library · offline"),
+            "{visible}"
+        );
+        assert!(!visible.contains("On PODxt Live"), "{visible}");
+        assert!(!app.podxt().live.has_library_bank(BankKind::Tones));
+        assert!(app.podxt().live.stored_tone(slot).is_none());
+        assert!(!app.podxt().live.channel_modified(slot));
+        assert_eq!(
+            app.podxt().live.historical_tone(slot).unwrap().name(),
+            "Saved Channel"
+        );
+    }
+
+    let requests = app.podxt().live.device_requests;
+    click_text(&ctx, &mut app, "1A  Saved Channel");
+    assert_eq!(app.podxt().live.device_requests, requests);
+    assert!(!app.podxt().stage_is_current());
+    let preview = stage_frame(&ctx, &mut app);
+    assert!(
+        preview.contains("Previous PODxt library copy · file only"),
+        "{preview}"
+    );
 }

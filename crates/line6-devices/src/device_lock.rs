@@ -52,12 +52,18 @@ pub struct DeviceLock {
 
 impl DeviceLock {
     pub fn acquire() -> Result<Self, LockError> {
+        Self::acquire_waiting(wait_for_rig)
+    }
+
+    fn acquire_waiting(
+        wait: impl FnOnce(&File, Duration) -> Result<(), LockError>,
+    ) -> Result<Self, LockError> {
         let (mut guard, local) = acquire_tracked(
             &lock_path(std::env::var_os("XDG_RUNTIME_DIR")),
             &ACTIVE_HERE,
             &PASSIVE_HERE,
             &FOLLOW_HANDOFF,
-            wait_for_rig,
+            wait,
         )?;
         guard._local = Some(local);
         Ok(guard)
@@ -69,7 +75,12 @@ impl DeviceLock {
         cancelled: impl Fn() -> bool,
         acquired: &AtomicBool,
     ) -> Result<Self, String> {
-        wait_for_download(cancelled, acquired, Self::acquire, std::thread::sleep)
+        wait_for_download(
+            &cancelled,
+            acquired,
+            || Self::acquire_waiting(|file, wait| wait_for_rig_until(file, wait, &cancelled)),
+            std::thread::sleep,
+        )
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -106,7 +117,12 @@ fn wait_for_download<T>(
                 return Ok(guard);
             }
             Ok(_) => break,
-            Err(LockError::Busy | LockError::BusyHere) => pause(Duration::from_millis(60)),
+            Err(LockError::Busy | LockError::BusyHere) => {
+                if cancelled() {
+                    break;
+                }
+                pause(Duration::from_millis(60));
+            }
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -277,8 +293,20 @@ impl<'a> ForegroundRequest<'a> {
 }
 
 fn wait_for_rig(file: &File, wait: Duration) -> Result<(), LockError> {
+    wait_for_rig_until(file, wait, || false)
+}
+
+fn wait_for_rig_until(
+    file: &File,
+    wait: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), LockError> {
     let deadline = Instant::now() + wait;
     loop {
+        if cancelled() {
+            // Match the outer admission's contention path so it can report cancellation.
+            return Err(LockError::Busy);
+        }
         match lock(file) {
             Err(LockError::Busy) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(4));
@@ -497,6 +525,56 @@ mod linux {
         assert!(error.contains("cancelled"));
         assert!(!acquired.load(Ordering::Acquire));
         drop((next, independent_guard));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn cancelling_inner_follow_wait_releases_active_intent_before_the_rig() {
+        use std::cell::Cell;
+
+        let folder =
+            std::env::temp_dir().join(format!("variax-inner-download-wait-{}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("rig");
+        let active = AtomicBool::new(false);
+        let passive = AtomicBool::new(false);
+        let handoff = FollowHandoff::new();
+        let follow = FollowDeviceLock::acquire_at(&path, &handoff).unwrap();
+        let polls = Cell::new(0);
+        let cancelled = Cell::new(false);
+        let acquired = AtomicBool::new(false);
+        let result = wait_for_download(
+            || cancelled.get(),
+            &acquired,
+            || {
+                acquire_tracked(&path, &active, &passive, &handoff, |file, wait| {
+                    assert_eq!(wait, Duration::from_secs(10));
+                    assert!(matches!(
+                        lock(&active_file(&path).unwrap()),
+                        Err(LockError::Busy)
+                    ));
+                    wait_for_rig_until(file, wait, || {
+                        polls.set(polls.get() + 1);
+                        if polls.get() == 2 {
+                            cancelled.set(true);
+                        }
+                        cancelled.get()
+                    })
+                })
+            },
+            |_| panic!("inner cancellation must bypass the outer retry"),
+        );
+
+        assert!(result.err().unwrap().contains("cancelled"));
+        assert_eq!(polls.get(), 2);
+        assert!(!acquired.load(Ordering::Acquire));
+        assert!(!active.load(Ordering::Acquire));
+        lock(&active_file(&path).unwrap()).unwrap();
+        assert!(matches!(
+            lock(&open_lock_file(&path).unwrap()),
+            Err(LockError::Busy)
+        ));
+        drop(follow);
         std::fs::remove_dir_all(folder).unwrap();
     }
 

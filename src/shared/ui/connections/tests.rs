@@ -584,3 +584,35 @@ fn unverified_and_unsupported_rows_can_offer_offline_editing_without_reading() {
     screen.click_text("Open offline editor");
     assert_eq!(screen.action, Some(Action::OpenOfflineEditor("hd500x")));
 }
+
+#[test]
+fn startup_advances_only_after_all_supported_reads_finish_and_completion_is_visible() {
+    let ctx = egui::Context::default();
+    let mut connections = Connections::default();
+    connections.detection(Detection::Checking);
+    connections.arrived(POD, pod());
+    connections.arrived(GUITAR, guitar(Some(POD)));
+    connections.detection(Detection::Complete);
+    for attachment in [POD, GUITAR] {
+        connections.verified(attachment, Verification::Verified);
+    }
+    let pod_read = started(&mut connections, POD, 128);
+    let guitar_read = started(&mut connections, GUITAR, 60);
+    let now = Instant::now();
+    let mut action = None;
+    let mut draw = |connections: &mut Connections, at| {
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            action = show_startup(ctx, connections, at, |_, _, _| false);
+        });
+        action
+    };
+    connections.finished(pod_read, Ok(()));
+    connections.progress(guitar_read, 60);
+    assert_eq!(draw(&mut connections, now), None);
+    connections.finished(guitar_read, Ok(()));
+    assert_eq!(draw(&mut connections, now), None);
+    assert_eq!(
+        draw(&mut connections, now + COMPLETE_PAUSE),
+        Some(Action::EnterWorkbench)
+    );
+}
