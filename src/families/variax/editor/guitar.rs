@@ -337,6 +337,7 @@ impl VariaxEditor {
                 }
                 let import = self.bank_strip(ui, available);
                 self.model_details(ui, available);
+                self.factory_selector_reference(ui);
                 import
             })
             .inner

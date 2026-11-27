@@ -341,6 +341,13 @@ mod tests {
         assert_eq!(factory.banks()[10].name, "Reso");
         assert_eq!(factory.banks()[10].presets()[4].name(), "Flash 50");
         assert_eq!(factory.banks()[11].presets()[0].name(), "Flash 59");
+        for (bank_index, bank) in factory.banks().iter().enumerate() {
+            assert_eq!(bank.presets().len(), 5);
+            for (position_index, preset) in bank.presets().iter().enumerate() {
+                let flash_index = 5 * bank_index + 4 - position_index;
+                assert_eq!(preset.name(), format!("Flash {flash_index}"));
+            }
+        }
     }
 
     use super::*;

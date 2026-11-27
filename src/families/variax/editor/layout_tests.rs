@@ -687,3 +687,130 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
         }
     }
 }
+
+#[test]
+fn factory_selector_stays_readable_and_preserves_the_current_library_on_laptops() {
+    use super::startup_library::{LibraryOrigin, record_unchecked_archive};
+    use std::{fs, time::UNIX_EPOCH};
+    use variax_workbench::bundle::BundleFile;
+
+    let temp = tempfile::tempdir().unwrap();
+    let preferences = temp.path().join("editor-preferences");
+    let archive = temp.path().join("factory.vxf");
+    let archived_fixture = b"synthetic factory source";
+    fs::write(&archive, archived_fixture).unwrap();
+    record_unchecked_archive(&preferences, &archive);
+    let factory = BundleFile::new_default_bundle().unwrap();
+    let path = temp.path().join("user.vwb");
+    fs::write(&path, factory.as_bytes()).unwrap();
+    let heading = "Factory selector reference · T-Model";
+    let order = "Variax 3.10 factory settings · bridge to neck";
+
+    for size in SIZES {
+        for density in [1.0, 2.0] {
+            let (ctx, mut app) = app();
+            ctx.style_mut(|style| style.animation_time = 0.0);
+            app.clear_window_controls = true;
+            let editor = app.variax_mut();
+            editor.preferences_path = Some(preferences.clone());
+            editor.adopt_document(super::EditorDocument::open(&path).unwrap(), Some(&path));
+            editor.library_origin = Some(LibraryOrigin::Download(UNIX_EPOCH));
+            let document = editor.document.as_mut().unwrap();
+            document.select(1, 2).unwrap();
+            document.rename_selected_bank("My Bank").unwrap();
+            document.apply(|preset| preset.rename("My Preset")).unwrap();
+            document.apply(|preset| preset.rename("Redo this")).unwrap();
+            document.undo();
+            assert!(document.can_undo() && document.can_redo());
+            let bytes = document.as_bytes().to_vec();
+            let library_label = editor.library_label();
+            #[cfg(feature = "usb")]
+            let observer_state = (
+                editor.follow.active(),
+                editor.follow.tuning_label(),
+                editor.live_edit.enabled(),
+            );
+
+            let frame = |app: &mut Workbench, events| {
+                render(app, &ctx, size, density, events, egui::Modifiers::NONE)
+            };
+            frame(&mut app, vec![]);
+            let collapsed = frame(&mut app, vec![]);
+            let connection_label = app.variax().connection_status.clone();
+            let toggle = text_rect(&collapsed, heading)
+                .expect("collapsed selector")
+                .center();
+            assert!(text_rect(&collapsed, order).is_none());
+            assert!(text_rect(&collapsed, "Editing bank: My Bank").is_some());
+            assert!(text_rect(&collapsed, "My Preset").is_some());
+
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(toggle), pointer(toggle, true)],
+            );
+            app.variax_mut().seed_factory_selector(&archive, &factory);
+            frame(&mut app, vec![pointer(toggle, false)]);
+            let output = frame(&mut app, vec![]);
+            assert_eq!(output.pixels_per_point, density);
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let mut preceding = text_rect(&output, order).expect("selector order caption");
+            for position in 1..=5 {
+                let label = format!("{position} · Spank · Spank Single Coil Bridge");
+                let row = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        let bounds = text_bounds(&shape.shape, &label)?;
+                        assert!(
+                            screen.intersect(shape.clip_rect).contains_rect(bounds),
+                            "{size:?} at {density}: clipped row {label}"
+                        );
+                        Some(bounds)
+                    })
+                    .unwrap_or_else(|| panic!("{size:?} at {density}: no row {label}"));
+                assert!(
+                    row.top() >= preceding.bottom(),
+                    "{row:?} after {preceding:?}"
+                );
+                preceding = row;
+            }
+            assert!(text_rect(&output, "Editing bank: My Bank").is_some());
+            assert!(text_rect(&output, "My Preset").is_some());
+            assert!(screen.contains_rect(app.variax().workspace_cards.unwrap().0));
+            assert!(screen.contains_rect(app.variax().workspace_tuning.unwrap()));
+            println!(
+                "{size:?} at {density} px/point: reference rows end at {:.0}",
+                preceding.bottom()
+            );
+            assert!(text_rect(&output, "6 · Spank · Spank Single Coil Bridge").is_none());
+            let editor = app.variax_mut();
+            assert_eq!(editor.library_label(), library_label);
+            assert_eq!(editor.source_path.as_deref(), Some(path.as_path()));
+            assert_eq!(editor.connection_status, connection_label);
+            #[cfg(feature = "usb")]
+            assert_eq!(
+                (
+                    editor.follow.active(),
+                    editor.follow.tuning_label(),
+                    editor.live_edit.enabled(),
+                ),
+                observer_state
+            );
+            let document = editor.document.as_mut().unwrap();
+            assert_eq!(document.source, path);
+            assert_eq!(document.selection(), Some((1, 2)));
+            assert_eq!(document.selected_bank().unwrap().1.name, "My Bank");
+            assert_eq!(document.preset().name(), "My Preset");
+            assert_eq!(document.as_bytes(), bytes);
+            assert!(document.is_dirty());
+            document.undo();
+            assert_eq!(document.preset().name(), "Default Patch");
+            document.redo();
+            assert_eq!(document.as_bytes(), bytes);
+            document.redo();
+            assert_eq!(document.preset().name(), "Redo this");
+            assert_eq!(fs::read(&path).unwrap(), factory.as_bytes());
+            assert_eq!(fs::read(&archive).unwrap(), archived_fixture);
+        }
+    }
+}

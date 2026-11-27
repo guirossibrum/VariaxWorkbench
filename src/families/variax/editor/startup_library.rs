@@ -211,7 +211,7 @@ fn latest_library(preferences: &Path) -> Result<Option<(BundleFile, LibraryOrigi
     Ok(download.map(|(bundle, time)| (bundle, LibraryOrigin::Download(time))))
 }
 
-fn factory_bundle(path: &Path) -> Result<BundleFile, String> {
+pub(super) fn factory_bundle(path: &Path) -> Result<BundleFile, String> {
     let bytes = tabs::open_candidate(path, MAX_CONTAINER_BYTES as u64)?;
     let reference = FactoryReference::parse(&bytes)
         .map_err(|error| format!("Could not open Variax factory presets: {error}"))?;
@@ -400,6 +400,21 @@ impl VariaxEditor {
 use super::new_files::synthetic_backup;
 
 #[cfg(test)]
+pub(super) fn record_unchecked_archive(preferences: &Path, archive: &Path) {
+    let choices = preferences.with_file_name("variax-library-preferences");
+    fs::create_dir_all(&choices).unwrap();
+    let record = serde_json::json!({
+        "chosen_at": UNIX_EPOCH + Duration::from_secs(42),
+        "path": archive.as_os_str(),
+    });
+    fs::write(
+        choices.join("archive-test.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::editor::{FakeDialogs, tests::app};
@@ -410,20 +425,6 @@ mod tests {
             preferences: Some(directory.join("editor-preferences.txt")),
             startup_panel: None,
         }
-    }
-
-    pub(super) fn record_unchecked_archive(preferences: &Path, archive: &Path) {
-        let choices = preferences.with_file_name("variax-library-preferences");
-        fs::create_dir_all(&choices).unwrap();
-        let record = serde_json::json!({
-            "chosen_at": UNIX_EPOCH + Duration::from_secs(42),
-            "path": archive.as_os_str(),
-        });
-        fs::write(
-            choices.join("archive-test.json"),
-            serde_json::to_vec(&record).unwrap(),
-        )
-        .unwrap();
     }
 
     #[test]

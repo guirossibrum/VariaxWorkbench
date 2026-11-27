@@ -5,6 +5,7 @@ mod body_scene;
 mod connection;
 #[cfg(feature = "usb")]
 mod device_sync;
+mod factory_selector;
 #[cfg(feature = "usb")]
 mod follow;
 mod guitar;
@@ -133,6 +134,7 @@ pub(super) struct VariaxEditor {
     #[cfg(feature = "usb")]
     startup_fallback: bool,
     library_import: Option<LibraryImport>,
+    factory_selector: factory_selector::FactorySelector,
     connection_status: Option<String>,
     firmware_notice: Option<variax_workbench::firmware_notice::FirmwareNotice>,
     #[cfg(feature = "usb")]
@@ -237,6 +239,7 @@ impl VariaxEditor {
             #[cfg(feature = "usb")]
             startup_fallback: false,
             library_import: None,
+            factory_selector: Default::default(),
             connection_status: None,
             firmware_notice: None,
             #[cfg(feature = "usb")]
