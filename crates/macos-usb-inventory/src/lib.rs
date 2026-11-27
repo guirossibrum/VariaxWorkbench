@@ -1,9 +1,10 @@
 //! Narrow IOKit adapter. It only reads registry services, properties and
 //! topology. No plug-in, user client or USB device/interface handle is opened.
 
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", test))]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(target_os = "macos")]
 /// Read-only metadata for a device service. Published interfaces are not a
 /// claim or proof of availability to a client.
 pub struct Record {
@@ -13,11 +14,15 @@ pub struct Record {
     pub ports: Vec<u8>,
     pub midi_interfaces_present: bool,
 }
+#[cfg(target_os = "macos")]
 use std::ffi::{CStr, c_void};
+#[cfg(target_os = "macos")]
 use std::ptr;
 
+#[cfg(target_os = "macos")]
 type CfRef = *const c_void;
 
+#[cfg(target_os = "macos")]
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOServiceMatching(class: *const std::ffi::c_char) -> CfRef;
@@ -44,6 +49,7 @@ unsafe extern "C" {
     ) -> CfRef;
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFStringCreateWithCString(
@@ -60,8 +66,10 @@ unsafe extern "C" {
     fn CFRelease(value: CfRef);
 }
 
+#[cfg(target_os = "macos")]
 struct IoObject(u32);
 
+#[cfg(target_os = "macos")]
 impl IoObject {
     fn new(raw: u32) -> Option<Self> {
         (raw != 0).then(|| Self(raw))
@@ -182,6 +190,7 @@ impl IoObject {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for IoObject {
     fn drop(&mut self) {
         // IoObject owns a single reference returned by IOKit.
@@ -191,14 +200,17 @@ impl Drop for IoObject {
     }
 }
 
+#[cfg(target_os = "macos")]
 struct CfObject(CfRef);
 
+#[cfg(target_os = "macos")]
 impl CfObject {
     fn new(raw: CfRef) -> Option<Self> {
         (!raw.is_null()).then(|| Self(raw))
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for CfObject {
     fn drop(&mut self) {
         // CfObject owns a single reference from a Create function.
@@ -208,6 +220,7 @@ impl Drop for CfObject {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn records(vendor: u16, product: u16) -> Result<Vec<Record>, String> {
     let mut raw = 0;
     // IOServiceGetMatchingServices consumes the matching dictionary.
@@ -218,21 +231,15 @@ pub fn records(vendor: u16, product: u16) -> Result<Vec<Record>, String> {
         }
         IOServiceGetMatchingServices(0, matching, &mut raw)
     };
-    let iterator = IoObject::new(raw)
-        .filter(|_| status == 0)
-        .ok_or_else(|| format!("Cannot list macOS USB registry devices ({status:#x})."))?;
-    let mut records = Vec::new();
-    while let Some(device) = iterator.next() {
+    let iterator = IoObject::new(raw).map(|iterator| std::iter::from_fn(move || iterator.next()));
+    scan_matching_services(status, iterator, |device| {
         if device.number(c"idVendor") != Some(vendor.into())
             || device.number(c"idProduct") != Some(product.into())
         {
-            continue;
+            return None;
         }
-        let Some(registry_id) = device.id() else {
-            continue;
-        };
-        records.push(Record {
-            registry_id,
+        Some(Record {
+            registry_id: device.id()?,
             location_id: device.number(c"locationID").and_then(|value| {
                 u32::try_from(value)
                     .ok()
@@ -244,7 +251,85 @@ pub fn records(vendor: u16, product: u16) -> Result<Vec<Record>, String> {
                 .filter(|address| *address != 0),
             ports: device.port_chain().unwrap_or_default(),
             midi_interfaces_present: device.published_interfaces(),
-        });
+        })
+    })
+}
+
+fn scan_matching_services<Service, Entry>(
+    status: i32,
+    iterator: Option<impl Iterator<Item = Service>>,
+    read: impl FnMut(Service) -> Option<Entry>,
+) -> Result<Vec<Entry>, String> {
+    if status != 0 {
+        return Err(format!(
+            "Cannot list macOS USB registry devices ({status:#x})."
+        ));
     }
-    Ok(records)
+    let iterator = iterator.ok_or("macOS USB registry returned no iterator.")?;
+    Ok(iterator.filter_map(read).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_matching_services;
+    use std::cell::Cell;
+
+    #[derive(Default)]
+    struct Calls {
+        next: Cell<u32>,
+        release: Cell<u32>,
+    }
+
+    struct EmptyIterator<'a>(&'a Calls);
+
+    impl Iterator for EmptyIterator<'_> {
+        type Item = ();
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.0.next.set(self.0.next.get() + 1);
+            None
+        }
+    }
+
+    impl Drop for EmptyIterator<'_> {
+        fn drop(&mut self) {
+            self.0.release.set(self.0.release.get() + 1);
+        }
+    }
+
+    fn unexpected_service((): ()) -> Option<()> {
+        panic!("an empty or failed scan must never read a service")
+    }
+
+    #[test]
+    fn success_without_an_iterator_is_an_unavailable_scan() {
+        assert_eq!(
+            scan_matching_services(0, None::<EmptyIterator<'_>>, unexpected_service),
+            Err("macOS USB registry returned no iterator.".into())
+        );
+    }
+
+    #[test]
+    fn nonzero_status_remains_the_error_with_or_without_an_iterator() {
+        let calls = Calls::default();
+        let status = 0xe000_02bdu32 as i32;
+        for iterator in [None, Some(EmptyIterator(&calls))] {
+            assert_eq!(
+                scan_matching_services(status, iterator, unexpected_service),
+                Err("Cannot list macOS USB registry devices (0xe00002bd).".into())
+            );
+        }
+        assert_eq!(calls.next.get(), 0);
+        assert_eq!(calls.release.get(), 1);
+    }
+
+    #[test]
+    fn valid_empty_scan_iterates_and_releases_normally() {
+        let calls = Calls::default();
+        let records =
+            scan_matching_services(0, Some(EmptyIterator(&calls)), unexpected_service).unwrap();
+        assert!(records.is_empty());
+        assert_eq!(calls.next.get(), 1);
+        assert_eq!(calls.release.get(), 1);
+    }
 }
