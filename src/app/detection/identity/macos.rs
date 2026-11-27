@@ -88,7 +88,7 @@ fn identify_on<L: Link>(
                 Ok(link) => link,
                 Err(error) => return finished(None, Guitar::Unavailable(error)),
             };
-            let pod = super::pod::identify(&mut link, cancel);
+            let pod = super::pod::identify_with_receive_evidence(&mut link, cancel);
             if let Err(error) = finish(&mut link) {
                 eprintln!("PODxt Live interface 0 cleanup: {error}");
                 return finished(None, Guitar::CleanupFailed);
