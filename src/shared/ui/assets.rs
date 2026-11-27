@@ -144,20 +144,7 @@ pub fn paint(ui: &egui::Ui, image: &UiImage, bounds: Rect) {
 pub fn paint_tinted(ui: &egui::Ui, image: &UiImage, bounds: Rect, tint: Color32) {
     let painter = ui.painter();
     let Some(texture) = image.texture.as_ref().filter(|_| !image.missing) else {
-        painter.rect_filled(bounds, RADIUS_CONTROL, RAISED);
-        painter.rect_stroke(
-            bounds,
-            RADIUS_CONTROL,
-            egui::Stroke::new(1.0_f32, LINE),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            bounds.center(),
-            egui::Align2::CENTER_CENTER,
-            image.name.as_str(),
-            egui::FontId::proportional(COMPACT),
-            DIM,
-        );
+        paint_placeholder(painter, &image.name, bounds, bounds);
         return;
     };
     let fitted = fitted_size(image.pixels, bounds.size());
@@ -168,6 +155,40 @@ pub fn paint_tinted(ui: &egui::Ui, image: &UiImage, bounds: Rect, tint: Color32)
         Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
         tint,
     );
+}
+
+pub(super) fn paint_placeholder(
+    painter: &egui::Painter,
+    name: &str,
+    bounds: Rect,
+    label_bounds: Rect,
+) {
+    painter.rect_filled(bounds, RADIUS_CONTROL, RAISED);
+    painter.rect_stroke(
+        bounds,
+        RADIUS_CONTROL,
+        egui::Stroke::new(1.0_f32, LINE),
+        egui::StrokeKind::Inside,
+    );
+    let inset = label_bounds.shrink(1.0);
+    if !inset.is_positive() {
+        return;
+    }
+    let font = egui::FontId::proportional(COMPACT);
+    let mut galley = painter.layout_no_wrap(name.to_owned(), font.clone(), DIM);
+    if galley.size().x > inset.width() {
+        let mut job = egui::text::LayoutJob::simple(name.to_owned(), font, DIM, inset.width());
+        job.halign = egui::Align::Center;
+        galley = painter.layout_job(job);
+    }
+    let origin = label_bounds.center() - galley.rect.center().to_vec2();
+    if label_bounds.contains_rect(galley.rect.translate(origin.to_vec2()))
+        && inset.contains_rect(galley.mesh_bounds.translate(origin.to_vec2()))
+    {
+        painter
+            .with_clip_rect(label_bounds)
+            .galley(origin, galley, DIM);
+    }
 }
 
 pub fn fitted_size(pixels: [usize; 2], bounds: Vec2) -> Vec2 {

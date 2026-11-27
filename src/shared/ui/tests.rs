@@ -590,6 +590,77 @@ fn missing_art_paints_its_name_and_a_png_loads() {
 }
 
 #[test]
+fn missing_body_label_fits_without_covering_the_pickup_at_both_densities() {
+    const NAME: &str = "Guitar artwork unavailable";
+    let missing = UiImage::missing(NAME);
+    let mut harness = Harness::new();
+    let size = [120, 120];
+    let texture = harness.ctx.load_texture(
+        "synthetic pickup",
+        egui::ColorImage::filled(size, Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    let texture_id = texture.id();
+    let pickup = UiImage {
+        name: "Synthetic pickup".into(),
+        pixels: size,
+        texture: Some(texture),
+        missing: false,
+    };
+    let sprites = [PickupSprite {
+        position_inches: 4.0,
+        angle_degrees: 10.0,
+        enabled: true,
+        selected: false,
+        image: &pickup,
+    }];
+
+    for (screen, plate_size, wraps) in [
+        (Vec2::new(960.0, 680.0), Vec2::new(90.5, 87.5), true),
+        (Vec2::new(1120.0, 760.0), Vec2::new(320.0, 310.0), false),
+    ] {
+        for density in [1.0, 2.0] {
+            let bounds = Rect::from_min_size(Pos2::new(8.0, 410.0), plate_size);
+            let mut art = Rect::NOTHING;
+            let output = harness.run_screen(screen, density, vec![], |_, ui| {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
+                art = BodyCanvas::new(&missing, &sprites)
+                    .show(&mut child)
+                    .art_rect;
+            });
+            let (text, clip) = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == NAME => {
+                        Some((text, shape.clip_rect))
+                    }
+                    _ => None,
+                })
+                .expect("missing-art label");
+            let ink = text.galley.mesh_bounds.translate(text.pos.to_vec2());
+            assert!(
+                clip.intersect(art).contains_rect(ink),
+                "{screen:?} at {density}x: {ink:?} spills out of {art:?}"
+            );
+            assert_eq!(text.galley.rows.len() > 1, wraps);
+            assert!(!text.galley.elided);
+            let sprite = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture_id => {
+                        Some(mesh.calc_bounds())
+                    }
+                    _ => None,
+                })
+                .expect("loaded pickup sprite");
+            assert!(!sprite.intersects(ink), "pickup covers the body label");
+        }
+    }
+}
+
+#[test]
 fn gallery_names_every_component() {
     let mut harness = Harness::new();
     let mut state = GalleryState::default();
