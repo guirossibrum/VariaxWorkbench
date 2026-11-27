@@ -42,8 +42,57 @@ conversion alone retains `gain × 8388607 + 0.5 ≈ 776755.969904` before
 truncation. With 24-bit precision the same calculation rounds to
 `776756.0` before truncation. This accounts for the converter difference at
 the same gain input. The earlier crossing with narrowed PE32 also exposes a
-difference upstream of quantization. This run did not isolate the
-arithmetic responsible for that upstream difference.
+difference upstream of quantization. The follow-up trace below isolates
+that difference to the first acoustic trim addition.
+
+## Why PE32 changes gain one input earlier
+
+Both generators use analog selector 2, an effective analog offset of exactly
+−10.5 dB, and the same binary32 continuous-gain operand `c0e560e1`. Mach-O
+loads −10.5 as binary32, adds the input trim with scalar SSE, then adds the
+continuous gain with a second binary32 addition. PE32 forms the offset as
+zero minus binary64 +10.5, then adds the input trim and continuous gain in
+x87 before the first binary32 store of the sum. The additions on these inputs
+are exact at both tested x87 precisions, 53 and 64 significand bits. The
+zero-dB clamp passes all four sums through.
+
+| Input trim bits | Mach-O first sum | Mach-O adjusted dB | PE32 adjusted dB |
+| --- | ---: | ---: | ---: |
+| `c0400099` | `c1580026` | `c1a5584b` | `c1a5584b` |
+| `c040009a` | `c1580026` | `c1a5584b` | `c1a5584c` |
+| `c040009b` | `c1580027` | `c1a5584c` | `c1a5584c` |
+| `c040009c` | `c1580027` | `c1a5584c` | `c1a5584c` |
+
+For input `c040009a`, the exact first sum is −28311629/2097152 dB.
+Retaining it through the second addition gives −21672087/1048576 dB,
+exactly halfway between `c1a5584b` and `c1a5584c`. The PE32 store rounds
+to even, selecting `c1a5584c`. Rounding the first sum to `c1580026` gives
+a second sum of −43344173/2097152 dB before rounding, one quarter of a
+binary32 ULP toward zero from that midpoint. Mach-O therefore selects
+`c1a5584b`.
+
+| Adjusted dB bits | Binary32 exponent after division by 20 | Binary32 gain after power |
+| --- | ---: | ---: |
+| `c1a5584b` | `bf8446a2` | `3dbda339` |
+| `c1a5584c` | `bf8446a3` | `3dbda335` |
+
+Mach-O divides at binary32 width and passes binary32 base 10 and exponent to
+`powf`. PE32 divides in x87, stores the exponent as binary32, and reloads it
+for the original CRT intrinsic. The initialized SSE2 branch receives base 10
+and the exactly widened exponent as binary64 and returns a binary64 result
+through x87. Both paths store the gain as binary32 before Q23. For each shared
+exponent the original PE32 and both Mach-O adapters arrive at the same gain
+bits.
+
+The follow-up replay used the retained Java-mapped settings and synthetic body.
+Across the five baseline configurations, all 20 native outputs matched the
+prior replay byte for byte. In 12 controlled executions, substituting each
+platform's adjusted dB into the other moved the exponent and gain crossing
+with that value. Rounding only PE32's first addition to binary32 moved its
+crossing to the Mach-O input as well. The PE32 diagnostic runs used the prior
+24-bit Q23 conversion to make the gain crossing visible in word 555.
+Relative to each platform's own corresponding baseline, each intervention
+changed only words 555 and 1091 on input `c040009a`.
 
 ## Provenance and replay
 
@@ -67,6 +116,23 @@ The original-instruction replay uses the existing `CoefficientOracle`,
 `WindowsCoefficientOracle` and `VerifyHostPipeline` with the four fields
 above. The assignment's ignored evidence directory holds the local replay
 script, exact inputs, outputs and hash report.
+
+The width trace is retained locally in
+`backups/5-acoustic-trim-widths-assignment59/`. From the lane checkout, use
+the main checkout as `main` and run:
+
+```sh
+PYTHONPATH=scripts PYTHONDONTWRITEBYTECODE=1 "$main/.tools/python/bin/python" \
+  "$main/backups/5-acoustic-trim-widths-assignment59/trace.py" \
+  "$main/backups/5-quantization-threshold-assignment54/delivery-e7badf6/replay" \
+  "$main"
+```
+
+The trace reads the native arithmetic at the generator, the power call and
+gain store, and the Q23 boundary. It checks the exact midpoint with rational
+arithmetic, verifies all five prior packed baselines by bytes and hash, and
+checks all three interventions against the appropriate same-platform packed
+outputs. The private trace and prior artifacts use separate directories.
 
 These results establish a local coefficient threshold under the stated
 software and emulator controls. Historical Mac runtime authentication, the

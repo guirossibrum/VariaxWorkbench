@@ -7,7 +7,7 @@ and the [guided prompts proposal](rig-check-guided-prompts.md) during review.
 
 ## Generated evidence
 
-The mockups were redrawn on 2026-11-26 on Linux x86_64 with rustc 1.99.1
+The original 34-image set was redrawn on 2026-11-26 on Linux x86_64 with rustc 1.99.1
 (58cf8f9c3 2026-10-13), from master
 `b3354b46bc8ad683c144f48aa9442e7ec76a85c7` with the #248 fixture additions.
 The fixtures use generated Practice records and demo strings, including the
@@ -23,18 +23,24 @@ cargo build --locked --offline --no-default-features --features gui --bin rig-ch
 `--mockups` renders through egui on the CPU and exits during option parsing,
 before the program constructs a real port or opens a native window. The
 software renderer lays out logical points at each scale and rasterizes the
-resulting meshes in physical pixels. All 34 PNGs are 8-bit RGBA.
+resulting meshes in physical pixels. The current 38 PNGs are 8-bit RGBA.
 
 | Set | Count | Logical size | Scale | PNG size |
 | --- | --- | --- | --- | --- |
 | Numbered screens 01–14 | 14 | 1180×800 | 1× | 1180×800 |
-| Laptop examples | 10 | 1120×760 | 1× | 1120×760 |
-| Retina examples | 10 | 1120×760 | 2× | 2240×1520 |
+| Laptop examples | 12 | 1120×760 | 1× | 1120×760 |
+| Retina examples | 12 | 1120×760 | 2× | 2240×1520 |
 
-Two draws produced identical PNGs, including all 22 previously generated
-images. The SHA-256 of `LC_ALL=C sha256sum *.png` run in a fresh
-`--mockups` output directory is
-`c13dadf2dc705aa2753fae585a3148ae44aee5d4eb857b48e6ac159ad562bd8c`.
+The four blocked-continuation images were drawn on the same platform and
+compiler from master `5eddd174f0d848c1a3692e816d78456ce83afa6d` with the
+#248 continuation fixtures. They use the merged #297 wizard and a synthetic
+attempt report. The [blocked-continuation index](../rig-check/design.md#blocked-continuation-at-laptop-and-retina-scales)
+links both cleanup outcomes at each scale.
+
+Two draws produced 38 byte-identical PNGs and matched all 34 previously
+tracked images. The SHA-256 of `LC_ALL=C sha256sum *.png` in a fresh
+output directory is
+`c4624368930fea7f98ec6809e31a5d8ad11cba3f7610caa3584e3c29506425a9`.
 
 The clocks in 05 and 06 start immediately before rendering. The stills
 show the start of the read and the selector countdown, respectively.
@@ -63,17 +69,19 @@ Keep owner screenshots private.
 | 12 | Progress and stable references | 03, 05, 10 and 11 show the progress list. The paired fixtures show Step 21 of 35 / Catalogue ID 7.4 and Step 29 of 35 / Catalogue ID 4.7 at both scales. | Review progress-list placement and the run heading alongside the report IDs. | |
 | 13 | Summary and report | 10 shows the rig state, counts, a demo preview line and Save report…. | Review a completed Practice summary and whether to offer Open folder. | |
 | 14 | Back and Return | 12 and 13 show review of an earlier result and the accepted start notice. Keyboard tests cover returning to the pending card. | Review focus and wording in native Practice. | |
-| 15 | Narrow laptop view | Ten samples at 1120×760 show the headings and controls. The sidebar shortens longer titles, and the 6.2 row needs scrolling. | Review the native layout and whether the sidebar should follow the active step. | |
-| 16 | Retina view | The same ten samples render at 2 pixels per point. | Review native scaling and focus on a Retina display. | |
-| 17 | Screenshots of wizard states | The 14 numbered images and 20 narrow images cover the generated review set. The new cards focus Skip and their results focus Continue. | Keep native screenshots privately, including focus states. | |
+| 15 | Narrow laptop view | Twelve samples at 1120×760 show the headings and controls. The sidebar shortens longer titles, and the 6.2 row needs scrolling. | Review the native layout and whether the sidebar should follow the active step. | |
+| 16 | Retina view | The same twelve samples render at 2 pixels per point. | Review native scaling and focus on a Retina display. | |
+| 17 | Screenshots of wizard states | The 14 numbered images and 24 narrow images cover the generated review set. The paired 0.2, 1.2 and 6.2 cards focus Skip and their results focus Continue. | Keep native screenshots privately, including focus states. | |
+| 18 | Blocked continuation | The four screenshots show 3.3 blocked by 2.2 and the expected and observed CC 120 bytes. Open report has focus in both outcomes. Verified release offers Start fresh and opens the source report via Open report. Failed cleanup shows the manual-check instruction, and Open report opens the attempt inline. | Review the mismatch, cleanup instructions, focus and report destinations. | |
 
-The Mac and Windows choose-mode copy and the #297 continuation screens
-are outside this image set. The VDI Get ready example covers the unplug
+The Mac and Windows choose-mode copy remains for native review.
+The VDI Get ready example covers the unplug
 phase. Reconnect and identity-check states remain for native review. The
 owner questions about progress-list placement, the evidence line, Open
 folder, Practice focus and Get ready focus remain open.
 
-The new central panels and focused controls fit at both scales.
+The central panels and focused controls in the paired results and blocked
+continuation screens fit at both scales.
 The 6.2 sidebar starts at the top and omits the active row from the
 initial view. The older 01, 02, 07 and 08 fixtures render with focus
 disarmed, so their images do not show the keyboard defaults listed in
@@ -90,3 +98,10 @@ checks representative text and confirms that Enter selects Skip on each
 new card and Continue on each matching result at both scales. Existing
 headless tests cover run and stop shortcuts, notice defaults, history
 and run ordinals across retries.
+
+`blocked_resume_mockups_fit_and_focus_open_report_at_both_scales` checks
+the full text bounds against the viewport and its clip at 1× and 2×.
+Enter follows Open report to the source file after verified release and
+opens the inline attempt preview after failed cleanup. The existing
+blocked-resume keyboard tests cover deliberate Start fresh without a
+continuation plan and verify that failed cleanup cannot restart the run.

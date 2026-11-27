@@ -77,6 +77,23 @@ of the VDI cable. The action cue says to leave the PODxt Live USB cable
 connected. The reconnect phase gives its own countdown and cue. Identity
 checks may run between listening windows with the VDI cable held still.
 
+## Blocked continuation at laptop and Retina scales
+
+These synthetic Practice screens show a read-only recheck of the PODxt Live
+starting tone (2.2) blocking the selected Variax starting-program check (3.3).
+Both channels are 5B. Byte 159, the linked Variax model (CC 120), has expected
+value `0x14` and observed value `0x15`. The wizard labels the observed value
+“actual.” The same 1120×760 logical viewport is used at 1× and 2×.
+
+| USB cleanup | Laptop 1× | Retina 2× | Actions |
+| --- | --- | --- | --- |
+| Release verified | [Laptop](mockups/laptop-resume-blocked.png) | [Retina](mockups/retina-resume-blocked.png) | **Open report** has focus and returns to the source report. **Start fresh** starts a new run without the continuation plan. |
+| Release failed | [Laptop](mockups/laptop-resume-cleanup-failed.png) | [Retina](mockups/retina-resume-cleanup-failed.png) | **Open report** has focus and opens the attempt report inline. The screen asks for a manual rig and USB check. |
+
+Both screens label the synthetic attempt path as **Working report**.
+**Start fresh** is available only after verified USB release. Owner reports
+and screenshots stay private.
+
 ## Owner release
 
 The 2026-11-25 decision (#267) releases device and guided steps for the
