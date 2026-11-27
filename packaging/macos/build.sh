@@ -50,6 +50,9 @@ revision="$(git rev-parse HEAD)"
 {
     printf 'Commit %s\n' "$revision"
     printf 'Profile %s (%s)\n' "$profile" "$features"
+    if [[ -n "${VARIAX_BUILD_NUMBER:-}" ]]; then
+        printf 'Build number %s\n' "$VARIAX_BUILD_NUMBER"
+    fi
     rustc -vV
     xcrun --sdk macosx --show-sdk-version
 } | tee "$report"
@@ -150,7 +153,11 @@ codesign --verify --deep --strict "$mount/Variax Workbench.app"
 codesign --verify --deep --strict "$mount/Rig Check.app"
 python3 "$here/package.py" verify "$mount" "$scratch" "$image" "$profile" | tee -a "$report"
 if [[ "$profile" == offline ]]; then
-    "$mount/Variax Workbench.app/Contents/MacOS/variax-workbench-gui" --version | tee -a "$report"
+    workbench_version=$("$mount/Variax Workbench.app/Contents/MacOS/variax-workbench-gui" --version)
+    printf '%s\n' "$workbench_version" | tee -a "$report"
+    if [[ -n "${VARIAX_BUILD_NUMBER:-}" ]]; then
+        [[ "$workbench_version" == *"(build $VARIAX_BUILD_NUMBER)"* ]]
+    fi
     "$mount/Rig Check.app/Contents/MacOS/rig-check" --catalogue > "$scratch/catalogue.txt"
     grep -q '^0\.1 ' "$scratch/catalogue.txt"
     printf 'Command-line startup checks passed on %s\n' "$(uname -m)" | tee -a "$report"

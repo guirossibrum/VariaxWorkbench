@@ -32,3 +32,6 @@ cp docs/rig-check/{catalogue,coverage,release-notes}.md "$output/"
 grep -aFq "$revision" "$output/rig-check"
 printf 'Commit %s\nProfile %s (%s)\n%s\nTarget %s\n' \
     "$revision" "$profile" "$features" "$RIG_CHECK_RUSTC_VERSION" "$RIG_CHECK_TARGET" > "$output/verification.txt"
+if [[ -n "${VARIAX_BUILD_NUMBER:-}" ]]; then
+    printf 'Build number %s\n' "$VARIAX_BUILD_NUMBER" >> "$output/verification.txt"
+fi

@@ -4,10 +4,11 @@ set -euo pipefail
 umask 077
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
-[[ $# -eq 3 ]] || die 'Use packaging/build-release.sh --owner-usb.'
+[[ $# -eq 4 ]] || die 'Use packaging/build-release.sh --owner-usb.'
 revision=$1
 mac_host=$2
 output=$3
+export VARIAX_BUILD_NUMBER=$4
 [[ "$(uname -s)" == Linux ]] || die 'Start the private USB build from Linux.'
 [[ "$mac_host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._@-]*$ ]] || die 'Use a valid SSH hostname or alias.'
 repo=$(git rev-parse --show-toplevel)
@@ -93,7 +94,7 @@ printf 'Preparing exact source and locked Cargo dependencies for the Mac…\n'
 scp "${ssh_options[@]}" "$stage/inputs/"{source.pack,vendor.tar.gz,TREE,REVISION,INPUT-SHA256SUMS} "$mac_host:$remote/"
 
 printf 'Building and verifying the universal macOS DMG on %s…\n' "$mac_host"
-ssh "${ssh_options[@]}" "$mac_host" /bin/bash -s -- "$remote" "$toolchain" "$revision" "$version" \
+ssh "${ssh_options[@]}" "$mac_host" /bin/bash -s -- "$remote" "$toolchain" "$revision" "$version" "$VARIAX_BUILD_NUMBER" \
     > "$stage/pair/macos-build.log" 2>&1 <<'REMOTE' || {
 set -euo pipefail
 umask 077
@@ -102,6 +103,7 @@ scratch="$PWD"
 export RUSTUP_TOOLCHAIN="$2"
 revision="$3"
 version="$4"
+export VARIAX_BUILD_NUMBER="$5"
 shasum -a 256 -c INPUT-SHA256SUMS
 test "$(cat REVISION)" = "$revision"
 mkdir source output
@@ -155,15 +157,20 @@ scp "${ssh_options[@]}" "$mac_host:$remote/owner.dmg" "$mac_host:$remote/verific
 grep -Fxq "Commit $revision" "$macos/verification.txt"
 grep -Fxq "Commit $revision" "$linux/verification.txt"
 grep -Fxq "Profile owner-usb ($features)" "$macos/verification.txt"
+grep -Fxq "Build number $VARIAX_BUILD_NUMBER" "$linux/verification.txt"
+if ! git -C "$repo" cat-file -e "$revision:app/BUILD_NUMBER" 2>/dev/null; then
+    grep -Fxq "Build number $VARIAX_BUILD_NUMBER" "$macos/verification.txt"
+fi
 (cd "$macos" && sha256sum -c DMG.sha256)
 digest=$(awk '{ print $1 }' "$macos/DMG.sha256")
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
 mv "$macos/owner.dmg" "$macos/Variax Workbench - Owner USB.dmg"
 rm "$macos/DMG.sha256"
 printf '%s\n' "$revision" > "$stage/pair/REVISION"
+printf '%s\n' "$VARIAX_BUILD_NUMBER" > "$stage/pair/BUILD_NUMBER"
 (
     cd "$stage/pair"
-    sha256sum REVISION linux/{rig-check,variax-workbench-gui,catalogue.md,coverage.md,release-notes.md,verification.txt} \
+    sha256sum REVISION BUILD_NUMBER linux/{rig-check,variax-workbench-gui,catalogue.md,coverage.md,release-notes.md,verification.txt} \
         linux/assets/ui/{shell/*.png,pod-farm/*.png,SOURCES.md} \
         'macos/Variax Workbench - Owner USB.dmg' macos/verification.txt > SHA256SUMS
     sha256sum -c SHA256SUMS

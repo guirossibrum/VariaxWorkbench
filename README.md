@@ -97,7 +97,7 @@ cargo run --no-default-features --features gui --bin variax-workbench-gui -- --d
 
 Use **Open file** for a preset or **New offline tab** for an editor. The
 [Linux packaging guide](docs/linux-package.md) covers dependencies and releases.
-For a numbered release build, run `python3 scripts/build_release.py`.
+For a numbered release build, use the [unified release command](docs/release-build.md).
 
 ## Verify
 

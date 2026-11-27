@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -32,7 +33,7 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def record(directory, platform, revision):
+def record(directory, platform, revision, build_number=None):
     report_path = directory / f"{platform}-verification.txt"
     packages = sorted(directory.glob(PACKAGES[platform]))
     if len(packages) != 1:
@@ -46,6 +47,8 @@ def record(directory, platform, revision):
     commits = re.findall(r"^Commit(?:: | )([0-9a-f]{40})$", report, flags=re.MULTILINE)
     if commits != [revision]:
         raise ValueError(f"{platform}: report does not identify the pinned commit {revision}")
+    if build_number is not None and lines.count(f"Build number {build_number}") != 1:
+        raise ValueError(f"{platform}: report does not identify build {build_number}")
     if PROFILES[platform] not in lines:
         raise ValueError(f"{platform}: unexpected build profile")
     for target_line in TARGET_MARKERS[platform]:
@@ -58,7 +61,7 @@ def record(directory, platform, revision):
     native_digests = re.findall(pattern, report, flags=re.MULTILINE)
     if native_digests != [package_digest]:
         raise ValueError(f"{platform}: package checksum differs from native verification")
-    return {
+    manifest = {
         "platform": platform,
         "revision": revision,
         "profile": "offline",
@@ -66,9 +69,12 @@ def record(directory, platform, revision):
         "targets": TARGETS[platform],
         "files": {package.name: package_digest, report_path.name: sha256(report_path)},
     }
+    if build_number is not None:
+        manifest["build_number"] = int(build_number)
+    return manifest
 
 
-def verify(directory, revision):
+def verify(directory, revision, build_number=None):
     results = {}
     for platform in PACKAGES:
         worker_dir = directory / platform
@@ -76,11 +82,14 @@ def verify(directory, revision):
         if not manifest_path.is_file():
             raise ValueError(f"{platform}: missing worker manifest")
         recorded = json.loads(manifest_path.read_text(encoding="utf-8"))
-        actual = record(worker_dir, platform, revision)
+        actual = record(worker_dir, platform, revision, build_number)
         if recorded != actual:
             raise ValueError(f"{platform}: worker manifest does not match the verified files")
         results[platform] = actual
-    return {"revision": revision, "platforms": results}
+    manifest = {"revision": revision, "platforms": results}
+    if build_number is not None:
+        manifest["build_number"] = int(build_number)
+    return manifest
 
 
 def main():
@@ -93,12 +102,15 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("provide a full commit SHA")
+    build_number = os.environ.get("VARIAX_BUILD_NUMBER")
+    if build_number is not None and not re.fullmatch(r"[1-9][0-9]*", build_number):
+        parser.error("invalid release build number")
     try:
         if args.record:
-            manifest = record(args.directory, args.record, args.revision)
+            manifest = record(args.directory, args.record, args.revision, build_number)
             name = "manifest.json"
         else:
-            manifest = verify(args.directory, args.revision)
+            manifest = verify(args.directory, args.revision, build_number)
             name = "release-manifest.json"
         manifest_path = args.directory / name
         if args.check:

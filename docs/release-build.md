@@ -8,8 +8,13 @@ bash packaging/build-release.sh
 
 The command fetches `origin/master` and resolves it to one full commit SHA.
 GitHub Actions builds Workbench and Rig Check on native Linux, macOS and
-Windows runners. Every worker checks out the pinned SHA. The final job
-recomputes the package checksums and verifies the source, target and profile
+Windows runners. Every worker checks out the pinned SHA. The release command
+uses that commit's first-parent count as its build number, so rebuilding the
+same revision on any platform gives the same number. A direct Cargo
+development build displays `Build dev`. Older pinned revisions with the
+original build-number file retain the number recorded at that commit.
+The final job
+recomputes the package checksums and verifies the source, build number, target and profile
 in each worker's report. A missing, corrupt or mismatched package fails
 the set. Use `--revision COMMIT` to select a master commit that includes
 the unified build.
@@ -18,7 +23,9 @@ The command waits for the exact run and returns its result. Open the run URL
 it prints and download the
 `release-set-<full SHA>` artifact after success. It contains the Linux
 x64 tarball, universal macOS DMG and Windows x64 ZIP, verification reports
-and a set manifest. All three use the offline portable-math profile.
+and a set manifest. Each package includes Workbench and Rig Check. The
+Mac disk image carries both universal app bundles. All three packages use
+the offline portable-math profile.
 An artifact-only run creates no GitHub release. For an authorized untested
 alpha, append `--alpha-number N` with an unused positive number. All
 three packages and the manifest are published under a single prerelease

@@ -18,6 +18,25 @@ Both modes default to the freshly fetched origin/master commit.
 USAGE
 }
 
+build_number() {
+    local revision=$1 number
+    if git cat-file -e "$revision:app/BUILD_NUMBER" 2>/dev/null; then
+        number=$(git show "$revision:app/BUILD_NUMBER")
+    else
+        [[ "$(git rev-parse --is-shallow-repository)" == false ]] ||
+            die 'A full Git history is required to number this release.'
+        number=$(git rev-list --first-parent --count "$revision")
+    fi
+    [[ "$number" =~ ^[1-9][0-9]*$ ]] || die 'Invalid release build number.'
+    printf '%s\n' "$number"
+}
+
+if [[ "${1:-}" == --print-build-number ]]; then
+    [[ $# -eq 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die 'Expected a full Git commit SHA.'
+    build_number "$2"
+    exit
+fi
+
 revision_ref=
 owner_usb=false
 alpha_number=
@@ -55,8 +74,9 @@ revision=$(git -C "$repo" rev-parse --verify --end-of-options "${revision_ref:-r
 printf 'Release source: %s\n' "$revision"
 
 if "$owner_usb"; then
+    number=$(build_number "$revision")
     exec /bin/bash "$(dirname -- "$0")/build-private-owner-usb.sh" "$revision" \
-        "${mac_host:-guilhermes-macbook-pro-1}" "${output:-$repo/backups/packages}"
+        "${mac_host:-guilhermes-macbook-pro-1}" "${output:-$repo/backups/packages}" "$number"
 fi
 
 git -C "$repo" merge-base --is-ancestor "$revision" refs/remotes/origin/master ||

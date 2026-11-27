@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       revision: ${{ steps.source.outputs.revision }}
+      build_number: ${{ steps.source.outputs.build_number }}
       tag: ${{ steps.source.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,7 +49,8 @@ jobs:
           git merge-base --is-ancestor "$revision" "$GITHUB_SHA"
           git cat-file -e "$revision:packaging/release_manifest.py"
           git cat-file -e "$revision:packaging/linux/build-apps.sh"
-          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          build_number=$(bash packaging/build-release.sh --print-build-number "$revision")
+          printf 'revision=%s\nbuild_number=%s\n' "$revision" "$build_number" >> "$GITHUB_OUTPUT"
           if [[ -n "$ALPHA_NUMBER" ]]; then
             [[ "$ALPHA_NUMBER" =~ ^[1-9][0-9]*$ ]]
             version=$(git show "$revision:Cargo.toml" | sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p')
@@ -69,6 +71,7 @@ jobs:
     timeout-minutes: 45
     env:
       RELEASE_REVISION: ${{ needs.pin.outputs.revision }}
+      VARIAX_BUILD_NUMBER: ${{ needs.pin.outputs.build_number }}
       RELEASE_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,6 +127,7 @@ jobs:
           cd "$smoke"
           linux-apps/variax-workbench-gui --version > version.txt
           grep -Fq 'Variax Workbench' version.txt
+          grep -Fq "(build $VARIAX_BUILD_NUMBER)" version.txt
           linux-apps/rig-check --catalogue > catalogue.txt
           grep -q '^0\.1 ' catalogue.txt
           test -s linux-apps/assets/ui/shell/variax.png
@@ -163,6 +167,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RELEASE_REVISION: ${{ needs.pin.outputs.revision }}
+      VARIAX_BUILD_NUMBER: ${{ needs.pin.outputs.build_number }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -207,6 +212,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.pin.outputs.tag }}
           RELEASE_REVISION: ${{ needs.pin.outputs.revision }}
+          VARIAX_BUILD_NUMBER: ${{ needs.pin.outputs.build_number }}
         run: |
           set -euo pipefail
           python3 packaging/release_manifest.py "$RELEASE_REVISION" release --check

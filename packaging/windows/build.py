@@ -69,6 +69,8 @@ def smoke(extracted, scratch, env):
     rig = str(extracted / "Rig Check.exe")
     version = run(workbench, "--version", env=env, cwd=extracted).strip()
     require(version, "Variax Workbench")
+    if number := env.get("VARIAX_BUILD_NUMBER"):
+        require(version, f"(build {number})")
     require(run(rig, "--catalogue", env=env, cwd=extracted), "0.1 Computer", "8.1 Audio")
 
     practice = scratch / "practice"
@@ -164,6 +166,8 @@ def main():
             f"Commit: {commit}\nRelease target: {TARGET}\nFeatures: {FEATURES}\n"
             f"Static C runtime\n{rustc}"
         )
+        if number := env.get("VARIAX_BUILD_NUMBER"):
+            build_info += f"\nBuild number {number}"
         verification = build_zip(
             archive, target_dir / TARGET / "release", HERE / "How to open.txt", build_info
         )

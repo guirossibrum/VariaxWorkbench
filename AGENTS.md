@@ -49,8 +49,8 @@ below apply.
 
 Use [the unified release command](docs/release-build.md) for releases and
 owner deliveries. Resolve the Git source once to a full commit SHA. Every
-requested platform builds that exact checkout and records its SHA, target,
-profile and package checksums. Deliver the set only after all requested
+requested platform builds that exact checkout and records its SHA, build
+number, target, profile and package checksums. Deliver the set only after all requested
 packages verify. Platform scripts are native build workers and local checks.
 The private owner USB profile covers Linux and macOS. The hosted offline
 profile covers Linux, macOS and Windows. Publication and hardware approvals
