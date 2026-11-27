@@ -1382,9 +1382,11 @@ impl FamilyTab for VariaxEditor {
         #[cfg(feature = "usb")]
         {
             self.poll_device_sync(ctx);
+            // Apply any queued disconnect before accepting a completed download.
+            self.observe_follow(ctx);
             self.start_automatic_download();
             self.poll_refresh(ctx);
-            self.poll_follow(ctx);
+            self.advance_follow(ctx);
             self.poll_edit_buffer(ctx);
         }
         #[cfg(all(feature = "usb", any(target_os = "linux", test)))]

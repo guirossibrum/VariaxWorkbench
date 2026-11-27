@@ -274,10 +274,10 @@ impl VariaxEditor {
         }
         let dialog = egui::Modal::new(egui::Id::new("variax-refresh-confirmation")).show(ctx, |ui| {
             ui.heading("Replace unsaved changes?");
-            ui.label("Download reads the stored presets and bank names. It replaces this document only after the full read succeeds.");
+            ui.label("Download reads the stored presets and bank names. Choose whether to keep this document or replace it after a successful download.");
             ui.horizontal(|ui| {
                 let cancel = ui.button("Keep editing");
-                let download = ui.button("Download and keep editing");
+                let download = ui.button("Download and keep current document");
                 let replace = ui.button("Download and replace");
                 (cancel.clicked(), download.clicked(), replace.clicked())
             }).inner
@@ -683,6 +683,17 @@ pub(super) mod tests {
         })
     }
 
+    fn wait_for_worker(editor: &VariaxEditor) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !editor.refresh.worker.as_ref().unwrap().thread.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Refresh worker did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     fn wait_for_completion(editor: &mut VariaxEditor, ctx: &egui::Context) {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while editor.refresh.busy() {
@@ -1080,6 +1091,74 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn queued_follow_disconnect_wins_over_refresh_completion_in_the_same_poll() {
+        use super::super::new_files::synthetic_backup;
+        use crate::editor::tabs::DeviceEvent;
+
+        let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let preferences = directory.path().join("editor-preferences.txt");
+        let snapshots = preferences.with_file_name("variax-library-snapshots");
+        let editor = app.variax_mut();
+        editor.preferences_path = Some(preferences);
+        attach(editor);
+        editor.start_refresh(complete_capture, true);
+        wait_for_completion(editor, &ctx);
+        let prior = editor.refresh.latest_download.as_ref().unwrap();
+        let prior_time = prior.captured_at;
+        let prior_bytes = prior.bundle.as_bytes().to_vec();
+        let before = synthetic_backup::snapshot(&snapshots);
+        assert_eq!(before.len(), 1);
+
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let document = editor.document.as_ref().unwrap().as_bytes().to_vec();
+        let next_capture: ReadLibrary = |attachment, stop, progress| {
+            let mut capture = complete_capture(attachment, stop, progress)?;
+            let mut library = EditorDocument::from_bundle(capture.bundle, PathBuf::new())?;
+            library.apply(|preset| preset.rename("Obsolete read"))?;
+            capture.bundle = BundleFile::parse(library.as_bytes().to_vec())?;
+            Ok(capture)
+        };
+        editor.request_refresh(next_capture);
+        editor.confirm_refresh(true, next_capture);
+        wait_for_worker(editor);
+        editor.follow.queue_disconnect(&ctx);
+        assert!(!editor.follow.disconnected());
+
+        FamilyTab::poll(editor, &ctx);
+
+        assert!(editor.follow.disconnected());
+        assert!(matches!(
+            editor.take_device_event(),
+            Some(DeviceEvent::GuitarDisconnected(key))
+                if key == editor.refresh.attachment.as_ref().unwrap().key
+        ));
+        assert!(!editor.refresh.busy());
+        assert!(editor.refresh.active.is_none());
+        let retained = editor.refresh.latest_download.as_ref().unwrap();
+        assert!(
+            retained.bundle.as_bytes() == prior_bytes,
+            "a disconnected result replaced the retained library"
+        );
+        assert_eq!(retained.captured_at, prior_time);
+        let current = editor.document.as_ref().unwrap();
+        assert!(
+            current.as_bytes() == document,
+            "the edited document changed"
+        );
+        assert!(current.is_dirty() && current.can_undo());
+        assert!(matches!(
+            editor.library_origin.as_ref(),
+            Some(LibraryOrigin::AttachedDownload(time, key))
+                if *time == prior_time && *key == retained.attachment
+        ));
+        assert!(
+            synthetic_backup::snapshot(&snapshots) == before,
+            "the library snapshot directory changed"
+        );
+    }
+
+    #[test]
     fn obsolete_attachment_and_attempt_cannot_publish_or_replace_a_library() {
         let (ctx, mut app) = app();
         let editor = app.variax_mut();
@@ -1174,11 +1253,7 @@ pub(super) mod tests {
         }
 
         editor.start_refresh(complete_capture, true);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !editor.refresh.worker.as_ref().unwrap().thread.is_finished() {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        }
+        wait_for_worker(editor);
         editor.cancel_operation();
         wait_for_completion(editor, &ctx);
         assert!(editor.status.starts_with("Guitar refresh stopped."));
