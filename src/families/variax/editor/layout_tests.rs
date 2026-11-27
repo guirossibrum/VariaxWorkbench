@@ -766,18 +766,8 @@ fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo(
 fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
     for size in SIZES {
         for pixels_per_point in [1.0, 2.0] {
-            let (ctx, mut app) = app();
-            app.clear_window_controls = true;
-            app.variax_mut().open_example();
-            app.variax_mut()
-                .document
-                .as_mut()
-                .unwrap()
-                .select(0, 4)
-                .unwrap();
-            app.variax_mut()
-                .change(|preset| preset.set_parameter(TUNING, DETUNE, 1, 12.0_f32.to_bits()));
-            assert!(app.variax().has_twelve_string());
+            let (ctx, mut app) = chime_editor();
+            app.variax_mut().set_tuning([2, 0, 0, 0, 0, 0], true);
             let frame = |app: &mut Workbench, events| {
                 render(
                     app,
@@ -798,48 +788,182 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
             let art = editor.body_art_rect.unwrap();
             let scale = placement.screen_scale(art);
             assert!((art.size() - placement.art * scale).length() < 1.0);
-            if size.x == 1120.0 {
+            if !cfg!(feature = "usb") && size.x == 1120.0 {
                 assert!(scale >= SIDE_MIN_SCALE, "{size:?}: {art:?}");
             }
             let neck = editor.tuning_widgets["Neck"];
             assert!(neck.left() - tuning.left() >= TWELVE_STRING_COLUMN + TUNING_TABLE_WIDTH);
             assert!(neck.width() <= NECK_MAX + 1.0 && neck.right() <= tuning.right() + 1.0);
-            assert!(text_rect(&output, "Mix").is_some());
-            assert!(text_rect(&output, "Detune").is_some());
+            if size.x == 1120.0 || !cfg!(feature = "usb") {
+                assert!(text_rect(&output, "Mix").is_some());
+                assert!(text_rect(&output, "Detune").is_some());
+            }
             assert_footer(&output, size, tuning);
 
-            let reset = app.variax().tuning_widgets["Zero detune"].center();
-            if !tuning.contains(reset) {
+            let regions = app.variax().workspace_cards;
+            let scroll = |app: &mut Workbench, delta| {
                 frame(
-                    &mut app,
+                    app,
                     vec![
                         egui::Event::PointerMoved(tuning.center()),
                         egui::Event::MouseWheel {
                             unit: egui::MouseWheelUnit::Point,
-                            delta: egui::vec2(0.0, -400.0),
+                            delta: egui::vec2(0.0, delta),
                             modifiers: egui::Modifiers::NONE,
                         },
                     ],
                 );
-                for _ in 0..20 {
-                    frame(&mut app, vec![]);
+                for _ in 0..25 {
+                    frame(app, vec![]);
                 }
-            }
-            let widgets = &app.variax().tuning_widgets;
-            for label in ["Low E mix", "Low E detune", "Zero detune"] {
+                frame(app, vec![egui::Event::PointerGone])
+            };
+
+            let low_mix = app.variax().tuning_widgets["Low E mix"];
+            scroll(&mut app, tuning.center().y - low_mix.center().y);
+            for label in ["Low E shift", "Low E mix", "Low E detune"] {
                 assert!(
-                    tuning.contains(widgets[label].center()),
-                    "{size:?} at {pixels_per_point}: {label} {:?} out of {tuning:?}",
-                    widgets[label]
+                    tuning.contains_rect(app.variax().tuning_widgets[label]),
+                    "{size:?} at {pixels_per_point}x: {label} outside {tuning:?}"
                 );
             }
-            let reset = widgets["Zero detune"].center();
-            frame(
-                &mut app,
-                vec![egui::Event::PointerMoved(reset), pointer(reset, true)],
-            );
-            frame(&mut app, vec![pointer(reset, false)]);
+
+            let output = scroll(&mut app, -700.0);
+            assert_eq!(app.variax().workspace_cards, regions);
+            assert_eq!(app.variax().workspace_tuning, Some(tuning));
+            assert_footer(&output, size, tuning);
+            for label in ["Lock", "Reset", "Zero detune", "−12", "+12"] {
+                let (bounds, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        text_bounds(&shape.shape, label).map(|bounds| (bounds, shape.clip_rect))
+                    })
+                    .unwrap_or_else(|| panic!("{size:?} at {pixels_per_point}x: missing {label}"));
+                assert!(
+                    tuning.intersect(clip).contains_rect(bounds),
+                    "{size:?} at {pixels_per_point}x: {label} clipped to {clip:?}"
+                );
+            }
+
+            let original = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+            for action in ["Lock", "Reset", "Zero detune"] {
+                let center = app.variax().tuning_widgets[action].center();
+                assert!(tuning.contains(center));
+                frame(&mut app, vec![egui::Event::PointerMoved(center)]);
+                frame(&mut app, vec![pointer(center, true)]);
+                frame(&mut app, vec![pointer(center, false)]);
+                match action {
+                    "Lock" => {
+                        assert!(app.variax().link_tuning_mix);
+                        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), original);
+                    }
+                    "Reset" => {
+                        for id in super::tuning_presets::PITCH..super::tuning_presets::PITCH + 6 {
+                            assert_eq!(app.variax().integer(TUNING, id), Some(0));
+                        }
+                        assert_eq!(app.variax().float(TUNING, DETUNE), Some(12.0));
+                    }
+                    "Zero detune" => assert_eq!(app.variax().float(TUNING, DETUNE), Some(0.0)),
+                    _ => unreachable!(),
+                }
+            }
+            let command = egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            };
+            for _ in 0..2 {
+                render(
+                    &mut app,
+                    &ctx,
+                    size,
+                    pixels_per_point,
+                    vec![tuning_key(egui::Key::Z, true, command)],
+                    command,
+                );
+                assert_eq!(app.variax().float(TUNING, DETUNE), Some(12.0));
+                frame(&mut app, vec![tuning_key(egui::Key::Z, false, command)]);
+            }
+            assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), original);
+        }
+    }
+}
+
+fn chime_editor() -> (egui::Context, Workbench) {
+    let (ctx, mut app) = app();
+    ctx.style_mut(|style| style.animation_time = 0.0);
+    app.clear_window_controls = true;
+    let editor = app.variax_mut();
+    editor.open_example();
+    editor.document.as_mut().unwrap().select(0, 4).unwrap();
+    editor.change(|preset| preset.set_parameter(TUNING, DETUNE, 1, 12.0_f32.to_bits()));
+    #[cfg(feature = "usb")]
+    {
+        let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+        app.tabs.entries[index].device = Some(super::refresh::tests::verified_tab());
+    }
+    (ctx, app)
+}
+
+fn tuning_key(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers,
+    }
+}
+
+#[test]
+fn tab_reveals_family_owned_twelve_string_controls() {
+    let none = egui::Modifiers::NONE;
+    for size in SIZES {
+        for density in [1.0, 2.0] {
+            let (ctx, mut app) = chime_editor();
+            let frame = |app: &mut Workbench, events, modifiers| {
+                render(app, &ctx, size, density, events, modifiers)
+            };
+            for _ in 0..4 {
+                frame(&mut app, vec![], none);
+            }
+            let tuning = app.variax().workspace_tuning.unwrap();
+            let focus = |app: &Workbench, label| {
+                let id = ctx.memory(|memory| memory.focused())?;
+                let response = ctx.read_response(id)?;
+                (response.rect == app.variax().tuning_widgets[label]).then_some(response)
+            };
+            let tap = |app: &mut Workbench, key, modifiers| {
+                for pressed in [true, false] {
+                    frame(app, vec![tuning_key(key, pressed, modifiers)], modifiers);
+                }
+                for _ in 0..4 {
+                    frame(app, vec![], none);
+                }
+            };
+            for label in ["Low E mix", "Low E detune", "Zero detune"] {
+                for _ in 0..120 {
+                    tap(&mut app, egui::Key::Tab, none);
+                    if focus(&app, label).is_some() {
+                        break;
+                    }
+                }
+                let response = focus(&app, label)
+                    .unwrap_or_else(|| panic!("{size:?} at {density}x: Tab missed {label}"));
+                assert!(
+                    tuning.contains_rect(response.rect) && response.interact_rect == response.rect,
+                    "{size:?} at {density}x: Tab focused clipped {label} at {:?}",
+                    response.rect
+                );
+            }
+            tap(&mut app, egui::Key::Enter, none);
             assert_eq!(app.variax().float(TUNING, DETUNE), Some(0.0));
+
+            let shift = egui::Modifiers::SHIFT;
+            tap(&mut app, egui::Key::Tab, shift);
+            let response = focus(&app, "Low E detune").expect("Shift+Tab returns to Low E detune");
+            assert!(tuning.contains_rect(response.rect));
         }
     }
 }

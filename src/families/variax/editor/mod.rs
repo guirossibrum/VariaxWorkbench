@@ -1158,9 +1158,10 @@ impl VariaxEditor {
                 .max_rect(regions.tuning),
         );
         tuning.set_clip_rect(ui.clip_rect().intersect(regions.tuning));
-        // Short layouts keep the fixed-height string controls reachable within
-        // the band without moving the inspector or covering the shell footer.
+        // The scroll limit must use the visible band even when it is shorter
+        // than egui's default minimum viewport.
         egui::ScrollArea::vertical()
+            .min_scrolled_height(0.0)
             .auto_shrink([false, false])
             .show(&mut tuning, |ui| {
                 self.fretboard(ui, can_edit, regions.twelve_string_width)
