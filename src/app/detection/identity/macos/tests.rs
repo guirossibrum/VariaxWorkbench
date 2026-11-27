@@ -13,10 +13,12 @@ enum Event {
 
 #[derive(Default)]
 struct Rig {
-    pod_replies: Option<Vec<Vec<u8>>>,
+    pod_pre_drain: Vec<Vec<u8>>,
+    pod_replies: Option<Vec<Vec<Vec<u8>>>>,
     guitar_replies: Vec<Vec<Vec<u8>>>,
     open_failure: Option<(Interface, &'static str)>,
     fail_finish: Option<Interface>,
+    cancel_pod_at: Option<Duration>,
     cancel_guitar_at: Option<Duration>,
     cancel: AtomicBool,
     events: RefCell<Vec<Event>>,
@@ -44,19 +46,22 @@ impl Rig {
                     return Err(error.into());
                 }
                 let script = match side {
-                    Interface::Podxt => vec![
-                        self.pod_replies
-                            .clone()
-                            .unwrap_or_else(|| vec![bridge_reply()]),
-                    ],
+                    Interface::Podxt => self
+                        .pod_replies
+                        .clone()
+                        .unwrap_or_else(|| vec![split_reply(bridge_reply())]),
                     Interface::Variax => self.guitar_replies.clone(),
+                };
+                let inbox = match side {
+                    Interface::Podxt => self.pod_pre_drain.clone().into(),
+                    Interface::Variax => VecDeque::new(),
                 };
                 Ok(FakeLink {
                     rig: self,
                     side,
                     now: Duration::ZERO,
                     script: script.into(),
-                    inbox: VecDeque::new(),
+                    inbox,
                 })
             },
             |link| {
@@ -67,6 +72,20 @@ impl Rig {
                 Ok(())
             },
         )
+    }
+
+    fn assert_pod_only(&self, requests_ms: &[u64]) {
+        let mut expected = vec![Event::Open(Interface::Podxt)];
+        expected.extend(
+            requests_ms
+                .iter()
+                .map(|&ms| Event::Identity(Interface::Podxt, Duration::from_millis(ms))),
+        );
+        expected.extend([
+            Event::Finish(Interface::Podxt),
+            Event::Drop(Interface::Podxt),
+        ]);
+        assert_eq!(*self.events.borrow(), expected);
     }
 
     fn guitar_requests(&self) -> Vec<Duration> {
@@ -114,12 +133,11 @@ impl Link for FakeLink<'_> {
 
     fn pause(&mut self, duration: Duration) {
         self.now += duration;
-        if self.side == Interface::Variax
-            && self
-                .rig
-                .cancel_guitar_at
-                .is_some_and(|limit| self.now >= limit)
-        {
+        let cancel_at = match self.side {
+            Interface::Podxt => self.rig.cancel_pod_at,
+            Interface::Variax => self.rig.cancel_guitar_at,
+        };
+        if cancel_at.is_some_and(|limit| self.now >= limit) {
             self.rig.cancel.store(true, Ordering::Relaxed);
         }
     }
@@ -186,10 +204,6 @@ fn pod_startup_distinguishes_silent_and_unaccepted_receive_data() {
     for (packets, expected_detail) in [
         (vec![], "No receive chunks in three seconds."),
         (
-            vec![vec![0xf7]],
-            "Receive chunks: 1, orphan bytes: 1, malformed identity frames: 0, other messages: 0.",
-        ),
-        (
             vec![truncated],
             "Receive chunks: 1, orphan bytes: 0, malformed identity frames: 0, other messages: 0.",
         ),
@@ -203,7 +217,7 @@ fn pod_startup_distinguishes_silent_and_unaccepted_receive_data() {
         ),
     ] {
         let rig = Rig {
-            pod_replies: Some(packets),
+            pod_replies: Some(vec![packets]),
             ..Default::default()
         };
         assert!(matches!(
@@ -211,16 +225,104 @@ fn pod_startup_distinguishes_silent_and_unaccepted_receive_data() {
             Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
                 if reason.strip_prefix("No PODxt identity answered. ") == Some(expected_detail)
         ));
-        assert_eq!(
-            *rig.events.borrow(),
-            [
-                Event::Open(Interface::Podxt),
-                Event::Identity(Interface::Podxt, Duration::from_millis(200)),
-                Event::Finish(Interface::Podxt),
-                Event::Drop(Interface::Podxt),
-            ],
-        );
+        rig.assert_pod_only(&[200]);
     }
+}
+
+#[test]
+fn pod_startup_retries_orphan_tail_on_the_open_link_then_verifies_split_reply() {
+    let rig = Rig {
+        pod_replies: Some(vec![vec![vec![0xf7]], split_reply(bridge_reply())]),
+        guitar_replies: vec![split_reply(guitar_reply())],
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        Outcome::Finished {
+            pod_firmware: Some("3.01"),
+            guitar: Guitar::Verified("3.10")
+        }
+    ));
+    assert_eq!(
+        *rig.events.borrow(),
+        [
+            Event::Open(Interface::Podxt),
+            Event::Identity(Interface::Podxt, Duration::from_millis(200)),
+            Event::Identity(Interface::Podxt, Duration::from_millis(500)),
+            Event::Finish(Interface::Podxt),
+            Event::Drop(Interface::Podxt),
+            Event::Open(Interface::Variax),
+            Event::Identity(Interface::Variax, Duration::ZERO),
+            Event::Finish(Interface::Variax),
+            Event::Drop(Interface::Variax),
+        ],
+    );
+}
+
+#[test]
+fn pod_startup_stops_after_one_retry() {
+    let rig = Rig {
+        pod_replies: Some(vec![
+            vec![vec![0xf7]],
+            vec![vec![0xf7]],
+            split_reply(bridge_reply()),
+        ]),
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
+            if reason == "No PODxt identity answered. Receive chunks: 2, orphan bytes: 2, malformed identity frames: 0, other messages: 0."
+    ));
+    rig.assert_pod_only(&[200, 500]);
+}
+
+#[test]
+fn pod_startup_cancellation_at_retry_boundary_or_during_retry_releases_link() {
+    for (cancel_ms, requests) in [(500, &[200][..]), (600, &[200, 500][..])] {
+        let rig = Rig {
+            pod_replies: Some(vec![vec![vec![0xf7]], split_reply(bridge_reply())]),
+            cancel_pod_at: Some(Duration::from_millis(cancel_ms)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+            Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
+                if reason == "Identification cancelled."
+        ));
+        rig.assert_pod_only(requests);
+    }
+}
+
+#[test]
+fn pod_startup_does_not_retry_a_pre_drain_orphan() {
+    let rig = Rig {
+        pod_pre_drain: vec![vec![0xf7]],
+        pod_replies: Some(vec![vec![], split_reply(bridge_reply())]),
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
+            if reason == "No PODxt identity answered. No receive chunks in three seconds."
+    ));
+    rig.assert_pod_only(&[200]);
+}
+
+#[test]
+fn pod_startup_rejects_duplicate_replies_after_retry() {
+    let mut duplicates = split_reply(bridge_reply());
+    duplicates.extend(split_reply(bridge_reply()));
+    let rig = Rig {
+        pod_replies: Some(vec![vec![vec![0xf7]], duplicates]),
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
+            if reason == "More than one PODxt identity answered."
+    ));
+    rig.assert_pod_only(&[200, 500]);
 }
 
 #[test]
@@ -370,6 +472,7 @@ fn guitar_open_refusals_name_the_stage_without_sending_identity() {
 fn failed_release_prevents_the_next_open_or_a_verified_result() {
     for side in [Interface::Podxt, Interface::Variax] {
         let rig = Rig {
+            pod_replies: Some(vec![vec![vec![0xf7]], split_reply(bridge_reply())]),
             guitar_replies: vec![split_reply(guitar_reply())],
             fail_finish: Some(side),
             ..Default::default()

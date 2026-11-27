@@ -381,6 +381,8 @@ mod pod {
     use std::time::Duration;
     use variax_workbench::hardware_gates::{Gate, is_locked};
 
+    const IDENTITY_WINDOW: Duration = Duration::from_secs(3);
+
     struct IdentityOnly;
     impl GatePolicy for IdentityOnly {
         fn allows(&self, operation: Operation) -> bool {
@@ -398,7 +400,7 @@ mod pod {
     }
 
     #[cfg(any(test, target_os = "macos"))]
-    pub(super) fn identify_with_receive_evidence(
+    pub(super) fn identify_macos_startup(
         link: impl Link,
         cancel: &AtomicBool,
     ) -> Result<Option<FirmwareNotice>, String> {
@@ -409,18 +411,25 @@ mod pod {
         mut link: impl Link,
         cancel: &AtomicBool,
         policy: &dyn GatePolicy,
-        report_receive: bool,
+        macos_startup: bool,
     ) -> Result<Option<FirmwareNotice>, String> {
         let mut log = Quiet;
         let mut session = Session::new(&mut link, policy, &mut log);
         session.listen(Duration::from_millis(200))?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Identification cancelled.".into());
-        }
+        let check_cancel = || {
+            if cancel.load(Ordering::Relaxed) {
+                Err("Identification cancelled.".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        check_cancel()?;
         let packets_before = session.packets_in;
         let orphans_before = session.assembler.orphans;
         session.send(PodxtRequest::Identity)?;
-        let until = session.link.elapsed() + Duration::from_secs(3);
+        let mut last_packet = session.link.elapsed();
+        let mut until = last_packet + IDENTITY_WINDOW;
+        let mut can_resend = macos_startup;
         let mut identity = None;
         let mut malformed_identity = 0;
         let mut other_messages = 0;
@@ -428,10 +437,19 @@ mod pod {
             .checked_sub(session.link.elapsed())
             .filter(|time| !time.is_zero())
         {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Identification cancelled.".into());
+            check_cancel()?;
+            let quiet_for = session.link.elapsed().saturating_sub(last_packet);
+            if can_resend
+                && identity.is_none()
+                && session.orphaned_then_quiet(orphans_before, quiet_for)
+            {
+                session.send(PodxtRequest::Identity)?;
+                can_resend = false;
+                until = session.link.elapsed() + IDENTITY_WINDOW;
+                continue;
             }
             if let Some(events) = session.poll(remaining.min(POLL))? {
+                last_packet = session.link.elapsed();
                 for event in events {
                     if let Event::Sysex(frame) = &event {
                         if let Some(reply) = Identity::parse(frame) {
@@ -449,8 +467,9 @@ mod pod {
                 }
             }
         }
+        check_cancel()?;
         let reply = identity.ok_or_else(|| {
-            if !report_receive {
+            if !macos_startup {
                 return "No PODxt identity answered.".to_owned();
             }
             let packets = session.packets_in - packets_before;

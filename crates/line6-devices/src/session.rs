@@ -226,6 +226,12 @@ impl<'a, L: Link> Session<'a, L> {
         Ok(Some(events))
     }
 
+    /// Whether new orphan MIDI bytes arrived after the baseline and the link
+    /// has since been quiet for the identity recovery interval.
+    pub fn orphaned_then_quiet(&self, orphans_before: usize, quiet_for: Duration) -> bool {
+        self.assembler.orphans > orphans_before && quiet_for >= ORPHAN_QUIET
+    }
+
     /// Waits up to `window` for a SysEx message that `wanted` accepts.
     pub fn wait_for(
         &mut self,
@@ -254,8 +260,7 @@ impl<'a, L: Link> Session<'a, L> {
                 return Ok(Wait::Timeout);
             }
             if stop_on_orphan_quiet
-                && self.assembler.orphans > orphans_before
-                && now.saturating_sub(last_packet) >= ORPHAN_QUIET
+                && self.orphaned_then_quiet(orphans_before, now.saturating_sub(last_packet))
             {
                 return Ok(Wait::OrphanQuiet);
             }
