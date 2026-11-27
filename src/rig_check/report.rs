@@ -483,7 +483,7 @@ pub fn interrupted_step(text: &str) -> Option<StepId> {
 mod tests {
     use super::*;
     use crate::rig_check::practice::Faults;
-    use crate::rig_check::record::Outcome;
+    use crate::rig_check::record::{Mode, Outcome};
     use crate::rig_check::run_practice;
     use crate::rig_check::runner::ReportSink;
     use crate::rig_check::steps::RunData;
@@ -575,6 +575,31 @@ mod tests {
                 && text.contains("~/rig-check-output")
         );
         assert!(text.contains(&Redactor::serial_tag("SN0042XYZ")));
+    }
+
+    #[test]
+    fn report_redacts_whole_names_with_length_changing_unicode() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = ReportFile::create(dir.path(), redactor()).unwrap();
+        sink.clock = Some(1_764_000_000);
+        let mut run = RunRecord::new(Mode::Practice, utc_text(1_764_000_000));
+        run.computer.push((
+            "Diagnostic".into(),
+            r#"RiGoWnEr@STUDIO-Box: "İstanbul" and rigownerish"#.into(),
+        ));
+        sink.update(&run).unwrap();
+
+        let text = std::fs::read_to_string(&sink.path).unwrap();
+        let (plain, _) = text.split_once(JSON_BEGIN).unwrap();
+        let json: serde_json::Value = serde_json::from_str(json_block(&text).unwrap()).unwrap();
+        let expected = r#"<user>@<host>: "İstanbul" and rigownerish"#;
+        assert_eq!(
+            plain
+                .lines()
+                .find_map(|line| line.strip_prefix("Diagnostic: ")),
+            Some(expected)
+        );
+        assert_eq!(json["computer"][0][1], expected);
     }
 
     #[test]
