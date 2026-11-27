@@ -25,6 +25,12 @@ names. The independently pinned public projection SHA-256 is
 `c3ed43ad76a0486ef327cb0cf1c42d389124c765418b0065b29f2d1db37ba790`.
 `research/audio-inventory-source.json` records both evidence scopes.
 
+The [owner-approved schema-3 catalog](device-inventory-reconciliation.md#adopted-public-inventory)
+is [`research/device-inventory.tsv`](../research/device-inventory.tsv), with
+SHA-256 `cd6a6182fb45145654a734ea30709f4f943e6e20751a4d223498ff0a312ff61c`
+and 18 explicit `unresolved` identifier fields. The registry continues to use
+the pinned schema-2 projection bytes for runtime audio accounting.
+
 VariaxWorkbench issue #93 owns the reviewed identity/probe contract. Its public
 plan requires positive identity plus a separate capability record; names-only,
 ambiguous aliases and bridge identities cannot identify an attached guitar.

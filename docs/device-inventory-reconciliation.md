@@ -53,11 +53,15 @@ python3 scripts/reconcile_device_inventory.py | sha256sum
 Expected SHA-256
 `2595a15cc64f5af580c47e9cc1c545ad7aab305eb2f89f1d935a66c71a01522e`.
 
-## Public inventory candidate
+## Adopted public inventory
 
-[Schema 3](../research/device-inventory.tsv) uses the approved #96 name and
-role projection in its original order. The generator pins the SHA-256 of that
-projection and both drafts as tracked at
+The owner approved schema 3 as the supported-device catalog for #96. The committed path is
+[`research/device-inventory.tsv`](../research/device-inventory.tsv) and its
+SHA-256 is `cd6a6182fb45145654a734ea30709f4f943e6e20751a4d223498ff0a312ff61c`.
+[Owner decision](https://github.com/guirossibrum/VariaxWorkbench/issues/114#issuecomment-7221811696)
+
+Schema 3 uses the frozen #96 name and role projection in its original order.
+The generator pins the SHA-256 of that projection and both drafts as tracked at
 `a55a70a854f56fcfd3c9e3582ce746416f8a3884`.
 [The identifier input](../research/device-inventory-identifiers.tsv) cites a
 line or range at that same revision for each of the 27 populated identifier
@@ -69,8 +73,9 @@ give one-based line numbers joined by exact spelling. A draft line can map to
 multiple ordinals. Underscore line 162 maps to both `TonePort` product rows.
 All 392 draft lines remain traceable. Draft identifier and status fields stay
 in their source files. All 186 aliases have `-` in each identifier column.
-Elsewhere `-` means the candidate carries no value or draft reference in that
-cell. `unresolved` marks a known gap in the reviewed identifier inputs.
+Elsewhere `-` means the catalog carries no value or draft reference in that
+cell. The catalog explicitly marks 18 identifier fields as `unresolved`,
+covering one USB PID and 17 Line 6 product IDs.
 
 | Unresolved field | Frozen ordinals and names |
 | --- | --- |
@@ -85,22 +90,19 @@ python3 scripts/build_device_inventory.py --check
 python3 -m unittest discover -s scripts -p test_build_device_inventory.py
 ```
 
-The candidate SHA-256 is
-`cd6a6182fb45145654a734ea30709f4f943e6e20751a4d223498ff0a312ff61c`.
 Running the generator without `--check` writes canonical LF bytes to stdout.
 
-## Gatekeeper review
+## Historical source and adoption follow-up
 
 The historical generator at
 `508cd000cc7f0cb074cde0056a8b1a52fab4cbdf:scripts/build_supported_devices.py`
 uses two preserved decompiled Workbench `L6ProductConstants` inputs and a
 local extract of Monkey hardware definitions. The private rebuild matched
 the frozen schema-2 hash. Publication approval for historical identifier
-inputs remains open. The schema-3 candidate carries the reviewed public
-identifiers and preserves the frozen names, roles, and ordinals. Historical
-capability and device-test columns remain in the private snapshot.
+inputs remains open. Historical capability and device-test columns remain
+in the private snapshot.
 
-The existing [#96 projection](../research/audio-inventory-schema2.tsv),
-source pin, and consumers remain in place. After Gatekeeper review, #96
-adoption can reference the reviewed path and output hash while preserving the
-historical source hash and ordinal mapping.
+The [frozen schema-2 projection](../research/audio-inventory-schema2.tsv)
+and its source pin continue to supply runtime audio accounting. The Gatekeeper
+will update the canonical #96 issue reference to the schema-3 path and digest
+after integration, then review #114 for closure.
