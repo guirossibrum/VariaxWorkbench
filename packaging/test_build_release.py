@@ -8,9 +8,12 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from release_manifest import PROFILES, TARGET_MARKERS, record, sha256, verify
+from windows.package import APPS, GNU_BUILD_ORIGIN, GNU_TARGET, GNU_VERIFICATION, build_zip
+from windows.pe_fixture import executable
 
 
 RUN_ID = "12345"
+RUSTC_COMMIT = "a" * 40
 DMG = "Variax Workbench - Owner USB.dmg"
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -35,6 +38,27 @@ class ReleaseCommandTests(unittest.TestCase):
         packaging.mkdir()
         for script in ("build-release.sh", "release_manifest.py"):
             shutil.copyfile(SCRIPTS / script, packaging / script)
+        (packaging / "windows").mkdir()
+        shutil.copyfile(SCRIPTS / "windows/package.py", packaging / "windows/package.py")
+        (packaging / "build-windows-gnu.py").write_text(
+            """import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+env = os.environ
+with open(env["TEST_CALLS"], "a") as calls:
+    calls.write("gnu\\n")
+assert sys.argv[1] == env["TEST_REVISION"]
+assert env["VARIAX_BUILD_NUMBER"] == "1"
+subprocess.run(["git", "update-ref", "refs/heads/owner-pin", "HEAD"], check=True)
+shutil.copytree(env["TEST_GNU"], sys.argv[2])
+if env["TEST_FAILURE"] == "gnu":
+    sys.exit(1)
+""",
+            encoding="utf-8",
+        )
         (packaging / "build-private-owner-usb.sh").write_text(
             r"""set -euo pipefail
 printf 'private\n' >> "$TEST_CALLS"
@@ -103,6 +127,7 @@ esac
         self.output = self.root / "owner delivery"
         self.calls = self.root / "calls"
         self.hosted = self.root / "hosted"
+        self.gnu = self.root / "gnu"
         self.private_pair = self.root / "private"
         self.make_hosted_set()
         self.make_private_pair()
@@ -113,6 +138,7 @@ esac
             "TEST_RUN_ID": RUN_ID,
             "TEST_CALLS": str(self.calls),
             "TEST_HOSTED": str(self.hosted),
+            "TEST_GNU": str(self.gnu),
             "TEST_PAIR": str(self.private_pair),
             "TEST_OUTPUT": str(self.output),
             "TEST_ALPHA": "",
@@ -173,7 +199,28 @@ esac
             for path in sorted(pair.rglob("*")) if path.is_file() and path.name != "SHA256SUMS"
         ), encoding="utf-8")
 
-    def run_release(self, *args, mode="--owner-delivery"):
+    def make_gnu_package(self, *, revision=None, build_number="1", target=GNU_TARGET):
+        self.gnu.mkdir()
+        payload = self.root / "windows-payload"
+        payload.mkdir()
+        for name in APPS.values():
+            (payload / name).write_bytes(executable())
+        instructions = payload / "How to open.txt"
+        instructions.write_text("Synthetic fixture", encoding="utf-8")
+        report = build_zip(self.gnu / "windows.zip", payload, instructions, "\n".join((
+            f"Commit: {revision or self.revision}", f"Build number {build_number}",
+            f"Release target: {target}", PROFILES["windows"],
+            f"Build origin: {GNU_BUILD_ORIGIN}", f"Verification: {GNU_VERIFICATION}",
+            "rustc 1.99.1 (aaaaaaaaa 2026-10-13)", f"commit-hash: {RUSTC_COMMIT}",
+        )))
+        (self.gnu / "windows-verification.txt").write_text(report, encoding="utf-8")
+
+    def record_gnu_package(self):
+        (self.gnu / "manifest.json").write_text(json.dumps(record(
+            self.gnu, "windows", self.revision, "1", local_windows=True,
+        )), encoding="utf-8")
+
+    def run_release(self, *args, mode="--owner-delivery-hosted"):
         options = [mode, "--mac-host", "test-mac", "--output", str(self.output)] if mode else []
         return subprocess.run(
             ["/bin/bash", "packaging/build-release.sh", "--revision", "owner-pin", *options, *args],
@@ -280,6 +327,127 @@ esac
         result = self.run_release(mode="--owner-usb")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_calls("private")
+
+    def test_local_set_keeps_the_original_pin_without_actions(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.git("remote", "remove", "origin")
+        result = self.run_release(mode="--owner-delivery")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_calls("gnu", "private")
+        delivery, = self.output.iterdir()
+        manifest = json.loads((delivery / "release-manifest.json").read_text(encoding="utf-8"))
+        self.assertNotIn("hosted_artifact_run_id", manifest)
+        self.assertEqual((manifest["revision"], manifest["build_number"]), (self.revision, 1))
+        self.assertEqual(set(manifest["platforms"]), {"linux", "macos", "windows"})
+        windows = manifest["platforms"]["windows"]
+        self.assertEqual(windows["targets"], [GNU_TARGET])
+        self.assertEqual(windows["build_origin"], GNU_BUILD_ORIGIN)
+        self.assertEqual(windows["verification"], GNU_VERIFICATION)
+        self.assertTrue(windows["rustc"].startswith("rustc 1.99.1 "))
+        self.assertEqual(windows["rustc_commit"], RUSTC_COMMIT)
+        self.assertEqual(windows["features"], ["gui", "portable-math"])
+        self.assertIn("Offline only", manifest["capabilities"]["windows"])
+        self.assertIn("approved live USB", manifest["capabilities"]["macos"])
+        detached = delivery / "windows/windows.zip.sha256"
+        self.assertEqual(windows["files"][detached.name], sha256(detached))
+        self.assertFalse((delivery / "mac-download.txt").exists())
+        recheck = subprocess.run(
+            ["python3", str(SCRIPTS / "release_manifest.py"), self.revision, str(delivery),
+             "--check-local-owner-delivery"],
+            env={**self.env, "VARIAX_BUILD_NUMBER": "1"}, text=True, capture_output=True,
+            check=False, timeout=10,
+        )
+        self.assertEqual(recheck.returncode, 0, recheck.stderr)
+
+    def test_local_worker_failure_cleans_staged_output_and_skips_pair(self):
+        self.make_gnu_package()
+        self.env["TEST_FAILURE"] = "gnu"
+        self.assert_failed_without_delivery(self.run_release(mode="--owner-delivery"), "gnu")
+
+    def test_local_pair_failure_cleans_staged_windows_package(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.env["TEST_FAILURE"] = "private"
+        self.assert_failed_without_delivery(self.run_release(mode="--owner-delivery"), "gnu", "private")
+
+    def test_local_rejects_tampered_windows_checksum_or_report(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        for name, bad_content, message in (
+            ("windows.zip.sha256", "bad digest", "invalid ZIP checksum"),
+            ("windows-verification.txt", "Fake runtime claim", "report differs from verified ZIP"),
+        ):
+            with self.subTest(name=name):
+                self.git("update-ref", "refs/heads/owner-pin", self.revision)
+                self.calls.unlink(missing_ok=True)
+                path = self.gnu / name
+                original = path.read_bytes()
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(f"{bad_content}\n")
+                result = self.run_release(mode="--owner-delivery")
+                self.assert_failed_without_delivery(result, "gnu", "private")
+                self.assertIn(message, result.stderr)
+                path.write_bytes(original)
+
+    def test_local_requires_gnu_package_from_same_revision_and_build(self):
+        for options, message in (
+            ({"target": "x86_64-pc-windows-msvc"}, "missing target metadata"),
+            ({"revision": "f" * 40}, "pinned commit"),
+            ({"build_number": "2"}, "does not identify build 1"),
+        ):
+            with self.subTest(options=options):
+                self.git("update-ref", "refs/heads/owner-pin", self.revision)
+                self.calls.unlink(missing_ok=True)
+                self.make_gnu_package(**options)
+                shutil.copyfile(self.hosted / "windows/manifest.json", self.gnu / "manifest.json")
+                result = self.run_release(mode="--owner-delivery")
+                self.assert_failed_without_delivery(result, "gnu", "private")
+                self.assertIn(message, result.stderr)
+                shutil.rmtree(self.gnu)
+                shutil.rmtree(self.root / "windows-payload")
+
+    def test_hosted_windows_manifest_rejects_gnu_metadata(self):
+        self.make_gnu_package()
+        with self.assertRaisesRegex(ValueError, "missing target metadata"):
+            record(self.gnu, "windows", self.revision, "1")
+
+    def test_local_mode_refuses_alpha_publication(self):
+        self.assert_failed_without_delivery(self.run_release("--alpha-number", "7", mode="--owner-delivery"))
+
+    def test_gnu_worker_rejects_stable_compiler_drift_before_building(self):
+        rustup = self.root / "bin/rustup"
+        stable = self.root / "bin/test-stable-rustc"
+        rustup.write_text(
+            """#!/bin/bash
+set -eu
+case "$*" in
+    'run 1.99.1 rustc -vV') printf 'commit-hash: %s\\n' "$TEST_PINNED_COMPILER" ;;
+    'which --toolchain stable rustc') printf '%s\\n' "$TEST_STABLE_RUSTC" ;;
+    *) touch "$TEST_CALLS"; exit 99 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        stable.write_text(
+            "#!/bin/bash\ntest \"$*\" = -vV || exit 99\nprintf 'commit-hash: %s\\n' \"$TEST_STABLE_COMPILER\"\n",
+            encoding="utf-8",
+        )
+        for command in (rustup, stable):
+            command.chmod(0o755)
+        target_dir = self.root / "cargo-target"
+        result = subprocess.run(
+            ["python3", str(SCRIPTS / "build-windows-gnu.py"), self.revision, str(self.gnu)],
+            cwd=self.repo, text=True, capture_output=True, check=False, timeout=10,
+            env={**self.env, "VARIAX_BUILD_NUMBER": "1", "CARGO_TARGET_DIR": str(target_dir),
+                 "TEST_PINNED_COMPILER": RUSTC_COMMIT, "TEST_STABLE_COMPILER": "b" * 40,
+                 "TEST_STABLE_RUSTC": str(stable)},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("differs from pinned Rust 1.99.1 compiler", result.stderr)
+        self.assert_calls()
+        self.assertFalse(target_dir.exists())
+        self.assertFalse(self.gnu.exists())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Verify unsigned x64 Windows executables and assemble the offline ZIP."""
 
 import hashlib
+import re
 import struct
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -11,6 +12,16 @@ APPS = {
 }
 CONTENTS = (*APPS, "How to open.txt", "BUILD.txt")
 CHECKSUMS = "SHA256SUMS.txt"
+GNU_TARGET = "x86_64-pc-windows-gnu"
+GNU_BUILD_ORIGIN = "Linux MinGW-w64 cross-build"
+GNU_VERIFICATION = "Static PE, imports and archive checks; native Windows smoke pending"
+
+
+def compiler_commit(version):
+    commits = re.findall(r"^commit-hash: ([0-9a-f]{40})$", version, re.M)
+    if len(commits) != 1:
+        raise ValueError("Expected one full Rust compiler commit hash")
+    return commits[0]
 
 # Imports supplied by Windows on the supported x64 systems. A new import needs
 # review before it becomes part of the package's runtime requirements.

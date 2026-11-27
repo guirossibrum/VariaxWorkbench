@@ -48,12 +48,14 @@ below apply.
 ## Release builds
 
 Use [the unified release command](docs/release-build.md). Build routine
-owner test packages locally with `--owner-usb` for Linux and macOS.
+owner test sets locally with `--owner-delivery` for Linux, macOS and Windows.
+Linux and macOS use the USB profile. The Windows GNU package supports offline
+testing and requires a separate native Windows smoke check.
 GitHub Actions dispatch requires explicit owner authorization. Use the
 hosted workflow only for an authorized release or cross-platform build.
 An authorized three-platform release set includes Linux, macOS and Windows.
 Resolve the Git source once to a full commit SHA. Every package records the
-same SHA and build number, its native target and profile, and its checksums.
+same SHA and build number, its actual target and profile, and its checksums.
 Deliver packages after verification and state which tests each profile can
 run. Publication and hardware approvals follow their existing rules.
 

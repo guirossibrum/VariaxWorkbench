@@ -1,6 +1,6 @@
 # Build Workbench and Rig Check
 
-For routine owner testing, use the local [Linux and macOS USB build](#private-owner-usb-build).
+For routine owner testing, use the [local three-platform build](#owner-comparison-across-operating-systems).
 GitHub Actions dispatch requires explicit owner authorization.
 
 ## Authorized hosted release set
@@ -39,35 +39,45 @@ tag after verification succeeds.
 ## Owner comparison across operating systems
 
 Deliver Linux, macOS and Windows from one source revision and build number.
-The hosted packages support offline editing and Rig Check Practice on all
-three. For an explicitly authorized owner delivery with Linux and macOS USB
-support, run from Linux with the GitHub CLI authenticated:
+Run the owner build from Linux.
 
 ```sh
 bash packaging/build-release.sh --owner-delivery
 ```
 
-The command pins one master commit and build number, waits for the hosted
-artifact-only build, and verifies its complete offline artifact. It then
-builds the private Linux/macOS USB pair and adds the hosted Windows ZIP.
-After verifying the pair and the Windows package against the same pin, it
-makes the complete set available in one new directory under
-`backups/packages`. Choose a different directory with `--output DIR` or
-select the source and Mac with `--revision COMMIT` and `--mac-host HOST`.
-The combined mode delivers the DMG in that directory for manual transfer
-to the Mac. It requires the private USB build dependencies listed below.
+The command pins freshly fetched `origin/master` by default. Use
+`--revision COMMIT` for an existing local revision without a fetch.
+It builds Linux and universal macOS with the private USB worker and
+cross-builds both Windows applications for `x86_64-pc-windows-gnu` on Linux.
+The complete set appears in a new directory under `backups/packages` after
+all three packages pass the metadata and checksum checks. Use `--output DIR`
+to choose a different destination and `--mac-host HOST` to select the Mac
+build host. The DMG stays in the complete set for manual transfer.
 
-`release-manifest.json` records the SHA, build number, hosted run ID, per-platform
-profiles and targets, package and verification-file checksums, and supported
-tests. Windows supports UI and file operations and Rig Check Practice only.
-Linux and macOS also support approved live USB checks. Track Windows device
+In addition to the private USB build dependencies below, the Linux host
+needs Rust stable with `x86_64-pc-windows-gnu` already installed, MinGW-w64
+x64 GCC and binutils, and cached locked Cargo dependencies. The Windows
+worker checks that stable and the project's pinned Rust 1.99.1 compiler
+report the same compiler commit. It records the compiler used in the
+manifest, the ZIP's `BUILD.txt`, and the verification report.
+
+`release-manifest.json` records the SHA, build number, per-platform profiles
+and targets, checksums, and supported tests. Windows supports UI and file
+operations and Rig Check Practice only. Its verification covers unsigned x64
+PE files, Windows system imports, ZIP contents, and internal and detached
+SHA-256 checksums. The manifest records the Linux cross-build origin and
+marks native Windows smoke verification pending. Linux and macOS use the
+USB profile and support approved live checks. Track Windows device
 support under [#262](https://github.com/guirossibrum/VariaxWorkbench/issues/262)
 and [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279).
-The combined mode produces a local owner set and an Actions artifact.
+
+With explicit Actions authorization, `--owner-delivery-hosted` uses the
+artifact-only workflow's native Windows MSVC ZIP alongside the private
+Linux and macOS packages. It records the hosted artifact run ID.
 
 ## Private owner USB build
 
-Run the local pair from Linux for routine owner testing.
+Run this from Linux when only the private USB pair is needed.
 
 ```sh
 bash packaging/build-release.sh --owner-usb
