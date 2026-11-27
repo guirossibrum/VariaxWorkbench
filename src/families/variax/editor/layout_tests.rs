@@ -61,28 +61,91 @@ fn text_bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
 
 #[cfg(feature = "usb")]
 #[test]
-fn verified_connection_label_fits_the_toolbar_at_both_densities() {
-    const LABEL: &str = "Guitar: Variax 600 3.10 via PODxt Live";
+fn verified_toolbar_keeps_actions_and_compacts_the_status_row_at_both_densities() {
+    const ROUTE: &str = "Guitar: Variax 600 3.10 via PODxt Live";
+    const ACTIONS: &[&str] = &[
+        "Open…",
+        "Save",
+        "Save As…",
+        "New offline tab",
+        "Detect devices",
+        "New Variax file",
+        "String Volume Setup…",
+        "Download from guitar…",
+        "Device check…",
+        "Test recording…",
+        "Help",
+    ];
+    let build = format!("Build {}", crate::BUILD_NUMBER);
 
-    for size in SIZES {
+    for (size, header_limit) in SIZES.into_iter().zip([165.0, 237.0]) {
         for density in [1.0, 2.0] {
-            let (ctx, mut app) = app();
-            app.clear_window_controls = true;
-            let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
-            app.tabs.entries[index].device = Some(super::refresh::tests::verified_tab());
-            let output = render(&mut app, &ctx, size, density, vec![], egui::Modifiers::NONE);
-            let (label, clip) = output
-                .shapes
-                .iter()
-                .find_map(|shape| {
-                    text_bounds(&shape.shape, LABEL).map(|label| (label, shape.clip_rect))
-                })
-                .expect("verified connection label");
+            let (ctx, mut app) = chime_editor();
+            let none = egui::Modifiers::NONE;
+            let frame =
+                |app: &mut Workbench, events| render(app, &ctx, size, density, events, none);
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
             let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let full_bounds = |label: &str| {
+                let (rect, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        text_bounds(&shape.shape, label).map(|rect| (rect, shape.clip_rect))
+                    })
+                    .unwrap_or_else(|| panic!("{size:?} at {density}x lacks {label:?}"));
+                let visible = clip.intersect(viewport);
+                assert!(
+                    visible.expand(0.5).contains_rect(rect),
+                    "{size:?} at {density}x clips {label:?} {rect:?} to {visible:?}"
+                );
+                (rect, visible)
+            };
+
+            let (route, header) = full_bounds(ROUTE);
             assert!(
-                clip.intersect(viewport).expand(0.5).contains_rect(label),
-                "{size:?} at {density}x clips {label:?} to {clip:?}"
+                header.max.y <= header_limit,
+                "{size:?} at {density}x header grew to {header:?}"
             );
+            let (title, _) = full_bounds("Variax Workbench");
+            assert!(title.max.y < route.min.y);
+            for &label in ACTIONS {
+                let (rect, _) = full_bounds(label);
+                assert!(
+                    header.contains_rect(rect),
+                    "{label:?} lies outside the header"
+                );
+                assert!(!rect.intersects(route), "{label:?} overlaps the route");
+            }
+            let (status, _) = full_bounds("Opened the built-in example banks.");
+            let (build, _) = full_bounds(&build);
+            assert!(status.max.x < build.min.x);
+            assert!(build.max.y >= size.y - 3.0);
+
+            let menu = app.variax().new_file_buttons["New Variax file"];
+            let tap = |app: &mut Workbench, key| {
+                frame(app, vec![tuning_key(key, true, none)]);
+                frame(app, vec![tuning_key(key, false, none)])
+            };
+            let menu_focused = || {
+                ctx.memory(|memory| memory.focused())
+                    .and_then(|id| ctx.read_response(id))
+                    .is_some_and(|response| response.rect == menu)
+            };
+            for _ in 0..20 {
+                if menu_focused() {
+                    break;
+                }
+                tap(&mut app, egui::Key::Tab);
+            }
+            assert!(
+                menu_focused(),
+                "{size:?} at {density}x cannot Tab to the file menu"
+            );
+            tap(&mut app, egui::Key::Enter);
+            let opened = frame(&mut app, vec![]);
+            assert!(text_rect(&opened, "New Model…").is_some());
         }
     }
 }
@@ -119,17 +182,18 @@ fn inspector_exposes_initial_and_final_controls_at_both_densities() {
             let output = frame(&mut app, vec![]);
             let (body, inspector) = app.variax().workspace_cards.unwrap();
             let tuning = app.variax().workspace_tuning;
+            let visible_bounds = |output: &egui::FullOutput, label: &str| {
+                output.shapes.iter().find_map(|shape| {
+                    let rect = text_bounds(&shape.shape, label)?;
+                    inspector
+                        .intersect(shape.clip_rect)
+                        .expand(0.5)
+                        .contains_rect(rect)
+                        .then_some(rect)
+                })
+            };
             let bounds = |output: &egui::FullOutput, label: &str| {
-                output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| {
-                        let rect = text_bounds(&shape.shape, label)?;
-                        inspector
-                            .intersect(shape.clip_rect)
-                            .contains_rect(rect)
-                            .then_some(rect)
-                    })
+                visible_bounds(output, label)
                     .unwrap_or_else(|| panic!("{size:?} at {density}x clips {label:?}"))
             };
             let click = |app: &mut Workbench, position| {
@@ -138,7 +202,7 @@ fn inspector_exposes_initial_and_final_controls_at_both_densities() {
                 frame(app, vec![pointer(position, false)]);
                 frame(app, vec![])
             };
-            let scroll = |app: &mut Workbench, delta| {
+            let scroll = |app: &mut Workbench, unit, delta| {
                 frame(
                     app,
                     vec![
@@ -147,7 +211,7 @@ fn inspector_exposes_initial_and_final_controls_at_both_densities() {
                             inspector.bottom() - 16.0,
                         )),
                         egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Page,
+                            unit,
                             delta: egui::vec2(0.0, delta),
                             modifiers: egui::Modifiers::NONE,
                         },
@@ -156,14 +220,27 @@ fn inspector_exposes_initial_and_final_controls_at_both_densities() {
                 frame(app, vec![])
             };
 
+            // Gaining workspace height can move tuning beside the body. In that
+            // layout the inspector starts shorter, with the same scroll access.
+            let reveal = |app: &mut Workbench, mut output: egui::FullOutput, label: &str| {
+                for _ in 0..40 {
+                    if visible_bounds(&output, label).is_some() {
+                        return output;
+                    }
+                    output = scroll(app, egui::MouseWheelUnit::Point, -4.0);
+                }
+                bounds(&output, label);
+                output
+            };
+
             let output = click(&mut app, bounds(&output, "Pickups").center());
             bounds(&output, "Pickup 2");
             bounds(&output, "Enabled");
             if size.x == 1120.0 {
-                bounds(&output, "Position");
+                reveal(&mut app, output, "Position");
             }
             let phase_before = app.variax().integer(super::PICKUP2, 0x200002).unwrap();
-            let output = scroll(&mut app, -2.0);
+            let output = scroll(&mut app, egui::MouseWheelUnit::Page, -2.0);
             click(&mut app, bounds(&output, PHASE).center());
             let phase_after = app.variax().integer(super::PICKUP2, 0x200002).unwrap();
             assert_ne!(phase_before, phase_after);
@@ -195,19 +272,19 @@ fn inspector_exposes_initial_and_final_controls_at_both_densities() {
                 frame(&mut app, vec![]);
             }
 
-            let output = scroll(&mut app, 2.0);
+            let output = scroll(&mut app, egui::MouseWheelUnit::Page, 2.0);
             bounds(&output, "Pickup 1");
             let output = click(&mut app, bounds(&output, "Controls").center());
             bounds(&output, "Volume knob");
             if size.x == 1120.0 {
-                bounds(&output, "500k Ω");
-                bounds(&output, "Audio");
+                let output = reveal(&mut app, output, "500k Ω");
+                reveal(&mut app, output, "Audio");
             }
             let auto_before = app.variax().auto_select_controls;
-            let output = scroll(&mut app, -2.0);
+            let output = scroll(&mut app, egui::MouseWheelUnit::Page, -2.0);
             click(&mut app, bounds(&output, AUTO).center());
             assert_ne!(app.variax().auto_select_controls, auto_before);
-            let output = scroll(&mut app, 2.0);
+            let output = scroll(&mut app, egui::MouseWheelUnit::Page, 2.0);
             bounds(&output, "Volume knob");
             assert_eq!(app.variax().workspace_cards, Some((body, inspector)));
             assert_eq!(app.variax().workspace_tuning, tuning);

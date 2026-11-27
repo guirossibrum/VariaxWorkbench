@@ -47,9 +47,20 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         has_download: bool,
     ) -> Option<egui::Response> {
-        ui.add(
-            egui::Label::new(egui::RichText::new(self.guitar_connection_status()).weak()).extend(),
-        );
+        let status =
+            egui::WidgetText::from(egui::RichText::new(self.guitar_connection_status()).weak())
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Wrap),
+                    ui.available_width(),
+                    egui::FontSelection::Default,
+                );
+        if ui.layout().main_wrap() && status.size().x > ui.available_size_before_wrap().x {
+            // A wrapped status row only needs the height of its text.
+            ui.end_row();
+            ui.set_row_height(status.size().y);
+        }
+        ui.label(status);
         #[cfg(feature = "usb")]
         if self.follow.active() {
             ui.weak("Following the guitar");
