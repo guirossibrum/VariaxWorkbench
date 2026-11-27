@@ -7,16 +7,19 @@ usage() {
     cat <<'USAGE'
 Usage: packaging/build-release.sh [--revision COMMIT] [--alpha-number N]
        packaging/build-release.sh --owner-delivery [--revision COMMIT] [--mac-host HOST] [--output DIR]
+       packaging/build-release.sh --owner-delivery-hosted [--revision COMMIT] [--mac-host HOST] [--output DIR]
        packaging/build-release.sh --owner-usb [--revision COMMIT] [--mac-host HOST] [--output DIR]
 
 The default builds one offline Linux, macOS and Windows release set on native
 GitHub runners. The verified set is attached to the run. --alpha-number
 explicitly publishes that verified set as an untested prerelease.
 
---owner-delivery delivers one local set with private Linux/macOS USB packages
-and the hosted Windows offline ZIP, all from the same source and build number.
+--owner-delivery builds one local set with Linux/macOS USB packages and a
+Windows GNU offline ZIP, all from the same source and build number.
+--owner-delivery-hosted uses the native Actions Windows ZIP for an explicitly
+authorized delivery instead.
 --owner-usb builds just the private Linux/macOS pair and copies the verified
-DMG to Mac Downloads. Both owner modes run from Linux.
+DMG to Mac Downloads. The owner modes run from Linux.
 All modes default to the freshly fetched origin/master commit.
 USAGE
 }
@@ -48,7 +51,7 @@ output=
 while (( $# )); do
     case "$1" in
         --help|-h) usage; exit 0 ;;
-        --owner-usb|--owner-delivery)
+        --owner-usb|--owner-delivery|--owner-delivery-hosted)
             [[ "$mode" == hosted || "$mode" == "${1#--}" ]] || die 'Choose one owner mode.'
             mode=${1#--}
             shift ;;
@@ -73,7 +76,7 @@ fi
 
 repo=$(git rev-parse --show-toplevel)
 scripts=$(cd "$(dirname -- "$0")" && pwd -P)
-if [[ -z "$revision_ref" || "$mode" != owner-usb ]]; then
+if [[ -z "$revision_ref" || "$mode" == hosted || "$mode" == owner-delivery-hosted ]]; then
     git -C "$repo" fetch origin master
 fi
 revision=$(git -C "$repo" rev-parse --verify --end-of-options "${revision_ref:-refs/remotes/origin/master}^{commit}")
@@ -91,32 +94,34 @@ if [[ "$mode" != hosted ]]; then
     [[ "$(uname -s)" == Linux ]] || die 'Start the combined owner delivery from Linux.'
 fi
 
-git -C "$repo" merge-base --is-ancestor "$revision" refs/remotes/origin/master ||
-    die 'The hosted release source must be on origin/master.'
-cd "$repo"
-request_id="$revision-$(date +%s)-$$-$RANDOM"
-dispatch=$(gh workflow run release-package.yml --ref master \
-    --raw-field "revision=$revision" --raw-field "alpha_number=$alpha_number" \
-    --raw-field "request_id=$request_id")
-printf '%s\n' "$dispatch"
-if [[ "$dispatch" =~ /actions/runs/([0-9]+) ]]; then
-    run_id=${BASH_REMATCH[1]}
-else
-    run_id=
-    for attempt in {1..12}; do
-        run_id=$(gh run list --workflow release-package.yml --event workflow_dispatch --limit 30 \
-            --json databaseId,displayTitle \
-            --jq ".[] | select(.displayTitle == \"Release $request_id\") | .databaseId")
-        [[ -n "$run_id" ]] && break
-        sleep 5
-    done
+if [[ "$mode" != owner-delivery ]]; then
+    git -C "$repo" merge-base --is-ancestor "$revision" refs/remotes/origin/master ||
+        die 'The hosted release source must be on origin/master.'
+    cd "$repo"
+    request_id="$revision-$(date +%s)-$$-$RANDOM"
+    dispatch=$(gh workflow run release-package.yml --ref master \
+        --raw-field "revision=$revision" --raw-field "alpha_number=$alpha_number" \
+        --raw-field "request_id=$request_id")
+    printf '%s\n' "$dispatch"
+    if [[ "$dispatch" =~ /actions/runs/([0-9]+) ]]; then
+        run_id=${BASH_REMATCH[1]}
+    else
+        run_id=
+        for attempt in {1..12}; do
+            run_id=$(gh run list --workflow release-package.yml --event workflow_dispatch --limit 30 \
+                --json databaseId,displayTitle \
+                --jq ".[] | select(.displayTitle == \"Release $request_id\") | .databaseId")
+            [[ -n "$run_id" ]] && break
+            sleep 5
+        done
+    fi
+    [[ "$run_id" =~ ^[0-9]+$ ]] || die "Could not identify the dispatched run for $request_id."
+    printf 'Waiting for verified release run %s\n' "$run_id"
+    if [[ "$mode" == hosted ]]; then
+        exec gh run watch "$run_id" --exit-status --compact
+    fi
+    gh run watch "$run_id" --exit-status --compact
 fi
-[[ "$run_id" =~ ^[0-9]+$ ]] || die "Could not identify the dispatched run for $request_id."
-printf 'Waiting for verified release run %s\n' "$run_id"
-if [[ "$mode" == hosted ]]; then
-    exec gh run watch "$run_id" --exit-status --compact
-fi
-gh run watch "$run_id" --exit-status --compact
 
 umask 077
 mkdir -p "$output"
@@ -124,13 +129,21 @@ stage=$(mktemp -d "$output/.owner-delivery.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-gh run download "$run_id" --name "release-set-$revision" --dir "$stage/hosted"
 export VARIAX_BUILD_NUMBER=$number
-python3 "$scripts/release_manifest.py" "$revision" "$stage/hosted" --check
+if [[ "$mode" == owner-delivery ]]; then
+    cd "$repo"
+    python3 "$scripts/build-windows-gnu.py" "$revision" "$stage/windows"
+    manifest_mode=(--local-owner-delivery)
+else
+    gh run download "$run_id" --name "release-set-$revision" --dir "$stage/hosted"
+    python3 "$scripts/release_manifest.py" "$revision" "$stage/hosted" --check
+    mv -T -- "$stage/hosted/windows" "$stage/windows"
+    manifest_mode=(--owner-delivery "$run_id")
+fi
 
 /bin/bash "$scripts/build-private-owner-usb.sh" "$revision" "$mac_host" "$stage" "$number" --stage-only
-mv -T -- "$stage/hosted/windows" "$stage/pair/windows"
-python3 "$scripts/release_manifest.py" "$revision" "$stage/pair" --owner-delivery "$run_id"
+mv -T -- "$stage/windows" "$stage/pair/windows"
+python3 "$scripts/release_manifest.py" "$revision" "$stage/pair" "${manifest_mode[@]}"
 
 delivery="$output/variax-workbench-owner-build-$number-${revision:0:8}-${stage##*.}"
 mv -T --no-clobber -- "$stage/pair" "$delivery"
