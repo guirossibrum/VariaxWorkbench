@@ -106,17 +106,24 @@ pub fn with_ready_attachment<T>(
     expected: &Attachment,
     open: impl FnOnce(&Attachment) -> Result<T, String>,
 ) -> Result<T, String> {
-    let devices = inventory()?;
-    let current = single_podxt(&devices)?;
+    let candidate = ready_attachment_for(registry_id, expected, &inventory()?)?;
+    verify_usb_route(&candidate)?;
+    open(&candidate)
+}
+
+pub(super) fn ready_attachment_for(
+    registry_id: u64,
+    expected: &Attachment,
+    devices: &[ObservedPodxt],
+) -> Result<Attachment, String> {
+    let current = single_podxt(devices)?;
     if current.registry_id != registry_id
         || current.route() != Some(expected.path.as_str())
         || current.address != Some(expected.address)
     {
         return Err("The PODxt Live USB attachment changed.".into());
     }
-    let candidate = ready_attachment(current, &devices)?;
-    verify_usb_route(&candidate)?;
-    open(&candidate)
+    ready_attachment(current, devices)
 }
 
 fn single_attachment<T>(attachments: &[T]) -> Result<&T, String> {

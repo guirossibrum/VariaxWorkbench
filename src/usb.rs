@@ -664,6 +664,33 @@ pub fn open_variax_bridge_borrowed<'rig>(
     with_variax_bridge_gates(|| UsbInterfaceLink::open_attachment_borrowed(USB, path, address, rig))
 }
 
+/// Open the Mac Variax library transport for the editor's verified attachment.
+/// The caller checks the library operation's gates and holds the rig lock
+/// through the shared reader and the link's checked `finish`.
+#[cfg(target_os = "macos")]
+pub fn open_macos_variax_bridge_borrowed<'rig>(
+    rig: &'rig DeviceLock,
+    registry_id: u64,
+    (path, address): (&str, u8),
+) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
+    use line6_devices::transport::usb::macos::{Attachment, with_ready_attachment};
+
+    if cfg!(test) {
+        return Err("test builds do not open a USB device".into());
+    }
+    hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+        hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
+            let expected = Attachment {
+                path: path.into(),
+                address,
+            };
+            with_ready_attachment(rig, registry_id, &expected, |matched| {
+                UsbInterfaceLink::open_attachment_borrowed(USB, &matched.path, matched.address, rig)
+            })
+        })
+    })
+}
+
 fn with_variax_bridge_gates<T>(open: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     if cfg!(target_os = "macos") {
         return Err(crate::MAC_CONNECTION_UNAVAILABLE.into());

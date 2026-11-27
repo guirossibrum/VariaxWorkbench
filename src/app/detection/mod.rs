@@ -48,6 +48,11 @@ impl AttachmentKey {
     pub fn usb_location(&self) -> Option<(&str, u8)> {
         Some((&self.path, self.address?))
     }
+
+    /// Registry generation of this observed macOS USB attachment.
+    pub fn usb_registry_id(&self) -> Option<u64> {
+        self.registry_id
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -529,7 +534,8 @@ impl DetectionService {
 
     pub fn passive_pods(&self) -> impl Iterator<Item = &DetectedDevice> {
         self.known.values().filter(|device| {
-            device.key.attachment.registry_id.is_some() && device.key.linked_generation.is_none()
+            device.key.attachment.usb_registry_id().is_some()
+                && device.key.linked_generation.is_none()
         })
     }
 

@@ -329,6 +329,44 @@ mod tests {
     }
 
     #[test]
+    fn ready_open_requires_the_exact_published_attachment() {
+        use super::super::macos::ready_attachment_for;
+
+        let first = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        let expected = first.attachment(std::slice::from_ref(&first)).unwrap();
+        let check = |devices: &[ObservedPodxt]| ready_attachment_for(11, &expected, devices);
+        assert_eq!(check(std::slice::from_ref(&first)), Ok(expected.clone()));
+        assert!(check(&[]).unwrap_err().contains("found 0"));
+        assert!(
+            check(&[first.clone(), first.clone()])
+                .unwrap_err()
+                .contains("found 2")
+        );
+
+        for changed in [
+            record(12, 0x01430000, 3, &[4, 3], true),
+            record(11, 0x01430000, 4, &[4, 3], true),
+            record(11, 0x01450000, 3, &[4, 5], true),
+        ] {
+            assert!(
+                check(&[changed.podxt().unwrap()])
+                    .unwrap_err()
+                    .contains("attachment changed")
+            );
+        }
+
+        let mut unreadable = first;
+        unreadable.interfaces = PublishedInterfaces::IncompleteChildren {
+            seen: [true, false],
+        };
+        assert!(
+            check(&[unreadable])
+                .unwrap_err()
+                .contains("USB interface list could not be read")
+        );
+    }
+
+    #[test]
     fn route_recheck_and_full_generation_recheck_keep_their_distinct_rules() {
         let saved = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
         let current = record(11, 0x01431000, 3, &[4, 3], true).podxt().unwrap();
