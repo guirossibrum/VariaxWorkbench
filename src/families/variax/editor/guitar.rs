@@ -786,6 +786,10 @@ impl VariaxEditor {
             }
             return;
         }
+        #[cfg(feature = "usb")]
+        if self.refresh.busy() {
+            return;
+        }
         let invalid = variax_workbench::preset::legacy_text_issue(&edited, false).is_some();
         if !response.changed() {
             if response.lost_focus() {

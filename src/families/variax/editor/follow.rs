@@ -96,6 +96,26 @@ pub(super) struct Follow {
 }
 
 impl Follow {
+    #[cfg(test)]
+    pub(super) fn queue_disconnect(&mut self, ctx: &egui::Context) {
+        self.start(
+            |_, _, publish| {
+                publish(FollowUpdate::Disconnected, Instant::now());
+                Ok(ListenEnd::Stopped)
+            },
+            ctx,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.worker.as_ref().unwrap().thread.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "fake Follow worker did not finish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     pub(super) fn observe(&mut self, device: Option<&DeviceTab>) {
         self.device_tab = device.is_some();
         let attachment = device.and_then(Attachment::verified);
@@ -423,11 +443,14 @@ impl VariaxEditor {
         self.follow.show(ui, available);
     }
 
-    pub(super) fn poll_follow(&mut self, ctx: &egui::Context) {
+    pub(super) fn observe_follow(&mut self, ctx: &egui::Context) {
         if self.device_sync.stopped_after_store() {
             self.follow.set_following(false);
         }
         self.follow.listen(ctx);
+    }
+
+    pub(super) fn advance_follow(&mut self, ctx: &egui::Context) {
         if !self.device_sync.stopped_after_store()
             && !self.is_reading()
             && !self.live_edit.busy()
@@ -583,6 +606,11 @@ mod tests {
         Ok(ListenEnd::Stopped)
     }
 
+    fn poll_follow(editor: &mut VariaxEditor, ctx: &egui::Context) {
+        editor.observe_follow(ctx);
+        editor.advance_follow(ctx);
+    }
+
     fn poll_until(
         editor: &mut VariaxEditor,
         ctx: &egui::Context,
@@ -590,7 +618,7 @@ mod tests {
     ) {
         let started = Instant::now();
         while !predicate(&editor.follow) {
-            editor.poll_follow(ctx);
+            poll_follow(editor, ctx);
             assert!(started.elapsed() < Duration::from_secs(1));
             std::thread::yield_now();
         }
@@ -613,13 +641,13 @@ mod tests {
         let (ctx, mut app) = app();
         let editor = app.variax_mut();
         editor.follow.test_source = Some(fake_source);
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert!(!editor.follow.busy());
 
         let mut tab = super::super::refresh::tests::verified_tab();
         let verified = std::mem::replace(&mut tab.device.support, DeviceSupport::IdentityPending);
         editor.observe_device(Some(&tab));
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert!(!editor.follow.busy());
 
         tab.device.support = verified;
@@ -662,7 +690,7 @@ mod tests {
         assert!(!editor.follow.wants_follow());
         editor.observe_device(None);
         editor.observe_device(Some(&tab));
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert!(!editor.follow.busy());
 
         click(editor);
@@ -744,14 +772,14 @@ mod tests {
         );
         let selected = editor.document.as_ref().unwrap().selection();
         assert_ne!(selected, Some((4, 2)));
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert_eq!(editor.document.as_ref().unwrap().selection(), selected);
 
         editor.library_origin = Some(LibraryOrigin::AttachedDownload(
             SystemTime::UNIX_EPOCH,
             tab.device.key,
         ));
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert_eq!(editor.document.as_ref().unwrap().selection(), Some((4, 2)));
     }
 
@@ -796,7 +824,7 @@ mod tests {
         assert_eq!(first.device.support, second.device.support);
         assert_ne!(first.device.key, second.device.key);
         editor.observe_device(Some(&second));
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert!(!editor.follow.busy());
         assert!(!editor.follow.disconnected());
         assert!(editor.take_device_event().is_none());
@@ -893,7 +921,7 @@ mod tests {
             let editor = app.variax_mut();
             super::super::refresh::tests::attach(editor);
             editor.follow.test_source = Some(yielding_source);
-            editor.poll_follow(&ctx);
+            poll_follow(editor, &ctx);
             assert!(editor.follow.active());
             let started = Instant::now();
             while editor.follow.resume.is_none() {
@@ -914,7 +942,7 @@ mod tests {
                     // The fake source refuses the lease until Device Check releases it.
                     DEVICE_CHECK_HOLDS_RIG.store(true, Ordering::SeqCst);
                     editor.follow.resume = Some(Instant::now());
-                    editor.poll_follow(&ctx);
+                    poll_follow(editor, &ctx);
                     poll_until(editor, &ctx, |follow| {
                         !follow.busy() && follow.resume.is_some()
                     });
@@ -932,7 +960,7 @@ mod tests {
                 Foreground::LiveEdit => {
                     let finish = editor.hold_fake_edit();
                     editor.follow.resume = Some(Instant::now());
-                    editor.poll_follow(&ctx);
+                    poll_follow(editor, &ctx);
                     assert!(shows_pause(&ctx, &mut editor.follow));
                     assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
                     finish.send(()).unwrap();
@@ -951,7 +979,7 @@ mod tests {
                         ..Default::default()
                     });
                     editor.follow.resume = Some(Instant::now());
-                    editor.poll_follow(&ctx);
+                    poll_follow(editor, &ctx);
                     assert!(shows_pause(&ctx, &mut editor.follow));
                     assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
                     finish.send(()).unwrap();
@@ -965,7 +993,7 @@ mod tests {
                 }
             };
             if unknown {
-                editor.poll_follow(&ctx);
+                poll_follow(editor, &ctx);
                 assert!(editor.follow.resume.is_none() && !editor.follow.busy());
                 assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
             } else {
@@ -996,7 +1024,7 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(1));
             std::thread::yield_now();
         }
-        editor.poll_follow(&ctx);
+        poll_follow(editor, &ctx);
         assert!(!editor.follow.busy());
         assert!(editor.follow.disconnected());
         let key = editor.follow.attachment.as_ref().unwrap().key.clone();
