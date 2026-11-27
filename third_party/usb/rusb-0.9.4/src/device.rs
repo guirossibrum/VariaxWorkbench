@@ -95,6 +95,17 @@ impl<T: UsbContext> Device<T> {
         }))
     }
 
+    /// Reads the registry entry ID of the IOKit service backing this device.
+    #[cfg(all(target_os = "macos", feature = "vendored"))]
+    pub fn darwin_registry_entry_id(&self) -> crate::Result<u64> {
+        let mut id = 0;
+        try_unsafe!(libusb_line6_darwin_registry_entry_id(
+            self.device.as_ptr(),
+            &mut id
+        ));
+        Ok(id)
+    }
+
     /// Reads a configuration descriptor.
     pub fn config_descriptor(&self, config_index: u8) -> crate::Result<ConfigDescriptor> {
         let mut config = mem::MaybeUninit::<*const libusb_config_descriptor>::uninit();

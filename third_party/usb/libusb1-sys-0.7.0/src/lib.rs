@@ -265,6 +265,9 @@ extern "system" {
     ) -> c_int;
     pub fn libusb_free_config_descriptor(config: *const libusb_config_descriptor);
 
+    #[cfg(all(target_os = "macos", feature = "vendored"))]
+    pub fn libusb_line6_darwin_registry_entry_id(dev: *mut libusb_device, id: *mut u64) -> c_int;
+
     pub fn libusb_get_bus_number(dev: *const libusb_device) -> u8;
     pub fn libusb_get_port_number(dev: *mut libusb_device) -> u8;
     pub fn libusb_get_port_numbers(

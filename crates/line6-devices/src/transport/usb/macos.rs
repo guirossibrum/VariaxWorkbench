@@ -2,10 +2,15 @@
 
 use super::{
     InterfaceSpec, VARIAX_VIA_PODXT_LIVE, attachment_path,
-    macos_inventory::{ObservedPodxt, PassiveReadinessBlock, assess_candidate, inventory},
+    macos_inventory::{ObservedPodxt, PassiveReadinessBlock, assess_candidate},
     podxt::SPEC,
 };
+#[cfg(target_os = "macos")]
+use super::{UsbInterfaceLink, macos_inventory::inventory, podxt};
+#[cfg(target_os = "macos")]
 use crate::device_lock::DeviceLock;
+
+type NativeDevice = rusb::Device<rusb::GlobalContext>;
 
 pub const PODXT_MIDI: InterfaceSpec = SPEC;
 
@@ -18,25 +23,30 @@ pub struct Attachment {
 /// Enumerate the identified USB product without claiming a device.
 pub fn attachments() -> Result<Vec<Attachment>, String> {
     check_available()?;
+    native_podxts()?.iter().map(native_attachment).collect()
+}
+
+fn native_podxts() -> Result<Vec<NativeDevice>, String> {
     let devices = rusb::devices().map_err(open_error)?;
-    devices
+    Ok(devices
         .iter()
         .filter(|device| {
             device.device_descriptor().is_ok_and(|descriptor| {
                 descriptor.vendor_id() == SPEC.vendor && descriptor.product_id() == SPEC.product
             })
         })
-        .map(|device| {
-            let ports = device.port_numbers().map_err(open_error)?;
-            if ports.is_empty() {
-                return Err("The PODxt Live physical USB port could not be identified.".into());
-            }
-            Ok(Attachment {
-                path: attachment_path(device.bus_number(), &ports),
-                address: device.address(),
-            })
-        })
-        .collect()
+        .collect())
+}
+
+fn native_attachment(device: &NativeDevice) -> Result<Attachment, String> {
+    let ports = device.port_numbers().map_err(open_error)?;
+    if ports.is_empty() {
+        return Err("The PODxt Live physical USB port could not be identified.".into());
+    }
+    Ok(Attachment {
+        path: attachment_path(device.bus_number(), &ports),
+        address: device.address(),
+    })
 }
 
 /// Select the single PODxt Live the Mac connection flow can verify.
@@ -99,16 +109,48 @@ pub fn verify_usb_route(candidate: &Attachment) -> Result<(), String> {
     check_exact_route(candidate, &attachments()?)
 }
 
-/// Recheck readiness and the generation under the rig lock at each open.
-pub fn with_ready_attachment<T>(
-    _rig: &DeviceLock,
+/// Open the exact ready generation and borrow the rig lock through checked release.
+#[cfg(target_os = "macos")]
+pub fn open_ready_attachment<'rig>(
+    rig: &'rig DeviceLock,
+    spec: InterfaceSpec,
     registry_id: u64,
     expected: &Attachment,
-    open: impl FnOnce(&Attachment) -> Result<T, String>,
-) -> Result<T, String> {
+    before_open: impl FnOnce() -> Result<(), String>,
+) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
+    check_open(spec, true)?;
+    podxt::check_open(spec, true)?;
     let candidate = ready_attachment_for(registry_id, expected, &inventory()?)?;
-    verify_usb_route(&candidate)?;
-    open(&candidate)
+    let devices = native_podxts()?;
+    with_exact_generation(
+        single_attachment(&devices)?,
+        &candidate,
+        registry_id,
+        native_attachment,
+        |device| device.darwin_registry_entry_id().ok(),
+        |device| {
+            before_open()?;
+            UsbInterfaceLink::open_device(spec, device, rig)
+        },
+    )
+}
+
+fn with_exact_generation<D, T>(
+    device: &D,
+    expected: &Attachment,
+    expected_id: u64,
+    route: impl FnOnce(&D) -> Result<Attachment, String>,
+    registry_id: impl FnOnce(&D) -> Option<u64>,
+    open: impl FnOnce(&D) -> Result<T, String>,
+) -> Result<T, String> {
+    if route(device)? != *expected {
+        return Err("The PODxt Live USB attachment changed.".into());
+    }
+    match registry_id(device) {
+        Some(id) if id == expected_id => open(device),
+        Some(_) => Err("The PODxt Live USB attachment changed.".into()),
+        None => Err("The selected PODxt Live USB registry generation is unavailable.".into()),
+    }
 }
 
 pub(super) fn ready_attachment_for(
@@ -237,6 +279,51 @@ mod tests {
                     .unwrap_err()
                     .contains("attachment changed")
             );
+        }
+    }
+
+    #[test]
+    fn native_selection_only_opens_the_same_registry_generation() {
+        struct Device {
+            route: Attachment,
+            id: Option<u64>,
+        }
+
+        let expected = Attachment {
+            path: "4-2".into(),
+            address: 17,
+        };
+        // Passive readiness already accepted generation 11. These are the
+        // device references returned at the later native selection.
+        for (id, error) in [
+            (Some(12), Some("attachment changed")),
+            (None, Some("registry generation is unavailable")),
+            (Some(11), None),
+        ] {
+            let selected = Device {
+                route: expected.clone(),
+                id,
+            };
+            let mut events = Vec::new();
+            let result = with_exact_generation(
+                &selected,
+                &expected,
+                11,
+                |device| Ok(device.route.clone()),
+                |device| device.id,
+                |device| {
+                    assert!(std::ptr::eq(device, &selected));
+                    events.extend(["open", "claim", "I/O"]);
+                    Ok(())
+                },
+            );
+            if let Some(error) = error {
+                assert!(result.unwrap_err().contains(error));
+                assert!(events.is_empty());
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(events, ["open", "claim", "I/O"]);
+            }
         }
     }
 

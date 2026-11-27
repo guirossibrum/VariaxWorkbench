@@ -58,16 +58,11 @@ pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
                             Interface::Podxt => macos::PODXT_MIDI,
                             Interface::Variax => VARIAX_VIA_PODXT_LIVE,
                         };
-                        macos::with_ready_attachment(&rig, registry_id, &attachment, |matched| {
+                        macos::open_ready_attachment(&rig, spec, registry_id, &attachment, || {
                             if cancel.load(Ordering::Relaxed) {
                                 return Err(IDENTITY_CANCELLED.into());
                             }
-                            UsbInterfaceLink::open_attachment_borrowed(
-                                spec,
-                                &matched.path,
-                                matched.address,
-                                &rig,
-                            )
+                            Ok(())
                         })
                     },
                     UsbInterfaceLink::finish,

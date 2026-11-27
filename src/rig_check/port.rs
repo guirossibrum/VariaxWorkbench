@@ -360,18 +360,12 @@ impl<'rig> RealPort<'rig> {
         Ok(self.mac_usb.link(
             side,
             || {
-                macos::with_ready_attachment(
+                macos::open_ready_attachment(
                     &matched.lock,
+                    spec,
                     matched.observed.registry_id,
                     &matched.attachment,
-                    |attachment| {
-                        UsbInterfaceLink::open_attachment_borrowed(
-                            spec,
-                            &attachment.path,
-                            attachment.address,
-                            &matched.lock,
-                        )
-                    },
+                    || Ok(()),
                 )
             },
             UsbInterfaceLink::finish,

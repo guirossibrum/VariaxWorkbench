@@ -33,6 +33,7 @@
 #include <sys/sysctl.h>
 
 #include <mach/mach_time.h>
+#include <IOKit/IOKitLib.h>
 
 /* Suppress warnings about the use of the deprecated objc_registerThreadWithCollector
  * function. Its use is also conditionalized to only older deployment targets. */
@@ -75,6 +76,21 @@ int libusb_testonly_using_running_device_version __attribute__ ((visibility ("hi
 bool libusb_testonly_clear_running_version_cache __attribute__ ((visibility ("hidden")));
 
 #define DARWIN_CACHED_DEVICE(a) (((struct darwin_device_priv *)usbi_get_device_priv((a)))->dev)
+
+/* Workbench: read the registry generation of this exact libusb device. */
+int API_EXPORTED libusb_line6_darwin_registry_entry_id(libusb_device *dev, uint64_t *id) {
+  int result = LIBUSB_ERROR_NO_DEVICE;
+
+  usbi_mutex_lock(&darwin_cached_devices_mutex);
+  struct darwin_cached_device *cached = DARWIN_CACHED_DEVICE(dev);
+  if (usbi_atomic_load(&dev->attached) && cached && cached->device &&
+      cached->service && !cached->in_reenumerate &&
+      IORegistryEntryGetRegistryEntryID(cached->service, id) == kIOReturnSuccess && *id != 0) {
+    result = LIBUSB_SUCCESS;
+  }
+  usbi_mutex_unlock(&darwin_cached_devices_mutex);
+  return result;
+}
 
 /* async event thread */
 static pthread_t libusb_darwin_at;

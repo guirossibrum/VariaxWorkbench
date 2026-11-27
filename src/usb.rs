@@ -673,7 +673,7 @@ pub fn open_macos_variax_bridge_borrowed<'rig>(
     registry_id: u64,
     (path, address): (&str, u8),
 ) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
-    use line6_devices::transport::usb::macos::{Attachment, with_ready_attachment};
+    use line6_devices::transport::usb::macos::{Attachment, open_ready_attachment};
 
     if cfg!(test) {
         return Err("test builds do not open a USB device".into());
@@ -684,9 +684,7 @@ pub fn open_macos_variax_bridge_borrowed<'rig>(
                 path: path.into(),
                 address,
             };
-            with_ready_attachment(rig, registry_id, &expected, |matched| {
-                UsbInterfaceLink::open_attachment_borrowed(USB, &matched.path, matched.address, rig)
-            })
+            open_ready_attachment(rig, USB, registry_id, &expected, || Ok(()))
         })
     })
 }
