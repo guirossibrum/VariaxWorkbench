@@ -1,9 +1,14 @@
 //! Presence updates and the consent prompt for a manual scan.
 use super::super::detection::AttachmentKey;
+#[cfg(target_os = "macos")]
+use super::super::detection::MAC_DISCOVERY_INTERVAL;
 use super::super::tabs::{Connection, DeviceEvent};
 use super::*;
 use variax_workbench::ui::{chrome, theme};
 
+#[cfg(target_os = "macos")]
+const PRESENCE_INTERVAL: Duration = MAC_DISCOVERY_INTERVAL;
+#[cfg(not(target_os = "macos"))]
 const PRESENCE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]

@@ -54,20 +54,101 @@ pub fn check_live_identity(identity: &Identity) -> Result<(), String> {
 }
 
 fn request_identity<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
-    // Drain anything already queued. Sends nothing.
-    session.listen(Duration::from_millis(200))?;
-    session.send(PodxtRequest::Identity)?;
-    let is_identity = |message: &[u8]| Identity::parse(message).is_some();
-    let mut answer = session.wait_for(WINDOW, is_identity, true)?;
-    if matches!(answer, Wait::OrphanQuiet) {
-        resend_identity(session)?;
-        answer = session.wait_for(WINDOW, is_identity, false)?;
-    }
+    let answer = exchange_identity(
+        session,
+        || Ok(()),
+        |session, retry| {
+            session.wait_for(WINDOW, |message| Identity::parse(message).is_some(), retry)
+        },
+    )?;
     let Wait::Found(reply) = answer else {
         return Err("No identity reply from the PODxt. Nothing else was sent.".into());
     };
     let identity = Identity::parse(&reply).expect("checked above");
     Ok((reply, identity))
+}
+
+fn exchange_identity<L: Link>(
+    session: &mut Session<L>,
+    check: impl Fn() -> Result<(), String>,
+    mut receive: impl FnMut(&mut Session<L>, bool) -> Result<Wait, String>,
+) -> Result<Wait, String> {
+    // Drain anything already queued. Sends nothing.
+    session.listen_checked(Duration::from_millis(200), &check)?;
+    check()?;
+    session.send(PodxtRequest::Identity)?;
+    let answer = receive(session, true)?;
+    if matches!(answer, Wait::OrphanQuiet) {
+        check()?;
+        resend_identity(session)?;
+        return receive(session, false);
+    }
+    Ok(answer)
+}
+
+/// Workbench startup uses the same identity sends and orphan recovery as Rig
+/// Check, and keeps listening through its existing duplicate-reply window.
+/// A completely silent exchange returns `None`.
+pub fn discover_unique_identity<L: Link>(
+    session: &mut Session<L>,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<Option<Identity>, String> {
+    const DISCOVERY_WINDOW: Duration = Duration::from_secs(3);
+    let mut packets = 0;
+    let mut orphans = 0;
+    let mut malformed_identity = 0;
+    let mut other_messages = 0;
+    let answer = exchange_identity(session, &check, |session, can_resend| {
+        let packets_before = session.packets_in;
+        let orphans_before = session.assembler.orphans;
+        let mut last_packet = session.link.elapsed();
+        let until = last_packet + DISCOVERY_WINDOW;
+        let mut identity = None;
+        while let Some(left) = remaining(session, until) {
+            check()?;
+            let quiet_for = session.link.elapsed().saturating_sub(last_packet);
+            if can_resend
+                && identity.is_none()
+                && session.orphaned_then_quiet(orphans_before, quiet_for)
+            {
+                orphans += session.assembler.orphans - orphans_before;
+                packets += session.packets_in - packets_before;
+                return Ok(Wait::OrphanQuiet);
+            }
+            if let Some(events) = session.poll(left.min(POLL))? {
+                last_packet = session.link.elapsed();
+                for event in events {
+                    if let Event::Sysex(frame) = event {
+                        if Identity::parse(&frame).is_some() {
+                            if identity.replace(frame).is_some() {
+                                return Err("More than one PODxt identity answered.".into());
+                            }
+                            continue;
+                        }
+                        if matches!(frame.as_slice(), [0xf0, 0x7e, _, 0x06, 0x02, ..]) {
+                            malformed_identity += 1;
+                            continue;
+                        }
+                    }
+                    other_messages += 1;
+                }
+            }
+        }
+        check()?;
+        orphans += session.assembler.orphans - orphans_before;
+        packets += session.packets_in - packets_before;
+        Ok(identity.map_or(Wait::Timeout, Wait::Found))
+    })?;
+    if let Wait::Found(reply) = answer {
+        return Ok(Some(Identity::parse(&reply).expect("checked above")));
+    }
+    if packets == 0 {
+        return Ok(None);
+    }
+    Err(format!(
+        "No PODxt identity answered. Receive chunks: {packets}, orphan bytes: {orphans}, \
+         malformed identity frames: {malformed_identity}, other messages: {other_messages}."
+    ))
 }
 
 pub(super) fn resend_identity<L: Link>(session: &mut Session<L>) -> Result<(), String> {

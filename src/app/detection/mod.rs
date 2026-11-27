@@ -6,6 +6,9 @@ use notice::Notice;
 use super::ProductFamily;
 use identity::{Guitar, Identify, Job, JobKind, Outcome, Worker};
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+pub(super) const MAC_DISCOVERY_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(feature = "usb")]
 use std::sync::{Arc, atomic::AtomicBool};
 use variax_workbench::device_probe::{MetadataError, UsbDevice};
@@ -104,6 +107,10 @@ pub(super) trait PresenceSource {
         true
     }
 
+    fn usb_readiness_reason(&self, _path: &str) -> Option<String> {
+        None
+    }
+
     #[cfg(test)]
     fn simulated_identity(&self, _job: &Job) -> Option<Outcome> {
         None
@@ -130,11 +137,23 @@ impl PresenceSource for CachedUsbPresence {
 }
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
-use line6_devices::transport::usb::macos_inventory::{ObservedPodxt, inventory};
+use line6_devices::transport::usb::{
+    macos::{Attachment as MacUsbAttachment, ready_attachment},
+    macos_inventory::{ObservedPodxt, inventory},
+};
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 #[derive(Default)]
-struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, (ObservedPodxt, bool)>>);
+struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, MacUsbObservation>>);
+
+#[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+struct MacUsbObservation {
+    record: ObservedPodxt,
+    // Keep the reconciliation key in an incomplete scan. Readiness and the
+    // exact opener still use freshly observed coordinates.
+    retained_address: Option<u8>,
+    readiness: Result<MacUsbAttachment, String>,
+}
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 impl PresenceSource for MacUsbPresence {
@@ -143,28 +162,42 @@ impl PresenceSource for MacUsbPresence {
         let records =
             run_if_unlocked(Gate::OsDiscovery, inventory).map_err(MetadataError::Unreadable)?;
         let mut snapshot = self.0.borrow_mut();
-        snapshot.clear();
+        let previous = std::mem::take(&mut *snapshot);
+        let by_registry_id: BTreeMap<_, _> = previous
+            .iter()
+            .map(|(path, observation)| (observation.record.registry_id, (path, observation)))
+            .collect();
         Ok(records
             .iter()
             .map(|record| {
-                // A row without a unique physical route remains visible. It
-                // cannot supply a path to the existing USB opener.
-                let path = record
-                    .route()
-                    .filter(|route| {
-                        records
-                            .iter()
-                            .filter(|other| other.route() == Some(route))
-                            .count()
-                            == 1
-                    })
-                    .map_or_else(
-                        || format!("macOS USB entry {}", record.registry_id),
-                        str::to_owned,
-                    );
+                let prior = by_registry_id.get(&record.registry_id);
+                let route = record.route().filter(|route| {
+                    records
+                        .iter()
+                        .filter(|other| other.route() == Some(route))
+                        .count()
+                        == 1
+                        || prior.is_some_and(|(path, _)| path.as_str() == *route)
+                });
+                // Preserve the previous key through temporary ambiguity or
+                // missing coordinates so it cannot rearm a terminal attempt.
+                let retained = prior.map(|(path, _)| path.as_str()).filter(|path| {
+                    record.route().is_none()
+                        && records.iter().all(|other| other.route() != Some(path))
+                });
+                let path = route.or(retained).map_or_else(
+                    || format!("macOS USB entry {}", record.registry_id),
+                    str::to_owned,
+                );
                 snapshot.insert(
                     path.clone(),
-                    (record.clone(), record.attachment(&records).is_some()),
+                    MacUsbObservation {
+                        record: record.clone(),
+                        retained_address: record
+                            .address
+                            .or_else(|| prior.and_then(|(_, old)| old.retained_address)),
+                        readiness: ready_attachment(record, &records),
+                    },
                 );
                 UsbDevice {
                     sysfs_name: path,
@@ -179,18 +212,22 @@ impl PresenceSource for MacUsbPresence {
     }
 
     fn usb_address(&self, path: &str) -> Option<u8> {
-        self.0.borrow().get(path)?.0.address
+        self.0.borrow().get(path)?.retained_address
     }
 
     fn usb_registry_id(&self, path: &str) -> Option<u64> {
-        Some(self.0.borrow().get(path)?.0.registry_id)
+        Some(self.0.borrow().get(path)?.record.registry_id)
     }
 
     fn usb_open_candidate(&self, path: &str) -> bool {
         self.0
             .borrow()
             .get(path)
-            .is_some_and(|(_, eligible)| *eligible)
+            .is_some_and(|observation| observation.readiness.is_ok())
+    }
+
+    fn usb_readiness_reason(&self, path: &str) -> Option<String> {
+        self.0.borrow().get(path)?.readiness.as_ref().err().cloned()
     }
 }
 
@@ -209,6 +246,7 @@ struct Attachment {
     usb: UsbDevice,
     bridge: Option<Bridge>,
     open_candidate: bool,
+    readiness_reason: Option<String>,
     identity_started: bool,
 }
 
@@ -275,6 +313,21 @@ impl Bridge {
                 self.running = None;
                 self.queued = Some(kind);
                 self.waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
+            }
+            Outcome::MacCancelled { pod_firmware } => {
+                self.running = None;
+                self.waiting_for_other_process = false;
+                if kind == JobKind::Initial {
+                    self.pod = pod_firmware;
+                }
+                self.status = "Identification cancelled.".into();
+            }
+            Outcome::MacPodSilent => {
+                self.running = None;
+                self.waiting_for_other_process = false;
+                self.pod = None;
+                self.status =
+                    "No PODxt identity answered. No receive chunks in three seconds.".into();
             }
             Outcome::UnverifiedPod(notice) => {
                 self.running = None;
@@ -380,6 +433,7 @@ pub(super) struct DetectionService {
     generation: u64,
     identify: Option<Identify>,
     worker: Option<Worker>,
+    next_mac_identity: Option<Instant>,
 }
 
 impl DetectionService {
@@ -418,6 +472,7 @@ impl DetectionService {
             generation: 0,
             identify: identity::platform(),
             worker: None,
+            next_mac_identity: None,
         }
     }
 
@@ -447,11 +502,31 @@ impl DetectionService {
         scan: Scan,
         profiles: &[DiscoveryProfile],
     ) -> Result<Vec<DetectedDevice>, MetadataError> {
+        self.refresh_at(scan, profiles, Instant::now())
+    }
+
+    pub(super) fn refresh_at(
+        &mut self,
+        scan: Scan,
+        profiles: &[DiscoveryProfile],
+        now: Instant,
+    ) -> Result<Vec<DetectedDevice>, MetadataError> {
         if let Err(error) = self.refresh_attachments(profiles) {
-            self.cancel_listener();
+            if let Some(worker) = &mut self.worker
+                && worker.job.attachment.registry_id.is_some()
+            {
+                worker.revoke_observation();
+                let key = worker.job.attachment.clone();
+                if let Some(bridge) = self.bridge_mut(&key) {
+                    bridge.running = None;
+                    bridge.status = "PODxt Live USB identity unverified".into();
+                }
+            } else {
+                self.cancel_listener();
+            }
             return Err(error);
         }
-        let waiting_for_other_process = self.finish_worker();
+        let waiting_for_other_process = self.finish_worker(now);
         if matches!(scan, Scan::Automatic) {
             #[cfg(test)]
             for attachment in self.attachments.values_mut() {
@@ -466,7 +541,7 @@ impl DetectionService {
                 }
             }
             if !waiting_for_other_process {
-                self.start_queued();
+                self.start_queued(now);
             }
         }
         self.rebuild_devices(scan, profiles);
@@ -498,36 +573,37 @@ impl DetectionService {
             };
             let registry_id = self.source.usb_registry_id(&path);
             let open_candidate = self.source.usb_open_candidate(&path);
-            let make_bridge = |identity_started: bool| {
-                automatic.then(|| {
-                    let mut bridge = Bridge::new(
-                        open_candidate
-                            && !identity_started
-                            && (self.identify.is_some() || cfg!(test)),
-                    );
-                    if !open_candidate {
-                        bridge.status = "PODxt Live USB interfaces unavailable".into();
-                    } else if identity_started {
-                        bridge.status = "PODxt Live USB identity unverified".into();
-                    }
-                    bridge
-                })
-            };
+            let readiness_reason = (!open_candidate).then(|| {
+                self.source
+                    .usb_readiness_reason(&path)
+                    .unwrap_or_else(|| "PODxt Live USB interfaces unavailable".into())
+            });
+            let can_identify = self.identify.is_some() || cfg!(test);
             let attachment = match previous.remove(&path) {
-                Some(existing)
+                Some(mut existing)
                     if Self::usb_id(&existing.usb) == id
                         && existing.key.address == address
                         && existing.key.registry_id == registry_id =>
                 {
-                    let bridge = if existing.open_candidate == open_candidate {
-                        existing.bridge
-                    } else {
-                        make_bridge(existing.identity_started)
-                    };
+                    if let Some(bridge) = &mut existing.bridge {
+                        if !open_candidate {
+                            // Withdraw the connection while readiness is uncertain.
+                            // Ignore an in-flight result even if readiness returns
+                            // before its worker has given the interface back.
+                            if bridge.running.take().is_some() {
+                                bridge.status = "PODxt Live USB identity unverified".into();
+                            }
+                        } else if !existing.open_candidate
+                            && !existing.identity_started
+                            && can_identify
+                        {
+                            bridge.queued = Some(JobKind::Initial);
+                        }
+                    }
                     Attachment {
                         usb,
-                        bridge,
                         open_candidate,
+                        readiness_reason,
                         ..existing
                     }
                 }
@@ -544,15 +620,16 @@ impl DetectionService {
                         #[cfg(feature = "usb")]
                         podxt_reply_pending: Arc::default(),
                         usb,
-                        bridge: make_bridge(false),
+                        bridge: automatic.then(|| Bridge::new(open_candidate && can_identify)),
                         open_candidate,
+                        readiness_reason,
                         identity_started: false,
                     }
                 }
             };
             self.attachments.insert(path, attachment);
         }
-        if let Some(worker) = &self.worker {
+        if let Some(worker) = &mut self.worker {
             let same_attachment = self
                 .attachments
                 .get(&worker.job.attachment.path)
@@ -566,7 +643,9 @@ impl DetectionService {
                     .filter(|attachment| attachment.bridge.is_some())
                     .count()
                     != 1;
-            if !same_attachment || ambiguous_bridge {
+            if !same_attachment && worker.job.attachment.registry_id.is_some() {
+                worker.revoke_observation();
+            } else if !same_attachment || ambiguous_bridge {
                 worker.cancel();
             }
         }
@@ -605,6 +684,9 @@ impl DetectionService {
         bridge.guitar = None;
         bridge.status = "disconnected".into();
         bridge.last_notice = Some(Notice::Disconnected);
+        if key.attachment.registry_id.is_some() && bridge.can_refresh() {
+            bridge.queued = Some(JobKind::DiscoverGuitar);
+        }
         self.rebuild_devices(Scan::Automatic, profiles);
         Some(self.known.values().cloned().collect())
     }
@@ -615,6 +697,13 @@ impl DetectionService {
     }
 
     pub fn queue_guitar_refresh(&mut self, key: &AttachmentKey, reattach: bool) -> bool {
+        if !self
+            .attachments
+            .get(&key.path)
+            .is_some_and(|attachment| attachment.open_candidate)
+        {
+            return false;
+        }
         let Some(bridge) = self
             .bridge_mut(key)
             .filter(|bridge| bridge.can_refresh() && bridge.driver_unbound == reattach)
@@ -638,7 +727,7 @@ impl DetectionService {
         }
     }
 
-    fn apply_outcome(&mut self, job: Job, outcome: Outcome) {
+    fn apply_outcome(&mut self, job: Job, outcome: Outcome, now: Instant) {
         let Some(attachment) = self
             .attachments
             .get_mut(&job.attachment.path)
@@ -647,36 +736,114 @@ impl DetectionService {
             return;
         };
         if let Some(bridge) = &mut attachment.bridge {
+            let retry = if job.attachment.registry_id.is_some() {
+                match (&outcome, job.kind) {
+                    (Outcome::MacPodSilent, JobKind::Initial) => Some(JobKind::Initial),
+                    (
+                        Outcome::Finished {
+                            guitar: Guitar::Silent,
+                            ..
+                        },
+                        JobKind::Initial | JobKind::DiscoverGuitar,
+                    ) => Some(JobKind::DiscoverGuitar),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             bridge.complete(job.kind, outcome, &mut self.generation);
+            if let Some(kind) = retry
+                && (kind == JobKind::Initial || bridge.pod.is_some())
+            {
+                bridge.queued = Some(kind);
+                self.next_mac_identity = Some(now + MAC_DISCOVERY_INTERVAL);
+            }
         }
     }
 
-    fn finish_worker(&mut self) -> bool {
+    fn finish_worker(&mut self, now: Instant) -> bool {
         if !self.worker.as_ref().is_some_and(Worker::finished) {
             return false;
         }
-        let (job, outcome) = self.worker.take().expect("finished worker").finish();
+        let worker = self.worker.take().expect("finished worker");
+        let revoked = worker.observation_revoked();
+        let quitting = worker.quitting();
+        let (job, outcome) = worker.finish();
         if job.attachment.registry_id.is_some()
-            && !self
-                .bridge_mut(&job.attachment)
-                .is_some_and(|bridge| bridge.running == Some(job.kind))
+            && (quitting
+                || !self
+                    .bridge_mut(&job.attachment)
+                    .is_some_and(|bridge| bridge.running == Some(job.kind)))
         {
-            // Interface services disappeared while this worker was running.
+            self.finish_invalidated(job, outcome, revoked, now);
             return false;
         }
         let waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
-        self.apply_outcome(job, outcome);
+        self.apply_outcome(job, outcome, now);
         waiting_for_other_process
+    }
+
+    fn finish_invalidated(&mut self, job: Job, outcome: Outcome, revoked: bool, now: Instant) {
+        let Some(bridge) = self
+            .attachments
+            .get_mut(&job.attachment.path)
+            .filter(|attachment| attachment.key == job.attachment)
+            .and_then(|attachment| attachment.bridge.as_mut())
+        else {
+            return;
+        };
+        bridge.running = None;
+        match outcome {
+            Outcome::Deferred
+            | Outcome::OtherProcessBusy
+            | Outcome::MacCancelled { .. }
+            | Outcome::MacPodSilent
+            | Outcome::Finished {
+                guitar: Guitar::Silent | Guitar::Verified(_),
+                ..
+            } if revoked
+                && !bridge.suspended
+                && (job.kind == JobKind::Initial
+                    || (job.kind == JobKind::DiscoverGuitar && bridge.pod.is_some())) =>
+            {
+                // The worker gave back its link or stopped before opening it.
+                // Restart from the last accepted stage without adopting revoked proof.
+                bridge.queued = Some(job.kind);
+                self.next_mac_identity = Some(now + MAC_DISCOVERY_INTERVAL);
+            }
+            Outcome::UnverifiedPod(_) => {
+                bridge.queued = None;
+                bridge.complete(job.kind, outcome, &mut self.generation);
+            }
+            Outcome::Finished {
+                guitar:
+                    guitar @ (Guitar::Unverified(_)
+                    | Guitar::Unavailable(_)
+                    | Guitar::DriverUnbound(_)
+                    | Guitar::CleanupFailed),
+                ..
+            } => {
+                bridge.queued = None;
+                bridge.complete(
+                    job.kind,
+                    Outcome::Finished {
+                        pod_firmware: bridge.pod,
+                        guitar,
+                    },
+                    &mut self.generation,
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Delay quit until the endpoint and the shared lock have been released.
     pub fn cancel_for_quit(&mut self) -> bool {
-        self.finish_worker();
-        if let Some(worker) = &self.worker {
-            worker.cancel();
-            return true;
+        if let Some(worker) = &mut self.worker {
+            worker.cancel_for_quit();
         }
-        false
+        self.finish_worker(Instant::now());
+        self.worker.is_some()
     }
 
     fn note_identity_started(&mut self, job: &Job) {
@@ -687,11 +854,19 @@ impl DetectionService {
         }
     }
 
-    fn start_queued(&mut self) {
+    fn start_queued(&mut self, now: Instant) {
         if self.worker.is_some() {
             return;
         }
         let queued = self.attachments.values().find_map(|attachment| {
+            if !attachment.open_candidate
+                || (attachment.key.registry_id.is_some()
+                    && self
+                        .next_mac_identity
+                        .is_some_and(|earliest| now < earliest))
+            {
+                return None;
+            }
             let kind = attachment.bridge.as_ref()?.queued?;
             Some(Job {
                 attachment: attachment.key.clone(),
@@ -704,19 +879,19 @@ impl DetectionService {
                 && let Some(outcome) = self.source.simulated_identity(&job)
             {
                 self.note_identity_started(&job);
+                if job.attachment.registry_id.is_some() {
+                    self.next_mac_identity = Some(now + MAC_DISCOVERY_INTERVAL);
+                }
                 self.bridge_mut(&job.attachment)
                     .expect("queued bridge")
                     .queued = None;
-                self.apply_outcome(job, outcome);
+                self.apply_outcome(job, outcome, now);
             }
             #[cfg(not(test))]
             let _ = queued;
             return;
         };
         let job = queued.or_else(|| {
-            if cfg!(target_os = "macos") && !cfg!(test) {
-                return None;
-            }
             let mut bridges = self
                 .attachments
                 .values()
@@ -725,12 +900,15 @@ impl DetectionService {
                 return None;
             };
             let bridge = attachment.bridge.as_ref()?;
-            bridge.can_refresh().then(|| Job {
+            (attachment.key.registry_id.is_none() && bridge.can_refresh()).then(|| Job {
                 attachment: attachment.key.clone(),
                 kind: JobKind::Listen,
             })
         });
         let Some(job) = job else { return };
+        if job.attachment.registry_id.is_some() {
+            self.next_mac_identity = Some(now + MAC_DISCOVERY_INTERVAL);
+        }
         if job.kind != JobKind::Listen {
             self.note_identity_started(&job);
             let bridge = self.bridge_mut(&job.attachment).expect("queued bridge");
@@ -749,6 +927,7 @@ impl DetectionService {
                     pod_firmware: None,
                     guitar: Guitar::Unavailable(format!("Could not start identity: {error}.")),
                 },
+                now,
             ),
         }
     }
@@ -773,13 +952,23 @@ impl DetectionService {
                             None if bridge.pending() => DeviceSupport::IdentityPending,
                             None => DeviceSupport::UsbOnly,
                         };
-                        (
-                            support,
-                            Some(bridge.label()),
-                            bridge.firmware_warning,
-                            bridge.pod_warning,
-                            bridge.can_refresh(),
-                        )
+                        if let Some(reason) = &attachment.readiness_reason {
+                            (
+                                DeviceSupport::UsbOnly,
+                                Some(format!("Guitar: {reason}")),
+                                None,
+                                None,
+                                false,
+                            )
+                        } else {
+                            (
+                                support,
+                                Some(bridge.label()),
+                                bridge.firmware_warning,
+                                bridge.pod_warning,
+                                bridge.can_refresh(),
+                            )
+                        }
                     }
                     DeviceDiscovery::Manual(id)
                         if (matches!(scan, Scan::Confirmed) || self.known.contains_key(&key))
@@ -788,7 +977,9 @@ impl DetectionService {
                         (DeviceSupport::FileEditingOnly, None, None, None, false)
                     }
                     DeviceDiscovery::ViaBridge(id) if id == attached_id => {
-                        let Some(bridge) = bridge else { continue };
+                        let Some(bridge) = bridge.filter(|_| attachment.open_candidate) else {
+                            continue;
+                        };
                         let Some((generation, identity)) = bridge.guitar else {
                             continue;
                         };
@@ -836,3 +1027,6 @@ impl Drop for DetectionService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

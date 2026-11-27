@@ -282,23 +282,6 @@ struct LockedAttachment {
     observed: macos_inventory::ObservedPodxt,
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
-fn select_attachment<'a, A: Eq>(
-    attachments: &'a [A],
-    expected: Option<&A>,
-) -> Result<&'a A, String> {
-    let [attachment] = attachments else {
-        return Err(format!(
-            "Expected one PODxt Live on USB, found {}.",
-            attachments.len()
-        ));
-    };
-    if expected.is_some_and(|observed| observed != attachment) {
-        return Err("The PODxt Live USB attachment changed. Start a new run.".into());
-    }
-    Ok(attachment)
-}
-
 /// The real rig. Every open first checks the step's owner approval and its
 /// hardware gates. Test builds return before opening a device.
 pub struct RealPort<'rig> {
@@ -351,21 +334,18 @@ impl<'rig> RealPort<'rig> {
         if scope.matched.get().is_none() {
             let lock = DeviceLock::acquire().map_err(|error| error.to_string())?;
             let devices = macos_inventory::inventory()?;
-            let observed = select_attachment(&devices, None)?;
+            let observed = macos::single_podxt(&devices)?;
             if let Some(previous) = &self.mac_inventory {
-                let expected = select_attachment(previous, None)?;
+                let expected = macos::single_podxt(previous)?;
                 if !expected.matches_generation(observed) {
                     return Err("The PODxt Live USB attachment changed. Start a new run.".into());
                 }
             }
-            let candidate = observed
-                .attachment(&devices)
-                .ok_or("PODxt Live detected, but its USB interfaces are unavailable.")?;
-            let attachments = macos::attachments()?;
-            let attachment = select_attachment(&attachments, Some(&candidate))?;
+            let attachment = macos::ready_attachment(observed, &devices)?;
+            macos::verify_usb_route(&attachment)?;
             let _ = scope.matched.set(LockedAttachment {
                 lock,
-                attachment: attachment.clone(),
+                attachment,
                 observed: observed.clone(),
             });
         }
@@ -380,16 +360,18 @@ impl<'rig> RealPort<'rig> {
         Ok(self.mac_usb.link(
             side,
             || {
-                macos_inventory::verify_candidate(
+                macos::with_ready_attachment(
                     &matched.lock,
                     matched.observed.registry_id,
                     &matched.attachment,
-                )?;
-                UsbInterfaceLink::open_attachment_borrowed(
-                    spec,
-                    &matched.attachment.path,
-                    matched.attachment.address,
-                    &matched.lock,
+                    |attachment| {
+                        UsbInterfaceLink::open_attachment_borrowed(
+                            spec,
+                            &attachment.path,
+                            attachment.address,
+                            &matched.lock,
+                        )
+                    },
                 )
             },
             UsbInterfaceLink::finish,
@@ -528,40 +510,5 @@ impl RigPort for RealPort<'_> {
             ]);
         }
         Ok(vec!["The guitar interface was not open.".into()])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::select_attachment;
-
-    #[test]
-    fn attachment_selection_rejects_missing_ambiguous_or_changed_path_and_address() {
-        let original = ("4-2", 17);
-        let new_path = ("4-3", 17);
-        let new_address = ("4-2", 18);
-
-        assert_eq!(select_attachment(&[original], None), Ok(&original));
-        assert_eq!(
-            select_attachment(&[original], Some(&original)),
-            Ok(&original)
-        );
-        assert!(
-            select_attachment(&[], Some(&original))
-                .unwrap_err()
-                .contains("found 0")
-        );
-        assert!(
-            select_attachment(&[original, new_path], Some(&original))
-                .unwrap_err()
-                .contains("found 2")
-        );
-        for changed in [new_path, new_address] {
-            assert!(
-                select_attachment(&[changed], Some(&original))
-                    .unwrap_err()
-                    .contains("attachment changed")
-            );
-        }
     }
 }
