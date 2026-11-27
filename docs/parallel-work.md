@@ -102,8 +102,10 @@ in the same coordination cycle.
   left the worktree and stopped its jobs. Verify the lane's current
   location in Herdr and record departure in the handoff before merging.
 - [ ] Complete exact-head review and the required offline merge checks.
-  Verify the integrated commit on `origin/master`. Record the merge and
-  verification on the issue and in the ledgers as applicable.
+  Verify the integrated commit on `origin/master`. Update each linked
+  GitHub issue with its merge and verification. Close each issue manually
+  once its acceptance criteria are verified. Record any remaining criteria
+  on the issue and update the ledgers as applicable.
 - [ ] Preserve required evidence and owner outputs, verify and report their
   new paths, and confirm removal of the disposable worktree using
   [Worktree cleanup after merge](#worktree-cleanup-after-merge).
@@ -116,11 +118,12 @@ in the same coordination cycle.
   next action in the handoff and report them before ending the cycle.
 
 When the owner must decide, approve, review, or run something, pause that
-dependent action and continue unrelated authorized reviews. Track owner
-acceptance and runtime decisions on the issue and in production Owner Inbox.
+dependent action and continue unrelated authorized reviews. Use the current
+chat when the owner is available here and Owner Inbox when the owner is
+traveling. Track owner acceptance and runtime decisions on the issue.
 Keep GitHub open until its applicable acceptance criteria are verified.
-Keep one active Gatekeeper. When replacing the Gatekeeper, preserve open
-Owner Inbox threads and pending work in the continuation prompt. See the
+Keep one active Gatekeeper. When replacing the Gatekeeper, carry over pending
+work and open owner conversations, including any Owner Inbox threads. See the
 [archived watcher runbook](herdr-handoff.md) only to reconcile past deliveries.
 
 ## Free lanes
@@ -128,16 +131,13 @@ Owner Inbox threads and pending work in the continuation prompt. See the
 Check the lane when a delivery is reviewed. The lane is free, and its
 disposable worktree is removed, as soon as the assigned implementation has
 been reviewed, merged and verified on `origin/master`. Free the lane
-immediately even if GitHub or Owner Inbox still tracks owner acceptance,
-package acceptance, or later feedback. Those items stay on the issue and in
-Owner Inbox. They are the acceptance record for that delivery, and the
-original lane is available for another job. A Herdr idle or completion
-badge is a signal to verify the delivery. The badge alone does not free the
-lane or assign the next issue.
+immediately. Track owner acceptance, package acceptance, and later feedback
+on the issue while the original lane takes another job. A Herdr idle or
+completion badge is a signal to verify the delivery. The badge alone does
+not free the lane or assign the next issue.
 
 Incomplete or unmerged implementation reserves the lane and worktree unless
-the owner explicitly approves parking through the established Owner Inbox
-procedure. Record what remains, the concrete blocker, and the next action on
+the owner explicitly approves parking. Record what remains, the concrete blocker, and the next action on
 the issue and in the Gatekeeper handoff. Tell the owner before leaving that
 work pending and continue work within the approved scope.
 
@@ -149,10 +149,10 @@ assignments. Correct stale criteria on GitHub before sending. Give each lane
 at most one active implementation assignment. The implementation starts from
 current `origin/master` in a fresh disposable worktree.
 
-Verify the repository and named lane in Herdr. Send `/new` by itself
-and confirm that the lane has opened a fresh chat before sending the
-assignment directly. Record the issue, lane, and receipt evidence in the
-handoff. Use the lane's acknowledgment or visible work on the assigned
+Verify the repository and named lane in Herdr. Confirm the lane has left
+the issue worktree before sending `/new` by itself. Confirm the lane has
+opened a fresh chat before sending the assignment directly. Record the issue,
+lane, and receipt evidence in the handoff. Use the lane's acknowledgment or visible work on the assigned
 issue as receipt evidence. Reconcile an uncertain send in the exact chat
 before retrying. If no eligible issue is ready, the lane cannot receive
 the message, or receipt cannot be verified, record
@@ -200,8 +200,8 @@ only after confirming it has no remaining purpose and preserving its branch.
 An open issue awaiting feedback, package acceptance, or an owner test does
 not by itself need an implementation checkout. Once the assigned
 implementation is on verified `origin/master`, remove that disposable
-worktree and free its lane immediately. Acceptance still tracked on the
-issue or in Owner Inbox leaves the lane free. Incomplete or unmerged
+worktree and free its lane immediately. Track pending acceptance on the
+issue. Incomplete or unmerged
 implementation still reserves its lane and worktree.
 
 Confirm the lane has left and no shell, build, watcher or other process is
@@ -221,8 +221,7 @@ need, and tell them the new path before retiring the old checkout.
 From outside the worktree, remove one verified worktree at a time with
 `git worktree remove <validated-worktree-path>`, without force. For the
 disposable worktree of an implementation that has been reviewed, merged and
-verified, do this as soon as the lane has left and nothing is using it, even
-if GitHub or Owner Inbox still tracks acceptance. If Git refuses, investigate
+verified, do this as soon as the lane has left and nothing is using it. If Git refuses, investigate
 the reason and retry only after resolving it. Keep the branch and confirm the
 worktree is gone from `git worktree list`.
 

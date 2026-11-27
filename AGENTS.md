@@ -2,11 +2,13 @@
 
 ## Herdr lane handoffs (owner decision 2026-11-27)
 
-The Herdr Dispatcher is stopped and disabled. Send assignments and reports
-directly in the project's named Herdr tabs. Use the GitHub issue and the
-Gatekeeper handoff to track the assigned lane, evidence, review, and release.
+The AC workflow is retired and the Herdr Dispatcher is stopped and disabled.
+Send assignments and reports directly in the project's named Herdr tabs.
+Use the GitHub issue and the Gatekeeper handoff to track the assigned lane,
+evidence, review, and release.
 Keep the archived Dispatcher ledger available for historical reconciliation.
-Use Owner Inbox for decisions, tests, and important updates that need the owner.
+Use the current chat for owner decisions, tests, and important updates when
+the owner is available here. Use Owner Inbox when the owner is traveling.
 
 ## Mandatory Gatekeeper merge and handoff checklist (#303)
 
@@ -23,22 +25,25 @@ Gatekeeper handoff.
    remove the completed disposable worktree without force. Confirm the
    removal and keep the branch. Follow the
    [worktree cleanup procedure](docs/parallel-work.md#worktree-cleanup-after-merge).
-3. Record the verified merge commit and lane release in the issue and
-   Gatekeeper handoff. Release follows confirmed cleanup.
+3. Update each linked GitHub issue with the verified merge and checks.
+   Close each issue directly once its acceptance criteria are verified.
+   Record pending criteria on open issues. Record the lane release on the
+   issue and in the Gatekeeper handoff after confirmed cleanup.
 4. Follow the [free-lane rule](docs/parallel-work.md#free-lanes) to select the
    next eligible canonical GitHub issue. Verify the named lane in Herdr.
-   Send `/new` separately, confirm the fresh chat, then send the assignment.
+   Confirm the lane has left the issue worktree before sending `/new` separately.
+   Confirm the fresh chat, then send the assignment.
    Record its issue, lane, and receipt evidence in the handoff. Verify
    receipt in that chat before counting the assignment as delivered.
 
 If review, cleanup, issue eligibility, or direct delivery
 blocks the next step, record the concrete blocker and next action in the
 Gatekeeper handoff and report them before ending the cycle. Incomplete or
-unmerged work remains assigned unless parked through the existing explicit
-Owner Inbox approval procedure. GitHub issue closure follows verified
-acceptance. Pending owner tests, package acceptance, or later feedback stay
-on the issue and in Owner Inbox while the completed lane moves on. All
-offline checks, hardware permissions, and publication rules below apply.
+unmerged work remains assigned unless the owner explicitly approves parking.
+GitHub issue closure follows verified acceptance. Keep pending owner tests,
+package acceptance, and later feedback on the issue while the completed lane
+moves on. All offline checks, hardware permissions, and publication rules
+below apply.
 
 ## Hardware boundary — user requirement
 
@@ -239,8 +244,8 @@ project. Add a checkout only while there is a specific task or an owner-run
 procedure that needs it. Once reviewed and tested, integrate durable source
 changes into `origin/master`. Once that assigned implementation has been
 reviewed, merged and verified, remove its disposable worktree and free the lane
-immediately. Owner acceptance still tracked on that open issue, in GitHub or
-Owner Inbox, does not reserve that checkout or that lane. Incomplete or
+immediately. Track pending owner acceptance on the issue while freeing the
+checkout and lane. Incomplete or
 unmerged implementation still reserves its lane.
 Read `docs/parallel-work.md` for current issue ownership, the delivery and
 cleanup procedure, and the free-lane rule. Do not duplicate another agent's
@@ -310,8 +315,7 @@ If review needs changes, the Gatekeeper sends the agent back to the same
 worktree. After the assigned implementation is reviewed, merged and verified
 on `origin/master`, and the lane has left and no process is using the worktree,
 the Gatekeeper removes that disposable worktree immediately with
-`git worktree remove` without force. Acceptance still open in GitHub or Owner
-Inbox does not keep it. Move evidence and other durable local files into the
+`git worktree remove` without force. Continue tracking pending acceptance on the issue. Move evidence and other durable local files into the
 main checkout's ignored `backups/` area and report their new paths. Discard
 verified disposable build output and checkout-only scratch work. Shared build
 caches belong under the main checkout's ignored `target/shared-builds/`
