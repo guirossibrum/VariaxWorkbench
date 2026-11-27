@@ -525,7 +525,6 @@ impl<'a> BodyCanvas<'a> {
         );
         let art_rect = Rect::from_center_size(stage.center(), size);
         paint_well(ui, stage);
-        paint_image(ui, self.body, art_rect);
 
         let paint_order = paint_order(self.pickups);
         let scale = placement.screen_scale(art_rect);
@@ -534,6 +533,17 @@ impl<'a> BodyCanvas<'a> {
             .copied()
             .map(|index| placed_sprite(self.pickups, index, placement, art_rect, scale))
             .collect();
+        if self.body.missing || self.body.texture.is_none() {
+            let visible_art = art_rect.intersect(ui.clip_rect());
+            assets::paint_placeholder(
+                ui.painter(),
+                &self.body.name,
+                art_rect,
+                body_placeholder_label_bounds(visible_art, &placed),
+            );
+        } else {
+            paint_image(ui, self.body, art_rect);
+        }
         for sprite in &placed {
             paint_pickup(
                 ui,
@@ -630,6 +640,27 @@ fn placed_sprite(
         sprite: sprite_art_size(pickup.image.pixels, placement.art) * scale,
         angle_degrees: pickup.angle_degrees,
         selected: pickup.selected,
+    }
+}
+
+fn body_placeholder_label_bounds(art: Rect, pickups: &[SpriteHit]) -> Rect {
+    if pickups.is_empty() {
+        return art;
+    }
+    // Keep the label clear of the pickup row, including rotated sprites.
+    let mut above = art;
+    let mut below = art;
+    for pickup in pickups {
+        let (sin, cos) = pickup.angle_degrees.to_radians().sin_cos();
+        let rotated_height = pickup.sprite.x * sin.abs() + pickup.sprite.y * cos.abs();
+        let half_height = rotated_height.max(pickup.sprite.y) * 0.5;
+        above.max.y = above.max.y.min(pickup.center.y - half_height);
+        below.min.y = below.min.y.max(pickup.center.y + half_height);
+    }
+    if above.height() >= below.height() {
+        above
+    } else {
+        below
     }
 }
 
