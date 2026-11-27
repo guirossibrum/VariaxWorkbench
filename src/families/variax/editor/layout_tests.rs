@@ -827,6 +827,7 @@ fn body_tab_paints_the_selected_models_private_outline_at_native_size() {
 
 #[test]
 fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
+    const NOTICE: &str = "Body outline unavailable";
     let artwork = tempfile::tempdir().unwrap();
     let (ctx, mut app) = body_tab_app(artwork.path());
     app.variax_mut()
@@ -834,7 +835,8 @@ fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
     render_body_tab(&mut app, &ctx);
     let output = render_body_tab(&mut app, &ctx);
     let path = "bodies/wireframe/lespaul.png";
-    let label = text_rect(&output, path).expect("mapped placeholder before scrolling");
+    let label = text_rect(&output, NOTICE).expect("placeholder before scrolling");
+    assert!(text_rect(&output, path).is_none());
     let (photo, inspector) = app.variax().workspace_cards.unwrap();
     render(
         &mut app,
@@ -855,7 +857,7 @@ fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
         render_body_tab(&mut app, &ctx);
     }
     let output = render_body_tab(&mut app, &ctx);
-    let label = text_rect(&output, path).expect("mapped placeholder after scrolling");
+    let label = text_rect(&output, NOTICE).expect("placeholder after scrolling");
     let slot = output
         .shapes
         .iter()
@@ -879,7 +881,98 @@ fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
     assert!(!photo.intersects(slot));
 
     app.variax_mut().tab = Tab::Controls;
-    assert!(text_rect(&render_body_tab(&mut app, &ctx), path).is_none());
+    assert!(text_rect(&render_body_tab(&mut app, &ctx), NOTICE).is_none());
+}
+
+#[test]
+fn body_outline_notice_and_loaded_art_fit_the_inspector_at_both_densities() {
+    const NOTICE: &str = "Body outline unavailable";
+    const PATH: &str = "bodies/wireframe/lespaul.png";
+    let missing = tempfile::tempdir().unwrap();
+    let loaded = tempfile::tempdir().unwrap();
+    let fixture = loaded.path().join(PATH);
+    std::fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+    image::RgbaImage::from_pixel(117, 61, image::Rgba([200, 220, 255, 255]))
+        .save(fixture)
+        .unwrap();
+
+    for size in SIZES {
+        for density in [1.0, 2.0] {
+            let (ctx, mut app) = body_tab_app(missing.path());
+            app.variax_mut()
+                .change(|preset| preset.select_model(BODY, 0x0310_0004));
+            let frame = |app: &mut Workbench, events| {
+                render(app, &ctx, size, density, events, egui::Modifiers::NONE)
+            };
+            frame(&mut app, vec![]);
+            let (photo, inspector) = app.variax().workspace_cards.unwrap();
+            let scroll = |app: &mut Workbench| {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(
+                            inspector.center().x,
+                            inspector.bottom() - 16.0,
+                        )),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -4.0),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                frame(app, vec![])
+            };
+            let label_fits = |output: &egui::FullOutput| {
+                assert!(
+                    output
+                        .shapes
+                        .iter()
+                        .all(|shape| text_bounds(&shape.shape, PATH).is_none())
+                );
+                output.shapes.iter().any(|shape| {
+                    text_bounds(&shape.shape, NOTICE).is_some_and(|bounds| {
+                        inspector.intersect(shape.clip_rect).contains_rect(bounds)
+                            && !photo.intersects(bounds)
+                    })
+                })
+            };
+            let mut output = frame(&mut app, vec![]);
+            for _ in 0..40 {
+                if label_fits(&output) {
+                    break;
+                }
+                output = scroll(&mut app);
+            }
+            assert!(
+                label_fits(&output),
+                "{size:?} at {density}x clips {NOTICE:?}"
+            );
+            assert!(app.variax().missing_textures.contains(PATH));
+
+            app.variax_mut().choose_artwork(loaded.path().into());
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            assert_eq!(app.variax().workspace_cards, Some((photo, inspector)));
+            assert!(text_rect(&output, NOTICE).is_none());
+            let texture = app.variax().textures[PATH].handle.id();
+            let outline = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                    let bounds = mesh.calc_bounds();
+                    let visible = inspector.intersect(shape.clip_rect).intersect(bounds);
+                    assert!(
+                        visible.is_positive() && visible.x_range() == bounds.x_range(),
+                        "{size:?} at {density}x shows {visible:?} of {bounds:?}"
+                    );
+                    Some(bounds)
+                }
+                _ => None,
+            });
+            let outline = outline.expect("loaded wireframe mesh");
+            assert_eq!(outline.size(), egui::vec2(117.0, 61.0));
+            assert!(!photo.intersects(outline));
+        }
+    }
 }
 
 #[test]

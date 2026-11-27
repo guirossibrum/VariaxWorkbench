@@ -52,7 +52,7 @@ impl VariaxEditor {
                 texture: Some(texture),
                 missing: false,
             },
-            None => UiImage::missing(path),
+            None => UiImage::missing("Body outline unavailable"),
         };
         let extent = outline_rect(egui::Pos2::ZERO, &image, 1.0).max.to_vec2();
         let (panel, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
