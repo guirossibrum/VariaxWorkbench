@@ -130,6 +130,8 @@ pub(super) struct VariaxEditor {
     opening_file: bool,
     parked_library: Option<ParkedLibrary>,
     library_origin: Option<LibraryOrigin>,
+    #[cfg(feature = "usb")]
+    startup_fallback: bool,
     library_import: Option<LibraryImport>,
     connection_status: Option<String>,
     firmware_notice: Option<variax_workbench::firmware_notice::FirmwareNotice>,
@@ -232,6 +234,8 @@ impl VariaxEditor {
             opening_file: false,
             parked_library: None,
             library_origin: None,
+            #[cfg(feature = "usb")]
+            startup_fallback: false,
             library_import: None,
             connection_status: None,
             firmware_notice: None,
@@ -359,6 +363,7 @@ impl VariaxEditor {
     fn adopt_document(&mut self, document: EditorDocument, path: Option<&Path>) {
         #[cfg(feature = "usb")]
         {
+            self.startup_fallback = false;
             self.live_edit.new_document();
             self.device_sync.imported_backup = None;
         }
@@ -1080,7 +1085,11 @@ impl VariaxEditor {
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
                 ui.heading("No Variax library is available");
-                ui.label("There is no recorded download or chosen factory firmware file.");
+                if self.connection_status.is_some() {
+                    ui.label("No library has been downloaded on this connection.");
+                } else {
+                    ui.label("There is no recorded download or chosen factory firmware file.");
+                }
                 ui.horizontal_wrapped(|ui| {
                     #[cfg(feature = "usb")]
                     self.download_button(ui);
@@ -1093,7 +1102,8 @@ impl VariaxEditor {
                         {
                             self.choose_library_backup(ui.ctx(), services);
                         }
-                        if self.preferences_path.is_some()
+                        if self.connection_status.is_none()
+                            && self.preferences_path.is_some()
                             && ui.button("Choose factory firmware…").clicked()
                         {
                             self.choose_factory_archive(ui.ctx(), services);
@@ -1370,6 +1380,17 @@ impl FamilyTab for VariaxEditor {
             device.and_then(crate::editor::tabs::DeviceTab::guitar_firmware_notice);
         #[cfg(feature = "usb")]
         {
+            // The shell supplies the tab kind after opening the editor.
+            if std::mem::take(&mut self.startup_fallback) && device.is_some() {
+                if self
+                    .library_origin
+                    .take()
+                    .is_some_and(|origin| origin.is_guitar_library())
+                {
+                    self.refresh.require_explicit_download();
+                }
+                self.document = None;
+            }
             self.refresh.observe(device);
             self.follow.observe(device);
             let attachment = device.and_then(live_attachment::Attachment::verified);
@@ -1511,7 +1532,13 @@ impl ProductFamily for Family {
     ) -> Result<Box<dyn FamilyTab>, String> {
         let mut editor = VariaxEditor::new(defaults);
         match source {
-            TabSource::New => editor.load_initial_library(defaults),
+            TabSource::New => {
+                editor.load_initial_library(defaults);
+                #[cfg(feature = "usb")]
+                {
+                    editor.startup_fallback = editor.library_origin.is_some();
+                }
+            }
             TabSource::File(path, bytes) => {
                 editor.adopt_document(EditorDocument::from_file_bytes(bytes, &path)?, Some(&path));
                 editor.status = format!("Opened {}", path.display());

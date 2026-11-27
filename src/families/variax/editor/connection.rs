@@ -144,6 +144,103 @@ mod tests {
     }
 
     #[test]
+    fn detected_device_starts_empty_with_only_historical_downloads() {
+        use super::super::{EditorDefaults, EditorDocument, FAMILY, startup_library};
+        use crate::editor::{Scan, Workbench, registry};
+        use variax_workbench::bundle::BundleFile;
+
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let defaults = EditorDefaults {
+            artwork: directory.path().join("artwork"),
+            preferences: Some(directory.path().join("editor-preferences.txt")),
+            startup_panel: None,
+        };
+        let preferences = defaults.preferences.as_deref().unwrap();
+        let mut snapshot =
+            EditorDocument::from_bundle(BundleFile::new_default_bundle().unwrap(), "old".into())
+                .unwrap();
+        snapshot
+            .apply(|preset| preset.rename("Prior guitar"))
+            .unwrap();
+        startup_library::save_download(
+            preferences,
+            &snapshot,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        let single_preset = EditorDocument::from_file_bytes(
+            include_bytes!("../../../../tests/fixtures/editor-preset.vwm").to_vec(),
+            std::path::Path::new("incompatible.vwm"),
+        )
+        .unwrap();
+        startup_library::save_download(
+            preferences,
+            &single_preset,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(40),
+        )
+        .unwrap();
+        let before = super::super::new_files::synthetic_backup::snapshot(directory.path());
+
+        let mut app = Workbench::new(&ctx, defaults);
+        app.detection = Some(super::super::refresh::tests::verified_rig());
+        let render = |app: &mut Workbench| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 960.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            )
+        };
+        let devices = app
+            .detection
+            .as_mut()
+            .unwrap()
+            .refresh(Scan::Automatic, registry::DEVICE_PROFILES)
+            .unwrap();
+        app.tabs
+            .reconcile_devices(devices, registry::FAMILIES, &app.defaults)
+            .unwrap();
+        super::super::refresh::tests::allow_fake_automatic_download(app.variax_mut());
+        app.select_test_editor::<VariaxEditor>();
+        let output = render(&mut app);
+        let editor = app.variax();
+        assert!(editor.download_target_ready());
+        assert!(!editor.is_reading());
+        assert!(!editor.has_document());
+        assert!(editor.library_label().is_none());
+        assert!(editor.parked_library.is_none());
+        assert_eq!(count_labels(&output, "No Variax library is available"), 1);
+        assert_eq!(count_labels(&output, "Download from guitar…"), 1);
+        assert_eq!(count_labels(&output, "Choose factory firmware…"), 0);
+
+        app.new_tab(&FAMILY);
+        let offline = app.tabs.active.unwrap();
+        render(&mut app);
+        let entry = &app.tabs.entries[app.tabs.index(offline).unwrap()];
+        assert!(entry.device.is_none());
+        let editor = (entry.editor.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<VariaxEditor>()
+            .unwrap();
+        assert_eq!(
+            editor.library_label().as_deref(),
+            Some("Saved guitar download · 1970-01-01 00:00:30 UTC")
+        );
+        assert_eq!(
+            editor.document.as_ref().unwrap().as_bytes(),
+            snapshot.as_bytes()
+        );
+        assert_eq!(
+            super::super::new_files::synthetic_backup::snapshot(directory.path()),
+            before
+        );
+    }
+
+    #[test]
     fn firmware_notice_stays_with_the_offline_editor_and_clears_on_verification() {
         use super::super::{EditorDocument, FamilyTab};
         use variax_workbench::firmware_notice::FirmwareNotice;
