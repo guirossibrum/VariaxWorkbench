@@ -616,6 +616,12 @@ impl VariaxEditor {
     }
 
     fn model_details(&mut self, ui: &mut egui::Ui, available: bool) {
+        const TRIM_WIDTH: f32 = 240.0;
+        let (model_width, author_width) = if ui.available_width() < 1000.0 {
+            (144.0, 100.0)
+        } else {
+            (168.0, 120.0)
+        };
         let document = self
             .document
             .as_ref()
@@ -631,25 +637,22 @@ impl VariaxEditor {
         #[cfg(test)]
         self.name_notice.clear();
 
-        ui.horizontal_wrapped(|ui| {
-            ui.vertical(|ui| {
+        let (author, stored_author) = ui
+            .horizontal_wrapped(|ui| {
                 ui.horizontal(|ui| {
                     ui.add_sized([42.0, 17.0], egui::Label::new("Model"));
                     let response = ui.add_enabled(
                         editable,
                         egui::TextEdit::singleline(&mut name)
                             .id(egui::Id::new("variax-model-name"))
-                            .desired_width(168.0)
+                            .desired_width(model_width)
                             .hint_text("Model name"),
                     );
                     self.limited_text(response, &stored_name, name.clone(), true);
                 });
-                self.name_flag(ui, "Model", &name, name == stored_name);
-            });
-            ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label("Author");
-                    self.metadata_field(ui, editable, PresetText::Author, 120.0);
+                    self.metadata_field(ui, editable, PresetText::Author, author_width);
                 });
                 let stored_author = self
                     .document
@@ -660,30 +663,50 @@ impl VariaxEditor {
                     .author_draft
                     .clone()
                     .unwrap_or_else(|| stored_author.clone());
-                self.name_flag(ui, "Author", &author, author == stored_author);
-            });
-            ui.label("Notes");
-            let notes_width = (ui.available_width() - 300.0).clamp(96.0, 240.0);
-            self.metadata_field(ui, editable, PresetText::Notes, notes_width);
-            if ui
-                .add_enabled(can_undo, egui::Button::new("Undo"))
-                .clicked()
-            {
-                self.undo();
-            }
-            if ui
-                .add_enabled(can_redo, egui::Button::new("Redo"))
-                .clicked()
-            {
-                self.redo();
-            }
-            if self.can_edit(SYSTEM, Some(0x200000)) {
-                ui.add_enabled_ui(editable, |ui| {
-                    ui.spacing_mut().slider_width = 70.0;
-                    self.float_control(ui, SYSTEM, 0x200000, "Output trim", ValueFormat::TRIM);
+                ui.horizontal(|ui| {
+                    ui.label("Notes");
+                    // Leave room after Notes for the history buttons and trim.
+                    let notes_width =
+                        (ui.available_width() - TRIM_WIDTH - 160.0).clamp(96.0, 240.0);
+                    self.metadata_field(ui, editable, PresetText::Notes, notes_width);
                 });
-            }
-        });
+                if ui
+                    .add_enabled(can_undo, egui::Button::new("Undo"))
+                    .clicked()
+                {
+                    self.undo();
+                }
+                if ui
+                    .add_enabled(can_redo, egui::Button::new("Redo"))
+                    .clicked()
+                {
+                    self.redo();
+                }
+                if self.can_edit(SYSTEM, Some(0x200000)) {
+                    // Reserve room for the track, numeric field and caption as one item.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(TRIM_WIDTH, ui.spacing().interact_size.y),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add_enabled_ui(editable, |ui| {
+                                ui.spacing_mut().slider_width = 70.0;
+                                self.float_control(
+                                    ui,
+                                    SYSTEM,
+                                    0x200000,
+                                    "Output trim",
+                                    ValueFormat::TRIM,
+                                );
+                            });
+                        },
+                    );
+                }
+                (author, stored_author)
+            })
+            .inner;
+        // A long notice gets the header width without widening either text field.
+        self.name_flag(ui, "Model", &name, name == stored_name);
+        self.name_flag(ui, "Author", &author, author == stored_author);
     }
 
     fn metadata_field(&mut self, ui: &mut egui::Ui, editable: bool, field: PresetText, width: f32) {
@@ -729,10 +752,13 @@ impl VariaxEditor {
             return;
         };
         let line = format!("{label}: {issue}");
-        ui.label(
-            egui::RichText::new(&line)
-                .small()
-                .color(Color32::from_rgb(214, 168, 72)),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&line)
+                    .small()
+                    .color(Color32::from_rgb(214, 168, 72)),
+            )
+            .wrap(),
         );
         #[cfg(test)]
         self.name_notice.push_str(&line);
