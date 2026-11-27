@@ -7,14 +7,14 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from release_manifest import PROFILES, TARGET_MARKERS, record, sha256, verify
+from release_manifest import OWNER_DMG, PROFILES, TARGET_MARKERS, record, sha256, verify
 from windows.package import APPS, GNU_BUILD_ORIGIN, GNU_TARGET, GNU_VERIFICATION, build_zip
 from windows.pe_fixture import executable
 
 
 RUN_ID = "12345"
 RUSTC_COMMIT = "a" * 40
-DMG = "Variax Workbench - Owner USB.dmg"
+DMG = OWNER_DMG
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -36,7 +36,7 @@ class ReleaseCommandTests(unittest.TestCase):
 
         packaging = self.repo / "packaging"
         packaging.mkdir()
-        for script in ("build-release.sh", "release_manifest.py"):
+        for script in ("build-release.sh", "deliver-owner-dmg.sh", "release_manifest.py"):
             shutil.copyfile(SCRIPTS / script, packaging / script)
         (packaging / "windows").mkdir()
         shutil.copyfile(SCRIPTS / "windows/package.py", packaging / "windows/package.py")
@@ -119,10 +119,52 @@ esac
             encoding="utf-8",
         )
         gh.chmod(0o755)
-        for command in ("ssh", "scp"):
-            executable = bin_dir / command
-            executable.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
-            executable.chmod(0o755)
+        remote_bin = self.root / "remote bin"
+        remote_bin.mkdir()
+        downloads = self.root / "Mac Downloads"
+        downloads.mkdir()
+        self.downloads = downloads
+        for path, script in (
+            (bin_dir / "ssh", r"""#!/bin/bash
+set -euo pipefail
+printf 'transfer\n' >> "$TEST_CALLS"
+test "$#" = 7
+test "$1 $2 $3 $4 $5 $6" = '-T -o BatchMode=yes -o ConnectTimeout=10 test-mac'
+if [[ "$TEST_FAILURE" == ssh ]]; then
+    printf 'Mock SSH connection failed\n' >&2
+    exit 255
+fi
+if [[ "$TEST_FAILURE" != legacy-copy ]]; then
+    sets=("$TEST_OUTPUT"/variax-workbench-owner-build-*)
+    test "${#sets[@]}" = 1
+    test -s "${sets[0]}/release-manifest.json"
+    test -s "${sets[0]}/windows/windows.zip"
+    test -s "${sets[0]}/linux/rig-check"
+    test -s "${sets[0]}/macos/Variax Workbench - Owner USB.dmg"
+fi
+export PATH="$TEST_REMOTE_BIN:$PATH"
+command=${7//'$HOME/Downloads'/'$TEST_DOWNLOADS'}
+case "$TEST_FAILURE" in
+    corrupt-transfer) printf 'corrupted DMG' | /bin/sh -c "$command" ;;
+    lost-ack) /bin/sh -c "$command" >/dev/null; exit 255 ;;
+    *) /bin/sh -c "$command" ;;
+esac
+"""),
+            (bin_dir / "scp", "#!/bin/bash\nexit 99\n"),
+            (remote_bin / "uname", "#!/bin/bash\nprintf 'Darwin\n'\n"),
+            (remote_bin / "shasum", r"""#!/bin/bash
+set -euo pipefail
+test "$1 $2" = "-a 256"
+checksum=$(sha256sum "$3")
+digest=${checksum%% *}
+if [[ "$TEST_FAILURE" == directory-race && "$3" == */.variax-owner-dmg.* ]]; then
+    mkdir "$TEST_DOWNLOADS/Variax Workbench (Build 1 ${TEST_REVISION:0:8} Owner USB ${digest:0:12}).dmg"
+fi
+printf '%s\n' "$checksum"
+"""),
+        ):
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
 
         self.output = self.root / "owner delivery"
         self.calls = self.root / "calls"
@@ -141,6 +183,8 @@ esac
             "TEST_GNU": str(self.gnu),
             "TEST_PAIR": str(self.private_pair),
             "TEST_OUTPUT": str(self.output),
+            "TEST_REMOTE_BIN": str(remote_bin),
+            "TEST_DOWNLOADS": str(downloads),
             "TEST_ALPHA": "",
             "TEST_FAILURE": "",
         }
@@ -226,6 +270,28 @@ esac
             ["/bin/bash", "packaging/build-release.sh", "--revision", "owner-pin", *options, *args],
             cwd=self.repo, env=self.env, text=True, capture_output=True, check=False, timeout=10,
         )
+
+    def retry_dmg(self, delivery):
+        return subprocess.run(
+            ["/bin/bash", str(self.repo / "packaging/build-release.sh"),
+             "--retry-owner-dmg", str(delivery), "--mac-host", "test-mac"],
+            cwd=self.root, env=self.env, text=True, capture_output=True, check=False, timeout=10,
+        )
+
+    def expected_download(self):
+        digest = sha256(self.private_pair / "macos" / DMG)
+        return self.downloads / f"Variax Workbench (Build 1 {self.revision[:8]} Owner USB {digest[:12]}).dmg"
+
+    def assert_transfer_failure_retains_set(self, result):
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_calls("gnu", "private", "transfer")
+        delivery, = self.output.iterdir()
+        self.assertTrue((delivery / "release-manifest.json").is_file())
+        self.assertIn(f"Verified local set retained at {delivery}", result.stderr)
+        self.assertIn("Retry transfer only:", result.stderr)
+        self.assertNotIn("Mac DMG verified at", result.stdout)
+        self.assertFalse(list(self.downloads.glob(".variax-owner-dmg.*")))
+        return delivery
 
     def assert_calls(self, *calls):
         actual = self.calls.read_text(encoding="utf-8").splitlines() if self.calls.exists() else []
@@ -334,7 +400,7 @@ esac
         self.git("remote", "remove", "origin")
         result = self.run_release(mode="--owner-delivery")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_calls("gnu", "private")
+        self.assert_calls("gnu", "private", "transfer")
         delivery, = self.output.iterdir()
         manifest = json.loads((delivery / "release-manifest.json").read_text(encoding="utf-8"))
         self.assertNotIn("hosted_artifact_run_id", manifest)
@@ -352,6 +418,10 @@ esac
         detached = delivery / "windows/windows.zip.sha256"
         self.assertEqual(windows["files"][detached.name], sha256(detached))
         self.assertFalse((delivery / "mac-download.txt").exists())
+        downloaded, = self.downloads.iterdir()
+        self.assertEqual(downloaded, self.expected_download())
+        self.assertEqual(sha256(downloaded), manifest["platforms"]["macos"]["files"][DMG])
+        self.assertIn(f"Mac DMG verified at test-mac:{downloaded}", result.stdout)
         recheck = subprocess.run(
             ["python3", str(SCRIPTS / "release_manifest.py"), self.revision, str(delivery),
              "--check-local-owner-delivery"],
@@ -359,6 +429,101 @@ esac
             check=False, timeout=10,
         )
         self.assertEqual(recheck.returncode, 0, recheck.stderr)
+
+    def test_ssh_failure_allows_transfer_only_retry_from_outside_git(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.env["TEST_FAILURE"] = "ssh"
+        result = self.run_release(mode="--owner-delivery")
+        delivery = self.assert_transfer_failure_retains_set(result)
+        self.assertIn("Mock SSH connection failed", result.stderr)
+        self.assertEqual(list(self.downloads.iterdir()), [])
+        self.git("remote", "remove", "origin")
+        shutil.rmtree(self.private_pair)
+        shutil.rmtree(self.gnu)
+        self.env["TEST_FAILURE"] = ""
+        result = self.retry_dmg(delivery)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_calls("gnu", "private", "transfer", "transfer")
+        downloaded, = self.downloads.iterdir()
+        self.assertEqual(downloaded.read_bytes(), (delivery / "macos" / DMG).read_bytes())
+
+    def test_changed_saved_set_is_refused_before_retry_contacts_mac(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.env["TEST_FAILURE"] = "ssh"
+        delivery = self.assert_transfer_failure_retains_set(self.run_release(mode="--owner-delivery"))
+        self.env["TEST_FAILURE"] = ""
+        for name in ("linux/rig-check", f"macos/{DMG}", "windows/windows.zip", "release-manifest.json"):
+            with self.subTest(name=name):
+                path = delivery / name
+                contents = path.read_bytes()
+                path.write_bytes(b"changed")
+                result = self.retry_dmg(delivery)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assert_calls("gnu", "private", "transfer")
+                path.write_bytes(contents)
+
+    def test_corrupt_stream_keeps_downloads_empty(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.env["TEST_FAILURE"] = "corrupt-transfer"
+        result = self.run_release(mode="--owner-delivery")
+        self.assert_transfer_failure_retains_set(result)
+        self.assertIn("staged DMG checksum mismatch", result.stderr)
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_destination_collision_preserves_existing_file(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        destination = self.expected_download()
+        destination.write_bytes(b"existing contents")
+        result = self.run_release(mode="--owner-delivery")
+        self.assert_transfer_failure_retains_set(result)
+        self.assertIn(f"destination already exists: {destination}", result.stderr)
+        self.assertEqual(destination.read_bytes(), b"existing contents")
+
+    def test_directory_created_during_transfer_receives_no_file(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.env["TEST_FAILURE"] = "directory-race"
+        result = self.run_release(mode="--owner-delivery")
+        self.assert_transfer_failure_retains_set(result)
+        self.assertIn("Could not create", result.stderr)
+        self.assertEqual(list(self.downloads.iterdir()), [self.expected_download()])
+        self.assertEqual(list(self.expected_download().iterdir()), [])
+
+    def test_shared_helper_copies_the_existing_remote_dmg_for_the_usb_pair(self):
+        source = self.root / "Mac builder's DMG"
+        source.write_bytes(b"remote builder's verified bytes")
+        filename = "Variax Workbench (standalone Owner USB).dmg"
+        result = subprocess.run(
+            ["/bin/bash", "-c", 'source "$1"; deliver_owner_dmg test-mac "$2" "$3" "$4"', "--",
+             str(SCRIPTS / "deliver-owner-dmg.sh"), filename, sha256(source), str(source)],
+            env={**self.env, "TEST_FAILURE": "legacy-copy"}, text=True, capture_output=True,
+            check=False, timeout=10, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_calls("transfer")
+        destination, = self.downloads.iterdir()
+        self.assertEqual(destination, self.downloads / filename)
+        self.assertEqual(result.stdout.strip(), str(destination))
+        self.assertEqual(destination.read_bytes(), source.read_bytes())
+
+    def test_retry_accepts_a_verified_copy_after_lost_ssh_acknowledgment(self):
+        self.make_gnu_package()
+        self.record_gnu_package()
+        self.env["TEST_FAILURE"] = "lost-ack"
+        delivery = self.assert_transfer_failure_retains_set(self.run_release(mode="--owner-delivery"))
+        destination, = self.downloads.iterdir()
+        inode = destination.stat().st_ino
+        self.env["TEST_FAILURE"] = ""
+        result = self.retry_dmg(delivery)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_calls("gnu", "private", "transfer", "transfer")
+        self.assertEqual(destination, self.expected_download())
+        self.assertEqual(destination.stat().st_ino, inode)
+        self.assertEqual(sha256(destination), sha256(delivery / "macos" / DMG))
 
     def test_local_worker_failure_cleans_staged_output_and_skips_pair(self):
         self.make_gnu_package()
