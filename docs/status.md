@@ -10,7 +10,7 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
-- [x] The Variax tuning band uses its visible height for scrolling. Headless Chime checks at 960×680 and 1120×760 at 1× and 2× reach the last string and Lock, Reset, and Zero detune by wheel, verify preset undo, and show the family Mix, Detune, and Zero detune controls on Tab focus. The design lane has the measurements for the remaining shared TuningPanel focus issue. [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224).
+- [x] The Variax tuning band uses its visible height for scrolling. Headless Chime checks at 960×680 and 1120×760 at 1× and 2× reach the last string and Lock, Reset, and Zero detune by wheel, verify preset undo, and show the family Mix, Detune, and Zero detune controls on Tab focus. The shared TuningPanel also reveals Low E Shift, Lock and Reset on Tab and Shift+Tab at all four headless viewport settings. [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224).
 
 - [x] The Variax inspector places the body name, tabs, and Preferences on one wrapping row and fits the scrolling controls to the available height. Headless editor checks at 960×680 and 1120×760 at 1× and 2× cover initial visibility, access to the final Pickups and Controls rows, pointer edits, and keyboard Undo and Redo. [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224).
 

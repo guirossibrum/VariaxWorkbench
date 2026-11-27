@@ -329,6 +329,7 @@ impl TuningPanel<'_> {
                 .on_disabled_hover_text(
                     "Mix lock requires a twelve-string body and six mix controls",
                 );
+            reveal_on_focus(&lock);
             if can_lock && locked != self.locked {
                 events.push(TuningEvent::Lock(locked));
             }
@@ -565,6 +566,7 @@ fn value_cell(
             },
         )
         .inner;
+    reveal_on_focus(&response);
     let changed = if interactive && value != stored {
         let value = value.clamp(*range.start(), *range.end());
         let value = match format {
@@ -602,10 +604,24 @@ fn text_button(
             .min_size(vec2(TARGET, TARGET))
             .selected(selected),
     );
+    reveal_on_focus(&response);
     if tip.is_empty() {
         response
     } else {
         response.on_hover_text(tip).on_disabled_hover_text(tip)
+    }
+}
+
+fn reveal_on_focus(response: &egui::Response) {
+    // A pointer click can also enter a value cell. Keep its scroll position.
+    if response.gained_focus()
+        && !response.interact_rect.contains_rect(response.rect)
+        && !response.clicked_by(egui::PointerButton::Primary)
+    {
+        response.scroll_to_me_animation(
+            Some(egui::Align::Center),
+            egui::style::ScrollAnimation::none(),
+        );
     }
 }
 
@@ -698,6 +714,7 @@ fn place_symbol(
         )
         .on_hover_text(tip)
         .on_disabled_hover_text(tip);
+    reveal_on_focus(&response);
     (response.rect, enabled && response.clicked())
 }
 
@@ -774,6 +791,7 @@ fn lane_input(
         "Drag left or right to shift {}",
         stored.map(|item| item.name).unwrap_or("this string")
     ));
+    reveal_on_focus(&response);
     if !panel.interactive {
         if ui.data(|data| data.get_temp::<LaneDrag>(id)).is_some() {
             ui.data_mut(|data| data.remove::<LaneDrag>(id));
