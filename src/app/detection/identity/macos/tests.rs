@@ -405,7 +405,7 @@ fn malformed_or_incomplete_reply_does_not_trigger_a_silence_resend() {
             Outcome::Finished {
                 guitar: Guitar::Unavailable(reason),
                 ..
-            } if reason.starts_with("Variax identity exchange failed:")
+            } if reason.starts_with("Variax identity exchange on PODxt Live interface 1 failed after checked USB release:")
         ));
         assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
     }
@@ -495,7 +495,7 @@ fn guitar_open_refusals_name_the_stage_without_sending_identity() {
                 outcome,
                 Outcome::Finished { pod_firmware: actual, guitar: Guitar::Unavailable(reason) }
                     if actual == pod_firmware
-                        && reason.strip_prefix("Variax USB interface 1 open failed: ") == Some(error)
+                        && reason.strip_prefix("Variax via PODxt Live interface 1 preparation failed: ") == Some(error)
             ));
             assert!(rig.guitar_requests().is_empty());
             assert_eq!(

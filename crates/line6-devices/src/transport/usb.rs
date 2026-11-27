@@ -120,7 +120,7 @@ impl<Rig> UsbInterfaceLink<Rig> {
     ) -> Result<Self, String> {
         let handle = device.open().map_err(|error| {
             #[cfg(target_os = "macos")]
-            return macos::open_error(error);
+            return format!("Open PODxt Live USB: {}", macos::open_error(error));
             #[cfg(not(target_os = "macos"))]
             format!("Cannot open the USB device: {error}")
         })?;
@@ -179,7 +179,10 @@ impl<Rig> UsbInterfaceLink<Rig> {
         let interface = self.spec.interface;
         self.handle.claim_interface(interface).map_err(|error| {
             #[cfg(target_os = "macos")]
-            return macos::open_error(error);
+            return format!(
+                "Claim PODxt Live interface {interface}: {}",
+                macos::open_error(error)
+            );
             #[cfg(not(target_os = "macos"))]
             format!("Claim interface {interface}: {error}")
         })?;

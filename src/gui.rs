@@ -768,17 +768,18 @@ impl Workbench {
         let mut verify_g1 = false;
         let mut save_report = false;
         let mut backup = None;
-        let draw = |ui: &mut egui::Ui| {
-            if self.has_prompt() || self.picker.is_open() {
+        let timed_out = self.device_check.identification_timed_out();
+        let mut draw = |ui: &mut egui::Ui, app: &mut Self| {
+            if app.has_prompt() || app.picker.is_open() {
                 ui.disable();
             }
-            if self.device_check.mode() == ProbeMode::ThisComputer
+            if app.device_check.mode() == ProbeMode::ThisComputer
                 && let Some(notice) = device_check_platform_notice()
             {
                 ui.label(notice);
                 #[cfg(test)]
                 {
-                    self.device_check_visible = notice.into();
+                    app.device_check_visible = notice.into();
                 }
                 return;
             }
@@ -805,14 +806,16 @@ impl Workbench {
                 ui.colored_label(theme::AMBER, &text);
                 visible.push_str(&format!("\n{text}"));
             }
-            restart = self
-                .device_check_button(ui, "restart", "Start over")
-                .clicked();
+            if !timed_out {
+                restart = app
+                    .device_check_button(ui, "restart", "Start over")
+                    .clicked();
+            }
             ui.separator();
             for stage in Stage::LADDER {
-                let status = self.device_check.status(stage);
-                let waiting = self.device_check.awaiting() == Some(stage);
-                let unavailable = self.device_check.locked(stage);
+                let status = app.device_check.status(stage);
+                let waiting = app.device_check.awaiting() == Some(stage);
+                let unavailable = app.device_check.locked(stage);
                 let gate_locked = hardware_gates::is_locked(stage.gate());
                 let (mark, colour, state) = match status {
                     StageStatus::Passed => ("✔", theme::OK, status.label()),
@@ -852,7 +855,9 @@ impl Workbench {
                     );
                     ui.label(egui::RichText::new(state).size(theme::STATUS).color(colour));
                 });
-                if let Some(detail) = self.device_check.detail(stage) {
+                if !(timed_out && stage == Stage::Identification)
+                    && let Some(detail) = app.device_check.detail(stage)
+                {
                     ui.indent(("device-check-detail", stage.number()), |ui| {
                         ui.label(detail);
                     });
@@ -865,7 +870,7 @@ impl Workbench {
                 }
             });
             ui.separator();
-            if let Some(stage) = self.device_check.awaiting() {
+            if let Some(stage) = app.device_check.awaiting() {
                 ui.heading(format!("Step {}: {}", stage.number(), stage.title()));
                 ui.strong("What it does");
                 ui.label(stage.action());
@@ -874,13 +879,16 @@ impl Workbench {
                 visible.push_str(&format!("\n{}\n{}", stage.action(), stage.risk()));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let no = self.device_check_button(ui, "no", "No, stop");
+                    let no = app.device_check_button(ui, "no", "No, stop");
                     if ui.is_enabled()
-                        && (self.device_check_focus != Some(stage)
+                        && (app.device_check_focus != Some(stage)
                             || ui.memory(|memory| memory.focused().is_none()))
                     {
                         no.request_focus();
-                        self.device_check_focus = Some(stage);
+                        if !ui.clip_rect().contains_rect(no.rect) {
+                            no.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
+                        }
+                        app.device_check_focus = Some(stage);
                     }
                     if no.clicked() {
                         answer = Some(Consent::No);
@@ -889,13 +897,15 @@ impl Workbench {
                     visible.push_str(yes);
                     let enabled = stage != Stage::SettingsRead || !variax_backup_blocked;
                     ui.add_enabled_ui(enabled, |ui| {
-                        if self.device_check_button(ui, "yes", yes).clicked() {
+                        if app.device_check_button(ui, "yes", yes).clicked() {
                             answer = Some(Consent::Yes);
                         }
                     });
                 });
-            } else if self.device_check.status(Stage::UsbRecognition) != StageStatus::NotRun {
-                let outcome = match self.device_check.stopped() {
+            } else if !timed_out
+                && app.device_check.status(Stage::UsbRecognition) != StageStatus::NotRun
+            {
+                let outcome = match app.device_check.stopped() {
                     Some((stage, _)) => format!(
                         "Stopped at step {}. Nothing further runs; choose Start over to try again.",
                         stage.number()
@@ -910,22 +920,22 @@ impl Workbench {
                 ui.heading("Backup");
                 ui.label(BACKUP_INTRO);
                 visible.push_str(BACKUP_INTRO);
-                if self.backup_rx.is_some() {
+                if app.backup_rx.is_some() {
                     ui.label("Backup is running. Leave this window open.");
                     visible.push_str("\nBackup is running.");
-                    if let Some(cancel) = &self.backup_cancel {
+                    if let Some(cancel) = &app.backup_cancel {
                         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             ui.label(
                                 "Stopping after the current request and returning the driver.",
                             );
-                        } else if self
+                        } else if app
                             .device_check_button(ui, "backup-stop", "Stop full backup")
                             .clicked()
                         {
-                            self.cancel_full_backup();
+                            app.cancel_full_backup();
                         }
                     }
-                } else if let Some(choice) = self.backup_choice {
+                } else if let Some(choice) = app.backup_choice {
                     let (does, yes) = match choice {
                         BackupChoice::Variax => (BACKUP_VARIAX_DOES, BACKUP_VARIAX_YES),
                         BackupChoice::VariaxFull => {
@@ -936,12 +946,12 @@ impl Workbench {
                     ui.label(does);
                     visible.push_str(does);
                     ui.horizontal(|ui| {
-                        let no = self.device_check_button(ui, "backup-no", "No, stop");
+                        let no = app.device_check_button(ui, "backup-no", "No, stop");
                         if no.clicked() {
-                            self.backup_choice = None;
-                            self.device_check_notice = "Nothing was read.".into();
+                            app.backup_choice = None;
+                            app.device_check_notice = "Nothing was read.".into();
                         }
-                        if self.device_check_button(ui, "backup-yes", yes).clicked() {
+                        if app.device_check_button(ui, "backup-yes", yes).clicked() {
                             backup = Some(choice);
                         }
                     });
@@ -950,101 +960,101 @@ impl Workbench {
                     ui.horizontal(|ui| {
                         if backup_offered(BackupChoice::Variax) && !variax_backup_blocked {
                             visible.push_str(BACKUP_VARIAX);
-                            if self
+                            if app
                                 .device_check_button(ui, "backup-variax", BACKUP_VARIAX)
                                 .clicked()
                             {
-                                self.backup_choice = Some(BackupChoice::Variax);
+                                app.backup_choice = Some(BackupChoice::Variax);
                             }
                         }
                         if backup_offered(BackupChoice::Podxt) && !pod_unverified {
                             visible.push_str(BACKUP_PODXT);
-                            if self
+                            if app
                                 .device_check_button(ui, "backup-podxt", BACKUP_PODXT)
                                 .clicked()
                             {
-                                self.backup_choice = Some(BackupChoice::Podxt);
+                                app.backup_choice = Some(BackupChoice::Podxt);
                             }
                         }
                     });
                     if backup_offered(BackupChoice::VariaxFull)
                         && !variax_backup_blocked
-                        && self.verified_backup_guitar().is_some()
+                        && app.verified_backup_guitar().is_some()
                     {
-                        if self
+                        if app
                             .device_check_button(ui, "backup-variax-full", BACKUP_VARIAX_FULL)
                             .clicked()
                         {
-                            self.backup_choice = Some(BackupChoice::VariaxFull);
+                            app.backup_choice = Some(BackupChoice::VariaxFull);
                         }
                         visible.push_str(BACKUP_VARIAX_FULL);
                     }
                 }
             }
-            if tone_offered() && (!pod_unverified || self.tone_rx.is_some()) {
+            if tone_offered() && (!pod_unverified || app.tone_rx.is_some()) {
                 ui.separator();
                 ui.heading("PODxt Live tone");
                 ui.label(TONE_INTRO);
                 visible.push_str(TONE_INTRO);
                 ui.label(TONE_KEEP);
                 visible.push_str(TONE_KEEP);
-                if self.tone_rx.is_some() {
+                if app.tone_rx.is_some() {
                     ui.label("The tone check is running. Leave this window open.");
                     visible.push_str("\nThe tone check is running.");
-                } else if let Some(choice) = self.tone_choice {
+                } else if let Some(choice) = app.tone_choice {
                     let (does, yes) = match choice {
                         ToneChoice::Try => (TONE_TRY_DOES.to_owned(), TONE_TRY_YES),
                         ToneChoice::Channel => {
-                            (channel_does(self.tone_channel.trim()), TONE_CHANNEL_YES)
+                            (channel_does(app.tone_channel.trim()), TONE_CHANNEL_YES)
                         }
                     };
                     ui.label(&does);
                     visible.push_str(&does);
                     ui.horizontal(|ui| {
-                        let no = self.device_check_button(ui, "tone-no", "No, stop");
+                        let no = app.device_check_button(ui, "tone-no", "No, stop");
                         if no.clicked() {
-                            self.tone_choice = None;
-                            self.device_check_notice = "Nothing was changed.".into();
+                            app.tone_choice = None;
+                            app.device_check_notice = "Nothing was changed.".into();
                         }
-                        if self.device_check_button(ui, "tone-yes", yes).clicked() {
-                            self.start_tone(choice);
+                        if app.device_check_button(ui, "tone-yes", yes).clicked() {
+                            app.start_tone(choice);
                         }
                     });
                     visible.push_str(yes);
                 } else {
                     ui.horizontal(|ui| {
-                        if self.device_check_button(ui, "tone-try", TONE_TRY).clicked() {
-                            self.tone_choice = Some(ToneChoice::Try);
+                        if app.device_check_button(ui, "tone-try", TONE_TRY).clicked() {
+                            app.tone_choice = Some(ToneChoice::Try);
                         }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Channel");
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.tone_channel)
+                            egui::TextEdit::singleline(&mut app.tone_channel)
                                 .desired_width(80.0)
                                 .hint_text("1A"),
                         );
-                        if self
+                        if app
                             .device_check_button(ui, "tone-channel", TONE_CHANNEL)
                             .clicked()
                         {
-                            match parse_tone_channel(&self.tone_channel) {
+                            match parse_tone_channel(&app.tone_channel) {
                                 Ok(label) => {
-                                    self.tone_channel = label;
-                                    self.tone_choice = Some(ToneChoice::Channel);
+                                    app.tone_channel = label;
+                                    app.tone_choice = Some(ToneChoice::Channel);
                                 }
-                                Err(error) => self.device_check_notice = error,
+                                Err(error) => app.device_check_notice = error,
                             }
                         }
                     });
                     visible.push_str(TONE_TRY);
                     visible.push_str(TONE_CHANNEL);
-                    visible.push_str(&self.tone_channel);
+                    visible.push_str(&app.tone_channel);
                 }
             }
             #[cfg(feature = "usb")]
-            if self.backup_rx.is_none() && self.tone_rx.is_none() {
-                let mut podxts = self.tabs.entries.iter().filter(|entry| {
+            if app.backup_rx.is_none() && app.tone_rx.is_none() {
+                let mut podxts = app.tabs.entries.iter().filter(|entry| {
                     entry.family.info().id == "podxt"
                         && entry
                             .device
@@ -1053,7 +1063,7 @@ impl Workbench {
                             .is_some()
                 });
                 if let (Some(id), None) = (podxts.next().map(|entry| entry.id), podxts.next()) {
-                    self.with_tab(id, |entry, services| {
+                    app.with_tab(id, |entry, services| {
                         if let Some(editor) = (&mut *entry.editor as &mut dyn std::any::Any)
                             .downcast_mut::<podxt_panel::PodxtEditor>()
                         {
@@ -1062,10 +1072,10 @@ impl Workbench {
                     });
                 }
             }
-            let report = self.device_check.report();
-            let sanitized = self.device_check.sanitized_report();
+            let report = app.device_check.report();
+            let sanitized = app.device_check.sanitized_report();
             ui.horizontal(|ui| {
-                if self
+                if app
                     .device_check_button(ui, "copy", "Copy detailed report (#125)")
                     .clicked()
                 {
@@ -1080,25 +1090,24 @@ impl Workbench {
                 ui.monospace(&sanitized);
             });
             visible.push_str(reports_note);
-            save_report = self
-                .device_check_button(ui, "save-report", "Save steps 1–2 report")
-                .clicked();
-            if self.device_check.identification_answered() {
-                visible.push_str(device_probe::SAVE_THEN_CHECK_AGAIN);
-                if self
-                    .device_check_button(ui, "verify-g1", device_probe::SAVE_THEN_CHECK_AGAIN)
-                    .clicked()
-                {
-                    verify_g1 = true;
+            if !timed_out {
+                save_report = app
+                    .device_check_button(ui, "save-report", "Save steps 1–2 report")
+                    .clicked();
+                if app.device_check.identification_answered() {
+                    visible.push_str(device_probe::SAVE_THEN_CHECK_AGAIN);
+                    verify_g1 = app
+                        .device_check_button(ui, "verify-g1", device_probe::SAVE_THEN_CHECK_AGAIN)
+                        .clicked();
                 }
-            }
-            if !self.device_check_notice.is_empty() {
-                ui.label(&self.device_check_notice);
-                visible.push_str(&format!("\n{}", self.device_check_notice));
+                if !app.device_check_notice.is_empty() {
+                    ui.label(&app.device_check_notice);
+                    visible.push_str(&format!("\n{}", app.device_check_notice));
+                }
             }
             #[cfg(test)]
             {
-                self.device_check_visible = visible;
+                app.device_check_visible = visible;
             }
             #[cfg(not(test))]
             let _ = visible;
@@ -1115,6 +1124,8 @@ impl Workbench {
             .corner_radius(theme::RADIUS_PANEL)
             .inner_margin(egui::Margin::same(6))
             .shadow(ctx.style().visuals.window_shadow);
+        let mut timeout_restart = false;
+        let mut timeout_save = None;
         egui::Window::new("Device check")
             .open(&mut open)
             .collapsible(false)
@@ -1124,7 +1135,44 @@ impl Workbench {
             .min_height(bounds.height())
             .constrain_to(bounds)
             .anchor(egui::Align2::CENTER_TOP, egui::Vec2::ZERO)
-            .show(ctx, |ui| egui::ScrollArea::vertical().show(ui, draw));
+            .show(ctx, |ui| {
+                if timed_out {
+                    ui.add_enabled_ui(!self.has_prompt() && !self.picker.is_open(), |ui| {
+                        ui.strong("Step 2 · Variax identity timed out");
+                        if let Some(detail) = self.device_check.detail(Stage::Identification) {
+                            ui.label(detail);
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if self.device_check_step_two_saved {
+                                timeout_restart = self
+                                    .device_check_button(ui, "retry-g1", "Start over")
+                                    .clicked();
+                            } else if self
+                                .device_check_button(ui, "verify-g1", "Save report and start over")
+                                .clicked()
+                            {
+                                timeout_save = Some(true);
+                            }
+                            if self
+                                .device_check_button(ui, "save-report", "Save report")
+                                .clicked()
+                            {
+                                timeout_save = Some(false);
+                            }
+                        });
+                        if !self.device_check_notice.is_empty() {
+                            ui.label(&self.device_check_notice);
+                        }
+                    });
+                    ui.separator();
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| draw(ui, self));
+            });
+        restart |= timeout_restart;
+        if let Some(retry) = timeout_save {
+            verify_g1 = retry;
+            save_report = !retry;
+        }
         // Close wins over Yes and Start over in this frame.
         // That only applies before the exchange starts. Once Yes has begun,
         // `answer` runs the exchange here, on this thread, and nothing in this
@@ -1934,6 +1982,83 @@ mod tests {
         assert!(expanded.contains_rect(app.device_check_buttons["restart"]));
         assert!(expanded.contains_rect(app.device_check_buttons["save-report"]));
         assert_eq!(app.device_check.backend().calls(), Default::default());
+    }
+
+    #[test]
+    fn device_check_timeout_keeps_save_and_retry_visible_on_a_short_viewport() {
+        let (context, mut app) = scripted_device_check_app(device_probe::Scenario::Connected);
+        app.device_check = ProbeSession::new(RigBackend::Simulated(
+            device_probe::SimulatedRig::with_identity(
+                device_probe::Scenario::Connected,
+                variax_workbench::identity_stage::happy_script().silent(),
+            ),
+        ));
+        click_device_check(&context, &mut app, "yes");
+        click_device_check(&context, &mut app, "yes");
+        assert!(app.device_check.identification_timed_out());
+        let calls = app.device_check.backend().calls();
+        assert_eq!(calls.identity_requests, 1);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("step2-timeout.txt");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [None, Some(path.clone())].into(),
+            ..FakeDialogs::default()
+        });
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 330.0));
+        let frame = |app: &mut Workbench, events| {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            );
+        };
+        let click_retry = |app: &mut Workbench| {
+            frame(app, vec![]);
+            frame(app, vec![]);
+            let retry = app.device_check_buttons["verify-g1"];
+            assert!(viewport.contains_rect(retry), "{retry:?}");
+            assert!(viewport.contains_rect(app.device_check_buttons["save-report"]));
+            let pos = retry.center();
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            frame(app, vec![]);
+            frame(app, vec![]);
+        };
+
+        click_retry(&mut app);
+        assert!(app.device_check_notice.contains("Report save canceled"));
+        assert!(app.device_check.identification_timed_out());
+        assert_eq!(app.device_check.backend().calls(), calls);
+        assert!(!path.exists());
+
+        click_retry(&mut app);
+        let report = std::fs::read_to_string(path).unwrap();
+        assert!(report.contains("stop=timed-out"), "{report}");
+        assert!(report.contains("cleanup=ok"), "{report}");
+        assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        frame(&mut app, vec![]);
+        assert!(viewport.contains_rect(app.device_check_buttons["no"]));
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(app.device_check_button_ids["no"]),
+        );
     }
 
     #[test]

@@ -307,7 +307,7 @@ fn passive_inventory_replacement_drops_stale_identity_at_the_same_path_and_addre
     let visible = frame(&ctx, &mut app, vec![]);
     assert!(has_label(
         &visible.shapes,
-        "PODxt Live detected on 8-2.1 · identity unverified"
+        "Checking PODxt Live identity on USB interface 0…"
     ));
 }
 
@@ -1628,6 +1628,51 @@ fn mac_discovery_defers_for_a_busy_rig_and_stops_on_failed_cleanup() {
                 .any(|device| device.support == DeviceSupport::Verified("3.10"))
         );
     }
+}
+
+#[test]
+fn mac_identity_diagnostics_keep_current_usb_and_historical_guitar_distinct() {
+    let (_, mut app, source) = fixture();
+    source.usb(true, false);
+    source.0.borrow_mut().registry_id = Some(30);
+    let service = app.detection.as_mut().unwrap();
+    let now = Instant::now();
+    let profiles = registry::DEVICE_PROFILES;
+    service.refresh_at(Scan::Confirmed, profiles, now).unwrap();
+    let key = service.attachment_key("8-2.1");
+    source.guitar(key.clone());
+    service.refresh_at(Scan::Automatic, profiles, now).unwrap();
+
+    assert!(service.queue_guitar_refresh(&key, false));
+    source.finish(key.clone(), SimulatedGuitar::Silent);
+    let devices = service
+        .refresh_at(Scan::Automatic, profiles, now + Duration::from_secs(1))
+        .unwrap();
+    let [pod] = devices.as_slice() else {
+        panic!("only the verified PODxt remains")
+    };
+    assert_eq!(pod.support, DeviceSupport::Verified("3.01"));
+    let status = pod.guitar_status.as_deref().unwrap();
+    assert!(status.contains("One Variax identity request went unanswered"));
+    assert!(status.contains("USB release completed"));
+    assert!(status.contains("last verified Variax 600 3.10"));
+    let details = pod.mac_identity_details.as_deref().unwrap();
+    assert!(details.contains("path 8-2.1"));
+    assert!(details.contains("USB interfaces 0 and 1"));
+    assert!(details.contains("USB configuration unknown"));
+
+    assert!(service.queue_guitar_refresh(&key, false));
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(key, SimulatedOutcome::OtherProcessBusy);
+    let devices = service
+        .refresh_at(Scan::Automatic, profiles, now + Duration::from_secs(2))
+        .unwrap();
+    let status = devices[0].guitar_status.as_deref().unwrap();
+    assert!(status.contains("busy with another operation"));
+    assert!(status.contains("last verified Variax 600 3.10"));
 }
 
 #[test]

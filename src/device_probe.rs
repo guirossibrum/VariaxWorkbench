@@ -668,7 +668,10 @@ impl Recognition {
                 sound_cards,
             } => {
                 if crate::macos_usb_available() {
-                    return format!("PODxt Live found at {}.", device.sysfs_name);
+                    return format!(
+                        "PODxt Live found at {}. USB recognition only.",
+                        device.sysfs_name
+                    );
                 }
                 let interfaces = device
                     .interfaces
@@ -698,6 +701,9 @@ impl Recognition {
                         cards
                     },
                 )
+            }
+            Self::Absent if crate::macos_usb_available() => {
+                "macOS did not list a PODxt Live. Check its USB cable and power.".into()
             }
             Self::Absent => {
                 "No PODxt Live is listed by Linux. Check the USB cable and power.".into()
@@ -1375,8 +1381,25 @@ fn identity_detail(stop: &IdentifyStop) -> String {
         Some(cleanup) if cleanup != stop.failure => {
             format!("{} {}", stop.failure.sentence(), cleanup.sentence())
         }
+        _ if stop.failure == IdentityFailure::AccessDenied && crate::macos_usb_available() => {
+            "macOS refused access to PODxt Live USB. The identity request was not sent.".into()
+        }
         _ => stop.failure.sentence().to_owned(),
     };
+    if stop.failure == IdentityFailure::TimedOut {
+        text.push_str(" One Variax identity request was sent through PODxt Live USB interface 1.");
+        if stop.cleanup_ran && stop.cleanup.is_none() {
+            text.push_str(" USB cleanup completed.");
+        }
+        if stop.cleanup.is_none() {
+            text.push_str(" Check the VDI cable before retrying.");
+        }
+    } else if stop.failure == IdentityFailure::RigBusy {
+        text.push_str(" Wait for the other operation to finish before retrying.");
+    }
+    if stop.release_failed && !stop.reattach_failed {
+        text.push_str(" Release of PODxt Live USB interface 1 failed. Reconnect PODxt Live USB before retrying.");
+    }
     if stop.release_failed && stop.reattach_failed {
         text.push_str(" Release failed. Reattach failed.");
     }
@@ -1492,6 +1515,10 @@ impl<B: ProbeBackend> ProbeSession<B> {
     /// True after step 2 has been answered in this session, including No.
     pub fn identification_answered(&self) -> bool {
         self.decisions[Stage::Identification.index()].is_some()
+    }
+
+    pub fn identification_timed_out(&self) -> bool {
+        self.identity_failure == Some(IdentityFailure::TimedOut)
     }
 
     pub const fn g1_expected_binding(&self) -> bool {

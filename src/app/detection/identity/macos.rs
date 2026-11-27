@@ -87,7 +87,12 @@ fn identify_on<L: Link>(
         JobKind::Initial => {
             let mut link = match open(Interface::Podxt) {
                 Ok(link) => link,
-                Err(error) => return failed(None, error),
+                Err(error) => {
+                    return failed(
+                        None,
+                        at_stage("PODxt Live interface 0 preparation failed", error),
+                    );
+                }
             };
             let pod = super::pod::identify_macos_startup(&mut link, cancel);
             if let Err(error) = finish(&mut link) {
@@ -118,8 +123,12 @@ fn identify_on<L: Link>(
         return Outcome::MacCancelled { pod_firmware };
     }
     let guitar = (|| {
-        let mut link = open(Interface::Variax)
-            .map_err(|error| at_stage("Variax USB interface 1 open failed", error))?;
+        let mut link = open(Interface::Variax).map_err(|error| {
+            at_stage(
+                "Variax via PODxt Live interface 1 preparation failed",
+                error,
+            )
+        })?;
         let mut quiet = Quiet;
         let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
         let silence_delay = matches!(kind, JobKind::Initial | JobKind::DiscoverGuitar)
@@ -129,7 +138,7 @@ fn identify_on<L: Link>(
             eprintln!("PODxt Live interface 1 cleanup: {error}");
             return Ok(Guitar::CleanupFailed);
         }
-        match reply.map_err(|error| at_stage("Variax identity exchange failed", error))? {
+        match reply.map_err(|error| at_stage("Variax identity exchange on PODxt Live interface 1 failed after checked USB release", error))? {
             Some(reply) if variax::procedures::check_identity(&reply.identity).is_ok() => {
                 Ok(Guitar::Verified(GUITAR_VERSION))
             }

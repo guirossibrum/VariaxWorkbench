@@ -222,7 +222,7 @@ pub(super) fn check_interfaces(
 
 pub(super) fn open_error(error: rusb::Error) -> String {
     match error {
-        rusb::Error::Busy => "The PODxt Live is held by a driver or another application. If the legacy Line 6 driver is installed, resolve that conflict before using direct USB.".into(),
+        rusb::Error::Busy => "macOS reports the PODxt Live USB connection is busy. Wait for any other device operation to finish.".into(),
         other => format!("Cannot use the PODxt Live USB connection: {other}"),
     }
 }
@@ -373,6 +373,6 @@ mod tests {
             );
         }
         assert!(check_interfaces(|_| Err(rusb::Error::NotSupported)).is_err());
-        assert!(open_error(rusb::Error::Busy).contains("held by a driver"));
+        assert!(open_error(rusb::Error::Busy).contains("busy"));
     }
 }

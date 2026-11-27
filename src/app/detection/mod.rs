@@ -80,6 +80,7 @@ pub(super) struct DetectedDevice {
     pub model: &'static str,
     pub support: DeviceSupport,
     pub guitar_status: Option<String>,
+    pub mac_identity_details: Option<String>,
     pub guitar_warning: Option<FirmwareNotice>,
     pub pod_warning: Option<FirmwareNotice>,
     pub refresh_guitar: bool,
@@ -110,6 +111,10 @@ pub(super) trait PresenceSource {
 
     fn usb_open_candidate(&self, _path: &str) -> bool {
         true
+    }
+
+    fn observed_usb_coordinates(&self, path: &str) -> (Option<String>, Option<u8>) {
+        (Some(path.into()), self.usb_address(path))
     }
 
     fn usb_readiness_reason(&self, _path: &str) -> Option<String> {
@@ -234,6 +239,18 @@ impl PresenceSource for MacUsbPresence {
             .is_some_and(|observation| observation.readiness.is_ok())
     }
 
+    fn observed_usb_coordinates(&self, path: &str) -> (Option<String>, Option<u8>) {
+        self.0
+            .borrow()
+            .get(path)
+            .map_or((None, None), |observation| {
+                (
+                    observation.record.route().map(str::to_owned),
+                    observation.record.address,
+                )
+            })
+    }
+
     fn usb_readiness_reason(&self, path: &str) -> Option<String> {
         Some(
             self.0
@@ -319,7 +336,9 @@ impl Bridge {
         self.pod.is_some() && !self.pending() && !self.suspended
     }
 
-    fn complete(&mut self, kind: JobKind, outcome: Outcome, generation: &mut u64) {
+    fn complete(&mut self, job: &Job, outcome: Outcome, generation: &mut u64) {
+        let kind = job.kind;
+        let mac = job.attachment.registry_id.is_some();
         // A loss revokes guitar proof from work already in flight. Still
         // accept a release failure and keep the worker until it has returned.
         if std::mem::take(&mut self.running_guitar_invalidated) {
@@ -353,8 +372,7 @@ impl Bridge {
                 self.running = None;
                 self.waiting_for_other_process = false;
                 self.pod = None;
-                self.status =
-                    "No PODxt identity answered. No receive chunks in three seconds.".into();
+                self.status = "PODxt Live interface 0 identity request sent. No reply in three seconds. USB release completed.".into();
             }
             Outcome::UnverifiedPod(notice) => {
                 self.running = None;
@@ -381,7 +399,13 @@ impl Bridge {
                     Guitar::Verified(firmware) => {
                         self.remember_guitar(GuitarIdentity::Verified(firmware), generation);
                         self.last_guitar = Some(firmware);
-                        self.status = format!("Variax 600 {firmware}");
+                        self.status = if mac {
+                            format!(
+                                "Variax 600 {firmware} verified via PODxt Live interface 1. USB release completed."
+                            )
+                        } else {
+                            format!("Variax 600 {firmware}")
+                        };
                     }
                     Guitar::Unverified(reply) => {
                         if reply.is_variax {
@@ -393,16 +417,44 @@ impl Bridge {
                             self.guitar = None;
                         }
                         self.firmware_warning = Some(reply.notice);
-                        self.status = "identity unverified".into();
+                        self.status = if mac {
+                            "Variax identity reply unverified on PODxt Live interface 1. USB release completed.".into()
+                        } else {
+                            "identity unverified".into()
+                        };
                     }
                     other => {
                         self.guitar = None;
                         self.status = match other {
+                            Guitar::Silent if mac => {
+                                let attempt = if kind == JobKind::RefreshGuitar {
+                                    "One Variax identity request went unanswered"
+                                } else {
+                                    "Two Variax identity requests went unanswered"
+                                };
+                                let recovery = if kind == JobKind::RefreshGuitar {
+                                    "Check the VDI cable, then use Refresh guitar."
+                                } else {
+                                    "Check the VDI cable while Workbench continues checking."
+                                };
+                                format!(
+                                    "{attempt} on PODxt Live interface 1. USB release completed. {recovery}"
+                                )
+                            }
                             Guitar::Silent => "no guitar answered".into(),
                             Guitar::Unavailable(reason) | Guitar::DriverUnbound(reason) => reason,
                             Guitar::CleanupFailed => {
                                 self.suspended = true;
-                                "USB cleanup failed. Guitar identity is suspended until USB reconnects.".into()
+                                if mac {
+                                    let interface = u8::from(
+                                        kind != JobKind::Initial || pod_firmware.is_some(),
+                                    );
+                                    format!(
+                                        "PODxt Live interface {interface} cleanup failed. Reconnect PODxt Live USB to resume identity checks."
+                                    )
+                                } else {
+                                    "USB cleanup failed. Guitar identity is suspended until USB reconnects.".into()
+                                }
                             }
                             Guitar::Verified(_) | Guitar::Unverified(_) => unreachable!(),
                         };
@@ -457,20 +509,44 @@ impl Bridge {
     }
 
     fn label(&self) -> String {
+        self.label_with_status(None, false)
+    }
+
+    fn label_with_status(&self, readiness: Option<&str>, mac: bool) -> String {
         let holding_loss =
             self.running_guitar_invalidated && self.last_notice == Some(Notice::Disconnected);
-        let status = if self.pending() && !holding_loss {
-            if self.waiting_for_other_process {
-                "checking… (waiting for the rig)"
+        let status = if let Some(reason) = readiness {
+            reason.to_owned()
+        } else if self.pending() && !holding_loss {
+            if self.waiting_for_other_process && mac {
+                "PODxt Live is busy with another operation. Wait for it to finish.".into()
+            } else if self.waiting_for_other_process {
+                "checking… (waiting for the rig)".into()
+            } else if mac {
+                match self.running.or(self.queued) {
+                    Some(JobKind::Initial) if self.status == "checking…" => {
+                        "Checking PODxt Live identity on USB interface 0…".into()
+                    }
+                    Some(JobKind::RefreshGuitar) => {
+                        "Checking Variax identity through PODxt Live USB interface 1…".into()
+                    }
+                    _ => format!("Checking again. Previous status: {}", self.status),
+                }
             } else {
-                "checking…"
+                "checking…".into()
             }
         } else {
-            &self.status
+            self.status.clone()
         };
-        let mut label = format!("Guitar: {status}");
+        let mut label = if mac {
+            status
+        } else {
+            format!("Guitar: {status}")
+        };
         if let Some(firmware) = self.last_guitar
-            && (self.pending() || !matches!(self.guitar, Some((_, GuitarIdentity::Verified(_)))))
+            && (readiness.is_some()
+                || self.pending()
+                || !matches!(self.guitar, Some((_, GuitarIdentity::Verified(_)))))
         {
             label.push_str(&format!(" · last verified Variax 600 {firmware}"));
         }
@@ -838,7 +914,7 @@ impl DetectionService {
             } else {
                 None
             };
-            bridge.complete(job.kind, outcome, &mut self.generation);
+            bridge.complete(&job, outcome, &mut self.generation);
             if let Some(kind) = retry
                 && (kind == JobKind::Initial || bridge.pod.is_some())
             {
@@ -906,7 +982,7 @@ impl DetectionService {
             }
             Outcome::UnverifiedPod(_) => {
                 bridge.queued = None;
-                bridge.complete(job.kind, outcome, &mut self.generation);
+                bridge.complete(&job, outcome, &mut self.generation);
             }
             Outcome::Finished {
                 guitar:
@@ -918,7 +994,7 @@ impl DetectionService {
             } => {
                 bridge.queued = None;
                 bridge.complete(
-                    job.kind,
+                    &job,
                     Outcome::Finished {
                         pod_firmware: bridge.pod,
                         guitar,
@@ -1037,6 +1113,7 @@ impl DetectionService {
                     family_id: info.id,
                     linked_generation: None,
                 };
+                let mac = attachment.key.registry_id.is_some();
                 let (support, status, warning, pod_warning, refresh) = match profile.discovery {
                     DeviceDiscovery::Automatic(id) if id == attached_id => {
                         let bridge = bridge.expect("automatic attachment");
@@ -1048,7 +1125,14 @@ impl DetectionService {
                         if !attachment.open_candidate {
                             (
                                 DeviceSupport::UsbOnly,
-                                attachment.readiness_reason.clone(),
+                                if mac {
+                                    Some(bridge.label_with_status(
+                                        attachment.readiness_reason.as_deref(),
+                                        true,
+                                    ))
+                                } else {
+                                    attachment.readiness_reason.clone()
+                                },
                                 None,
                                 None,
                                 false,
@@ -1062,7 +1146,7 @@ impl DetectionService {
                                         .as_ref()
                                         .filter(|_| !attachment.identity_started)
                                         .cloned()
-                                        .unwrap_or_else(|| bridge.label()),
+                                        .unwrap_or_else(|| bridge.label_with_status(None, mac)),
                                 ),
                                 bridge.firmware_warning,
                                 bridge.pod_warning,
@@ -1108,6 +1192,25 @@ impl DetectionService {
                         model: info.title,
                         support,
                         guitar_status: status,
+                        mac_identity_details: mac.then(|| {
+                            let (path, address) = self.source.observed_usb_coordinates(&attachment.key.path);
+                            let path = path.as_deref().unwrap_or("unknown");
+                            let address = address.map_or_else(|| "unknown".into(), |value| value.to_string());
+                            let readiness = if attachment.open_candidate {
+                                "macOS published USB interfaces 0 and 1."
+                            } else {
+                                attachment.readiness_reason.as_deref().unwrap_or("USB readiness unknown.")
+                            };
+                            let pod = bridge.and_then(|bridge| bridge.pod).map_or_else(
+                                || "PODxt Live firmware unverified.".into(),
+                                |version| if attachment.open_candidate {
+                                    format!("PODxt Live firmware {version} verified.")
+                                } else {
+                                    format!("Last verified PODxt Live firmware {version}.")
+                                },
+                            );
+                            format!("PODxt Live direct USB, path {path}, address {address}. {readiness} {pod} Variax identity uses the PODxt Live relay on interface 1. USB configuration unknown.")
+                        }),
                         guitar_warning: warning,
                         pod_warning,
                         refresh_guitar: refresh,

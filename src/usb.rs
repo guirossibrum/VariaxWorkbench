@@ -458,7 +458,12 @@ pub(crate) fn read_macos_identity(
                         )
                     })
                     .map(|link| MacIdentity::new(link, UsbInterfaceLink::finish))
-                    .inspect_err(|error| *open_error = Some(error.clone()))
+                    .inspect_err(|error| {
+                        let path = observed.route().unwrap_or("unknown");
+                        *open_error = Some(format!(
+                            "Selected route: Variax via PODxt Live USB {path}, interface 1. {error}"
+                        ));
+                    })
                 },
                 &cancel,
                 identity_stage::run_identity_exchange,

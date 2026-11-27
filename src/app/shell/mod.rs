@@ -207,6 +207,9 @@ impl Workbench {
                     } else {
                         self.note_sanitized_report_save(&path);
                     }
+                } else if restart && self.device_check.identification_timed_out() {
+                    self.device_check_notice =
+                        "Report save canceled. Device Check is still stopped at step 2.".into();
                 }
             }
             PickerAction::LoadRecording => self.load_recording_from(path),
@@ -702,8 +705,14 @@ impl Workbench {
                                         .device
                                         .refresh_guitar
                                         .then(|| device.device.key.attachment.clone());
-                                    ui.horizontal(|ui| {
+                                    let details = device.device.mac_identity_details.clone();
+                                    ui.horizontal_wrapped(|ui| {
                                         status_line(ui, &status, theme::MUTED);
+                                        if let Some(details) = &details {
+                                            ui.collapsing("USB details", |ui| {
+                                                status_line(ui, details, theme::MUTED);
+                                            });
+                                        }
                                         if let Some(attachment) = attachment
                                             && self.refresh_guitar_button(ui, allow_refresh)
                                         {
@@ -734,14 +743,16 @@ impl Workbench {
                                     })
                                 })
                             }) {
-                                status_line(
-                                    ui,
-                                    &format!(
-                                        "{} detected on {} · identity unverified",
-                                        device.model, device.key.attachment.path
-                                    ),
-                                    theme::MUTED,
-                                );
+                                if let Some(status) = &device.guitar_status {
+                                    status_line(ui, status, theme::MUTED);
+                                }
+                                if let Some(details) = &device.mac_identity_details {
+                                    ui.push_id(&device.key.attachment.path, |ui| {
+                                        ui.collapsing("USB details", |ui| {
+                                            status_line(ui, details, theme::MUTED);
+                                        });
+                                    });
+                                }
                             }
                         }
                         if let Some(error) = &self.detection_status {

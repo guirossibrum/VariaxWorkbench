@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(candidate.address, 3);
         // Even when the connection later reports Busy, inventory only records
         // published services and attachment identity.
-        assert!(super::super::macos::open_error(rusb::Error::Busy).contains("held"));
+        assert!(super::super::macos::open_error(rusb::Error::Busy).contains("busy"));
         assert_eq!(behind_hub.attachment(&inventory), Some(candidate));
         assert!(super::inventory().is_err());
     }
