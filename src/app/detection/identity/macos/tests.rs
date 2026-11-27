@@ -13,6 +13,7 @@ enum Event {
 
 #[derive(Default)]
 struct Rig {
+    pod_replies: Option<Vec<Vec<u8>>>,
     guitar_replies: Vec<Vec<Vec<u8>>>,
     open_failure: Option<(Interface, &'static str)>,
     fail_finish: Option<Interface>,
@@ -43,7 +44,11 @@ impl Rig {
                     return Err(error.into());
                 }
                 let script = match side {
-                    Interface::Podxt => vec![vec![bridge_reply()]],
+                    Interface::Podxt => vec![
+                        self.pod_replies
+                            .clone()
+                            .unwrap_or_else(|| vec![bridge_reply()]),
+                    ],
                     Interface::Variax => self.guitar_replies.clone(),
                 };
                 Ok(FakeLink {
@@ -169,6 +174,52 @@ fn rig_check_policy_retries_first_silence_on_the_same_guitar_link() {
             );
         }
         assert_eq!(*rig.events.borrow(), expected);
+    }
+}
+
+#[test]
+fn pod_startup_distinguishes_silent_and_unaccepted_receive_data() {
+    let valid = bridge_reply();
+    let truncated = valid[..16].to_vec();
+    let mut short_identity = valid[..15].to_vec();
+    short_identity.push(0xf7);
+    for (packets, expected_detail) in [
+        (vec![], "No receive chunks in three seconds."),
+        (
+            vec![vec![0xf7]],
+            "Receive chunks: 1, orphan bytes: 1, malformed identity frames: 0, other messages: 0.",
+        ),
+        (
+            vec![truncated],
+            "Receive chunks: 1, orphan bytes: 0, malformed identity frames: 0, other messages: 0.",
+        ),
+        (
+            vec![short_identity],
+            "Receive chunks: 1, orphan bytes: 0, malformed identity frames: 1, other messages: 0.",
+        ),
+        (
+            vec![vec![0xf0, 0, 1, 0x0c, 3, 0x11, 0xf7], vec![0xb0, 7, 10]],
+            "Receive chunks: 2, orphan bytes: 0, malformed identity frames: 0, other messages: 2.",
+        ),
+    ] {
+        let rig = Rig {
+            pod_replies: Some(packets),
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+            Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
+                if reason.strip_prefix("No PODxt identity answered. ") == Some(expected_detail)
+        ));
+        assert_eq!(
+            *rig.events.borrow(),
+            [
+                Event::Open(Interface::Podxt),
+                Event::Identity(Interface::Podxt, Duration::from_millis(200)),
+                Event::Finish(Interface::Podxt),
+                Event::Drop(Interface::Podxt),
+            ],
+        );
     }
 }
 

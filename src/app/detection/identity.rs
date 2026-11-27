@@ -389,17 +389,27 @@ mod pod {
         }
     }
 
+    #[cfg(any(test, target_os = "linux"))]
     pub(super) fn identify(
         link: impl Link,
         cancel: &AtomicBool,
     ) -> Result<Option<FirmwareNotice>, String> {
-        identify_with_policy(link, cancel, &IdentityOnly)
+        identify_with_policy(link, cancel, &IdentityOnly, false)
+    }
+
+    #[cfg(any(test, target_os = "macos"))]
+    pub(super) fn identify_with_receive_evidence(
+        link: impl Link,
+        cancel: &AtomicBool,
+    ) -> Result<Option<FirmwareNotice>, String> {
+        identify_with_policy(link, cancel, &IdentityOnly, true)
     }
 
     fn identify_with_policy(
         mut link: impl Link,
         cancel: &AtomicBool,
         policy: &dyn GatePolicy,
+        report_receive: bool,
     ) -> Result<Option<FirmwareNotice>, String> {
         let mut log = Quiet;
         let mut session = Session::new(&mut link, policy, &mut log);
@@ -407,9 +417,13 @@ mod pod {
         if cancel.load(Ordering::Relaxed) {
             return Err("Identification cancelled.".into());
         }
+        let packets_before = session.packets_in;
+        let orphans_before = session.assembler.orphans;
         session.send(PodxtRequest::Identity)?;
         let until = session.link.elapsed() + Duration::from_secs(3);
         let mut identity = None;
+        let mut malformed_identity = 0;
+        let mut other_messages = 0;
         while let Some(remaining) = until
             .checked_sub(session.link.elapsed())
             .filter(|time| !time.is_zero())
@@ -419,16 +433,36 @@ mod pod {
             }
             if let Some(events) = session.poll(remaining.min(POLL))? {
                 for event in events {
-                    if let Event::Sysex(frame) = event
-                        && let Some(reply) = Identity::parse(&frame)
-                        && identity.replace(reply).is_some()
-                    {
-                        return Err("More than one PODxt identity answered.".into());
+                    if let Event::Sysex(frame) = &event {
+                        if let Some(reply) = Identity::parse(frame) {
+                            if identity.replace(reply).is_some() {
+                                return Err("More than one PODxt identity answered.".into());
+                            }
+                            continue;
+                        }
+                        if matches!(frame.as_slice(), [0xf0, 0x7e, _, 0x06, 0x02, ..]) {
+                            malformed_identity += 1;
+                            continue;
+                        }
                     }
+                    other_messages += 1;
                 }
             }
         }
-        let reply = identity.ok_or("No PODxt identity answered.")?;
+        let reply = identity.ok_or_else(|| {
+            if !report_receive {
+                return "No PODxt identity answered.".to_owned();
+            }
+            let packets = session.packets_in - packets_before;
+            let orphans = session.assembler.orphans - orphans_before;
+            if packets == 0 {
+                return "No PODxt identity answered. No receive chunks in three seconds.".into();
+            }
+            format!(
+                "No PODxt identity answered. Receive chunks: {packets}, orphan bytes: {orphans}, \
+                 malformed identity frames: {malformed_identity}, other messages: {other_messages}."
+            )
+        })?;
         Ok(FirmwareNotice::podxt(&reply))
     }
 
@@ -507,7 +541,9 @@ mod pod {
                 }
             }
             let mut link = FakeMidi::default();
-            assert!(identify_with_policy(&mut link, &AtomicBool::new(false), &Denied).is_err());
+            assert!(
+                identify_with_policy(&mut link, &AtomicBool::new(false), &Denied, false).is_err()
+            );
             assert!(link.writes.is_empty());
         }
 
