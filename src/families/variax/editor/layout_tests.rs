@@ -736,10 +736,13 @@ fn factory_selector_stays_readable_and_preserves_the_current_library_on_laptops(
             };
             frame(&mut app, vec![]);
             let collapsed = frame(&mut app, vec![]);
-            let connection_label = app.variax().connection_status.clone();
-            let toggle = text_rect(&collapsed, heading)
-                .expect("collapsed selector")
-                .center();
+            let editor = app.variax();
+            let connection_label = editor.connection_status.clone();
+            let closed_cards = editor.workspace_cards.unwrap();
+            let closed_tuning = editor.workspace_tuning.unwrap();
+            let trigger_text = text_rect(&collapsed, heading).expect("closed selector trigger");
+            assert!(editor.bank_slots[&4].bottom() <= trigger_text.top());
+            let toggle = trigger_text.center();
             assert!(text_rect(&collapsed, order).is_none());
             assert!(text_rect(&collapsed, "Editing bank: My Bank").is_some());
             assert!(text_rect(&collapsed, "My Preset").is_some());
@@ -753,7 +756,14 @@ fn factory_selector_stays_readable_and_preserves_the_current_library_on_laptops(
             let output = frame(&mut app, vec![]);
             assert_eq!(output.pixels_per_point, density);
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let trigger_id = ctx
+                .memory(|memory| memory.focused())
+                .expect("trigger focus");
+            let trigger = ctx.read_response(trigger_id).unwrap().rect;
+            assert!(trigger.contains(toggle));
             let mut preceding = text_rect(&output, order).expect("selector order caption");
+            assert!(preceding.top() >= trigger.bottom());
+            assert!((preceding.left() - trigger.left()).abs() <= 12.0);
             for position in 1..=5 {
                 let label = format!("{position} · Spank · Spank Single Coil Bridge");
                 let row = output
@@ -776,13 +786,54 @@ fn factory_selector_stays_readable_and_preserves_the_current_library_on_laptops(
             }
             assert!(text_rect(&output, "Editing bank: My Bank").is_some());
             assert!(text_rect(&output, "My Preset").is_some());
-            assert!(screen.contains_rect(app.variax().workspace_cards.unwrap().0));
-            assert!(screen.contains_rect(app.variax().workspace_tuning.unwrap()));
-            println!(
-                "{size:?} at {density} px/point: reference rows end at {:.0}",
-                preceding.bottom()
-            );
+            assert_eq!(app.variax().workspace_cards, Some(closed_cards));
+            assert_eq!(app.variax().workspace_tuning, Some(closed_tuning));
             assert!(text_rect(&output, "6 · Spank · Spank Single Coil Bridge").is_none());
+
+            let key = |key| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(&mut app, vec![key(egui::Key::Escape)]);
+            let closed = frame(&mut app, vec![]);
+            assert!(text_rect(&closed, order).is_none());
+            assert!(ctx.memory(|memory| memory.has_focus(trigger_id)));
+
+            // Reopening requires verification even when the path and file stamp stayed the same.
+            frame(&mut app, vec![key(egui::Key::Enter)]);
+            let unverified = frame(&mut app, vec![]);
+            assert!(text_rect(&unverified, order).is_none());
+            assert!(
+                text_rect(
+                    &unverified,
+                    "Choose an available, verified Variax 3.10 firmware file in Preferences."
+                )
+                .is_some()
+            );
+            app.variax_mut().seed_factory_selector(&archive, &factory);
+            let reopened = frame(&mut app, vec![]);
+            assert!(text_rect(&reopened, order).is_some());
+
+            let row = preceding.center();
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(row), pointer(row, true)],
+            );
+            frame(&mut app, vec![pointer(row, false)]);
+            assert!(text_rect(&frame(&mut app, vec![]), order).is_some());
+
+            let outside = egui::pos2(size.x - 12.0, trigger.center().y);
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(outside), pointer(outside, true)],
+            );
+            frame(&mut app, vec![pointer(outside, false)]);
+            assert!(text_rect(&frame(&mut app, vec![]), order).is_none());
+            assert_eq!(app.variax().workspace_cards, Some(closed_cards));
+            assert_eq!(app.variax().workspace_tuning, Some(closed_tuning));
             let editor = app.variax_mut();
             assert_eq!(editor.library_label(), library_label);
             assert_eq!(editor.source_path.as_deref(), Some(path.as_path()));
