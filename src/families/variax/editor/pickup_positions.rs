@@ -152,13 +152,22 @@ impl VariaxEditor {
         };
         let response = egui::Modal::new(egui::Id::new("variax-pickup-positions")).show(ctx, |ui| {
             ui.heading("Move Pickup to Standard Positions");
-            egui::ComboBox::from_id_salt("standard-pickup-position")
+            let _choices = egui::ComboBox::from_id_salt("standard-pickup-position")
                 .selected_text(dialog.positions[dialog.selected].label)
                 .show_ui(ui, |ui| {
                     for (index, option) in dialog.positions.iter().enumerate() {
-                        ui.selectable_value(&mut dialog.selected, index, option.label);
+                        let _response =
+                            ui.selectable_value(&mut dialog.selected, index, option.label);
+                        #[cfg(test)]
+                        _services
+                            .prompt_buttons
+                            .insert(option.label, _response.rect);
                     }
                 });
+            #[cfg(test)]
+            _services
+                .prompt_buttons
+                .insert("pickup-position-choices", _choices.response.rect);
             ui.horizontal(|ui| {
                 let ok = ui.button("OK");
                 let cancel = ui.button("Cancel");
@@ -248,6 +257,11 @@ mod tests {
         frame(ctx, app, vec![]);
         frame(ctx, app, vec![]);
         let pos = app.variax().pickup_controls[&(pickup, "standard")].center();
+        click(ctx, app, pos);
+        app.poll_picker(ctx);
+    }
+
+    fn click(ctx: &egui::Context, app: &mut Workbench, pos: egui::Pos2) {
         for pressed in [true, false] {
             frame(
                 ctx,
@@ -263,7 +277,33 @@ mod tests {
                 ],
             );
         }
-        app.poll_picker(ctx);
+    }
+
+    fn choose_second_pickup_position(
+        ctx: &egui::Context,
+        app: &mut Workbench,
+        label: &'static str,
+    ) {
+        open(ctx, app, PICKUP2);
+        let dialog = app.variax().pickup_position_dialog.as_ref().unwrap();
+        assert_eq!(dialog.positions[dialog.selected].label, "Neck");
+        frame(ctx, app, vec![]);
+        frame(ctx, app, vec![]);
+        let combo = app.pending_buttons["pickup-position-choices"].center();
+        click(ctx, app, combo);
+        frame(ctx, app, vec![]);
+        frame(ctx, app, vec![]);
+        let option = app.pending_buttons[label].center();
+        click(ctx, app, option);
+        let dialog = app.variax().pickup_position_dialog.as_ref().unwrap();
+        assert_eq!(dialog.positions[dialog.selected].label, label);
+    }
+
+    fn write_private_definition(directory: &Path) -> std::path::PathBuf {
+        let folder = directory.join("override");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("strat.bin"), definition(true)).unwrap();
+        folder
     }
 
     #[test]
@@ -353,11 +393,9 @@ mod tests {
     fn remembered_override_loads_private_definitions_and_groups_angle_and_position() {
         let directory = tempfile::tempdir().unwrap();
         let preferences = directory.path().join("editor-preferences.txt");
-        let override_folder = directory.path().join("override");
-        fs::create_dir(&override_folder).unwrap();
+        let override_folder = write_private_definition(directory.path());
         let file = override_folder.join("strat.bin");
         let bytes = definition(true);
-        fs::write(&file, &bytes).unwrap();
         let (_, mut app) = startup(&preferences);
         app.variax_mut()
             .remember_body_definitions(&override_folder)
@@ -416,5 +454,66 @@ mod tests {
                 .contains("body definition")
         );
         assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+    }
+
+    #[test]
+    fn second_pickup_dialog_applies_one_edit_and_cancel_preserves_history() {
+        fn document(app: &Workbench) -> &EditorDocument {
+            app.variax().document.as_ref().unwrap()
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let folder = write_private_definition(directory.path());
+        let (ctx, mut app) = startup(&directory.path().join("editor-preferences.txt"));
+        app.variax_mut().remember_body_definitions(&folder).unwrap();
+        let original = document(&app).as_bytes().to_vec();
+        app.variax_mut()
+            .change(|preset| preset.rename("Prior edit"));
+        let before = document(&app).as_bytes().to_vec();
+        assert_ne!(before, original);
+        assert_ne!(app.variax().float(PICKUP2, 0x200000), Some(4.5));
+        assert_ne!(app.variax().float(PICKUP2, 0x200001), Some(-22.5));
+        let first_pickup = document(&app).preset().model(PICKUP1).unwrap().clone();
+        let mut expected = document(&app).preset().clone();
+        expected
+            .set_parameter(PICKUP2, 0x200000, 1, 4.5_f32.to_bits())
+            .unwrap();
+        expected
+            .set_parameter(PICKUP2, 0x200001, 1, (-22.5_f32).to_bits())
+            .unwrap();
+
+        choose_second_pickup_position(&ctx, &mut app, "Middle");
+        assert_eq!(document(&app).as_bytes(), before);
+        click_prompt(&ctx, &mut app, "confirm-pickup-position");
+        assert!(app.variax().pickup_position_dialog.is_none());
+        assert_eq!(app.variax().float(PICKUP2, 0x200000), Some(4.5));
+        assert_eq!(app.variax().float(PICKUP2, 0x200001), Some(-22.5));
+        assert_eq!(document(&app).preset().model(PICKUP1), Some(&first_pickup));
+        assert!(
+            document(&app).preset().as_bytes() == expected.as_bytes(),
+            "Only the second pickup's position and angle should change"
+        );
+        let applied = document(&app).as_bytes().to_vec();
+
+        app.variax_mut().undo();
+        assert_eq!(document(&app).as_bytes(), before);
+        assert!(document(&app).can_undo());
+        assert!(document(&app).can_redo());
+
+        choose_second_pickup_position(&ctx, &mut app, "Bridge");
+        click_prompt(&ctx, &mut app, "cancel-pickup-position");
+        assert!(app.variax().pickup_position_dialog.is_none());
+        assert_eq!(document(&app).as_bytes(), before);
+        assert!(document(&app).can_undo());
+        assert!(document(&app).can_redo());
+
+        app.variax_mut().undo();
+        assert_eq!(document(&app).as_bytes(), original);
+        assert!(!document(&app).can_undo());
+        app.variax_mut().redo();
+        assert_eq!(document(&app).as_bytes(), before);
+        app.variax_mut().redo();
+        assert_eq!(document(&app).as_bytes(), applied);
+        assert!(!document(&app).can_redo());
     }
 }
