@@ -1,0 +1,226 @@
+schema	3
+ordinal	name	role	usb_vid	usb_pid	l6_product	underscore_lines	hyphen_lines
+1	Amplifi	alias	-	-	-	1	1
+2	AMPLIFi	alias	-	-	-	2	-
+3	AMPLIFi 150	alias	-	-	-	3	2
+4	AMPLIFi 30	alias	-	-	-	4	3
+5	AMPLIFi 75	alias	-	-	-	5	4
+6	Amplifi Desktop	alias	-	-	-	6	5
+7	AMPLIFi FX100	alias	-	-	-	7	6
+8	AMPLIFi TT	alias	-	-	-	8	7
+9	AX2	alias	-	-	-	9	8
+10	BackTrack	alias	-	-	-	10	9
+11	BackTrack + Mic	alias	-	-	-	11	10
+12	Bass POD	alias	-	-	-	12	11
+13	Bass POD Pro	alias	-	-	-	13	12
+14	Bass POD XT	alias	-	-	-	14	-
+15	Bass POD XT Live	alias	-	-	-	15	-
+16	Bass POD XT Pro	alias	-	-	-	16	-
+17	Bass PODxt	product	-	-	unresolved	17	13
+18	Bass PODxt Live	product	-	unresolved	0x0003000B	18	14
+19	Bass PODxt Pro	product	-	-	unresolved	19	15
+20	Catalyst	alias	-	-	-	20	16
+21	Catalyst 100	alias	-	-	-	21	17
+22	Catalyst 100-112	alias	-	-	-	22	18
+23	Catalyst 200	alias	-	-	-	23	19
+24	Catalyst 200-212	alias	-	-	-	24	20
+25	Catalyst 60	alias	-	-	-	25	21
+26	Catalyst 60-112	alias	-	-	-	26	22
+27	Catalyst Bootloader	alias	-	-	-	27	-
+28	Catalyst Freescale Bootloader	alias	-	-	-	28	-
+29	DL4 Mk	alias	-	-	-	29	-
+30	DL4 MK2	alias	-	-	-	30	23
+31	DL4 MK2 Bootloader	alias	-	-	-	31	-
+32	DL4 MkII	alias	-	-	-	32	-
+33	DT25 112	alias	-	-	-	33	24
+34	DT25 HD	alias	-	-	-	34	25
+35	DT50 112	alias	-	-	-	35	26
+36	DT50 212	alias	-	-	-	36	27
+37	DT50 Head	alias	-	-	-	37	28
+38	Duoverb	alias	-	-	-	38	29
+39	Echo Pro	alias	-	-	-	39	30
+40	FBV 2 MkII	alias	-	-	-	40	31
+41	FBV 3	alias	-	-	-	41	32
+42	FBV Express MkII	alias	-	-	-	42	33
+43	FBV MKIII	alias	-	-	-	43	34
+44	FBV Shortboard MkII	alias	-	-	-	44	35
+45	Filter Pro	alias	-	-	-	45	36
+46	Firehawk	alias	-	-	-	46	37
+47	Firehawk 1500	alias	-	-	-	47	38
+48	Firehawk Amp	alias	-	-	-	48	39
+49	Firehawk FX	alias	-	-	-	49	40
+50	Flextone II	product	-	-	unresolved	50	41
+51	Flextone III	product	-	-	unresolved	51	42
+52	Floor POD Plus	alias	-	-	-	52	43
+53	FX100	alias	-	-	-	53	44
+54	Guitar Port	alias	-	-	-	54	-
+55	GuitarPort	alias	-	-	-	55	45
+56	GuitarPort 1	product	-	-	unresolved	56	-
+57	GuitarPort 2	product	-	-	unresolved	57	-
+58	HD 147	alias	-	-	-	58	-
+59	HD147	product	-	-	unresolved	59	46
+60	Helix	alias	-	-	-	60	-
+61	Helix Control	alias	-	-	-	61	47
+62	Helix Floor	alias	-	-	-	62	48
+63	Helix LT	alias	-	-	-	63	49
+64	Helix Rack	alias	-	-	-	64	50
+65	HX Effects	alias	-	-	-	65	51
+66	HX One	alias	-	-	-	66	52
+67	HX Stomp	alias	-	-	-	67	53
+68	HX Stomp XL	alias	-	-	-	68	54
+69	JM4	alias	-	-	-	69	55
+70	JTV-59	product	-	-	-	70	56
+71	JTV-69	product	-	-	-	71	57
+72	JTV-89	product	-	-	-	72	58
+73	JTV-89F	product	-	-	-	73	59
+74	KB37	alias	-	-	-	74	60
+75	Line 6 POD HD Pro X	alias	-	-	-	75	-
+76	Line 6 POD HD500X	alias	-	-	-	76	-
+77	Line 6 UX8	alias	-	-	-	77	-
+78	M13	alias	-	-	-	78	61
+79	M5	alias	-	-	-	79	62
+80	M9	alias	-	-	-	80	63
+81	Mod Pro	alias	-	-	-	81	64
+82	Pocket POD	alias	-	-	-	82	65
+83	POD	alias	-	-	-	83	66
+84	POD 1.x	product	-	-	unresolved	84	-
+85	POD 2.0	product	-	-	unresolved	85	67
+86	POD 2.0 Pro	product	-	-	unresolved	86	-
+87	POD GO	alias	-	-	-	87	68
+88	POD Go	alias	-	-	-	88	-
+89	POD GO Wireless	alias	-	-	-	89	69
+90	POD Go Wireless	alias	-	-	-	90	-
+91	POD HD	product	0x0E41	0x4156	-	91	70
+92	POD HD 300	product	0x0E41	0x5057	-	-	-
+93	POD HD 400	product	0x0E41	0x5058	-	-	-
+94	POD HD 500	product	0x0E41	0x414D	-	92	-
+95	POD HD Bean	alias	-	-	-	93	-
+96	POD HD Pro	product	0x0E41	0x4157	-	94	71
+97	POD HD Pro SE	alias	-	-	-	95	-
+98	POD HD Pro X	product	0x0E41	0x415A	-	96	72
+99	POD HD300	alias	-	-	-	97	73
+100	POD HD400	alias	-	-	-	98	74
+101	POD HD500	alias	-	-	-	99	75
+102	POD HD500 SE	alias	-	-	-	100	-
+103	POD HD500X	product	0x0E41	0x4159	-	101	76
+104	POD Pro	alias	-	-	-	102	77
+105	POD Studio GX	alias	-	-	-	103	78
+106	POD Studio KB37	alias	-	-	-	104	79
+107	POD Studio UX1	alias	-	-	-	105	80
+108	POD Studio UX2	alias	-	-	-	106	81
+109	POD X3	alias	-	-	-	107	82
+110	POD X3 Live	alias	-	-	-	108	83
+111	POD X3 Pro	alias	-	-	-	109	84
+112	PODxt	product	-	-	unresolved	110	85
+113	PODxt Live	bridge	0x0E41	0x4650	0x0003000A	111	86
+114	PODxt Pro	product	-	-	unresolved	112	87
+115	Powercab	alias	-	-	-	113	88
+116	Powercab 112	alias	-	-	-	114	89
+117	Powercab 112 Plus	alias	-	-	-	115	90
+118	Powercab 212 Plus	alias	-	-	-	116	91
+119	RELAY G10	alias	-	-	-	117	92
+120	Relay G10R	alias	-	-	-	118	93
+121	Relay G10S	alias	-	-	-	119	94
+122	RELAY G10S	alias	-	-	-	120	95
+123	RELAY G10T	alias	-	-	-	121	96
+124	RELAY G10TII	alias	-	-	-	122	97
+125	Relay G30 Bodypack	alias	-	-	-	123	98
+126	Relay G30 Bodypack (1.0)	alias	-	-	-	124	99
+127	Relay G30 Receiver	alias	-	-	-	125	100
+128	Relay G50 Bodypack	alias	-	-	-	126	101
+129	Relay G50 Receiver	alias	-	-	-	127	102
+130	Relay G50 Transmitter	alias	-	-	-	128	103
+131	Relay G70	alias	-	-	-	129	104
+132	RELAY G70 Receiver	alias	-	-	-	130	105
+133	Relay G75	alias	-	-	-	131	106
+134	RELAY G75 Receiver	alias	-	-	-	132	107
+135	Relay G90 Bodypack	alias	-	-	-	133	108
+136	Relay G90 Receiver	alias	-	-	-	134	109
+137	Relay G90 Transmitter	alias	-	-	-	135	110
+138	RELAY TB516 G Transmitter	alias	-	-	-	136	111
+139	Relay TB516G Beltpack	alias	-	-	-	137	112
+140	Shuriken	alias	-	-	-	138	113
+141	Shuriken SR-250	alias	-	-	-	139	114
+142	Spider IV	alias	-	-	-	140	115
+143	Spider IV 120	alias	-	-	-	141	116
+144	Spider IV 15	alias	-	-	-	142	117
+145	Spider IV 150	alias	-	-	-	143	118
+146	Spider IV 30	alias	-	-	-	144	119
+147	Spider IV 75	alias	-	-	-	145	120
+148	Spider IV HD150	alias	-	-	-	146	121
+149	Spider Jam	alias	-	-	-	147	122
+150	Spider V 120	alias	-	-	-	148	123
+151	Spider V 20	alias	-	-	-	149	124
+152	Spider V 240	alias	-	-	-	150	125
+153	Spider V 240 Head	alias	-	-	-	151	126
+154	Spider V 30	alias	-	-	-	152	127
+155	Spider V 60	alias	-	-	-	153	128
+156	Spider Valve mkII	alias	-	-	-	154	129
+157	Spider Valve MkII 112	alias	-	-	-	155	130
+158	Spider Valve MkII 212	alias	-	-	-	156	131
+159	Spider Valve mkII 212	alias	-	-	-	157	132
+160	Spider Valve mkII HD	alias	-	-	-	158	133
+161	Spider Valve MkII HD100	alias	-	-	-	159	134
+162	Studio POD	alias	-	-	-	160	-
+163	Studio POD 2	alias	-	-	-	161	-
+164	TonePort	product	-	-	unresolved	162	-
+165	TonePort	product	-	-	unresolved	162	-
+166	Toneport DI Gold	alias	-	-	-	163	-
+167	TonePort DI Gold	alias	-	-	-	164	-
+168	Toneport DI Silver	alias	-	-	-	165	-
+169	TonePort DI Silver	alias	-	-	-	166	-
+170	TonePort DI-Gold	alias	-	-	-	167	135
+171	TonePort DI-Silver	alias	-	-	-	168	136
+172	TonePort GX	alias	-	-	-	169	137
+173	Toneport GX	alias	-	-	-	170	-
+174	TonePort GX MKII	alias	-	-	-	171	138
+175	TonePort KB 37	alias	-	-	-	172	-
+176	TonePort KB37	alias	-	-	-	173	139
+177	TonePort KB61	alias	-	-	-	174	140
+178	TonePort UX1	alias	-	-	-	175	141
+179	TonePort UX1 MKII	alias	-	-	-	176	142
+180	TonePort UX2	alias	-	-	-	177	143
+181	TonePort UX2 MKII	alias	-	-	-	178	144
+182	TonePort UX8	alias	-	-	-	179	145
+183	TonePort/POD Studio KB37	alias	-	-	-	180	-
+184	TonePort/POD Studio UX1	alias	-	-	-	181	-
+185	TonePort/POD Studio UX2	alias	-	-	-	182	-
+186	Tyler Variax	family	-	-	0x00070005	183	146
+187	UX1	alias	-	-	-	184	147
+188	UX2	alias	-	-	-	185	148
+189	UX8	alias	-	-	-	186	149
+190	Variax	alias	-	-	-	187	-
+191	Variax 300	alias	-	-	-	-	150
+192	Variax 300 600	alias	-	-	-	188	-
+193	Variax 300/600	guitar	-	-	0x00070004	189	-
+194	Variax 500	alias	-	-	-	-	151
+195	Variax 500 700	alias	-	-	-	190	-
+196	Variax 500/700	guitar	-	-	0x00070000	191	-
+197	Variax 600	alias	-	-	-	-	152
+198	Variax 700	alias	-	-	-	-	153
+199	Variax Acoustic	guitar	-	-	0x00070001	192	154
+200	Variax Bass	guitar	-	-	0x00070002	193	155
+201	Variax Bass 705	guitar	-	-	0x00070006	194	156
+202	Variax Electric	alias	-	-	-	195	-
+203	Variax Standard	alias	-	-	-	196	157
+204	Variax Tyler	alias	-	-	-	197	-
+205	Variax USB Interface	bridge	0x0E41	0x534D	0x00700001	198	158
+206	Vetta	alias	-	-	-	199	159
+207	Vetta Combo	alias	-	-	-	200	160
+208	Vetta Head	alias	-	-	-	201	161
+209	Vetta II	product	-	-	unresolved	202	162
+210	Vetta II Combo	product	-	-	unresolved	203	163
+211	Vetta II Head	product	-	-	unresolved	204	164
+212	Workbench HD	family	-	-	-	-	-
+213	XD-V30 Bodypack	alias	-	-	-	205	165
+214	XD-V30 Handheld	alias	-	-	-	206	166
+215	XD-V30 Receiver	alias	-	-	-	207	167
+216	XD-V35 Bodypack	alias	-	-	-	208	168
+217	XD-V35 Handheld	alias	-	-	-	209	169
+218	XD-V35 Receiver	alias	-	-	-	210	170
+219	XD-V70 Bodypack	alias	-	-	-	211	171
+220	XD-V70 Handheld	alias	-	-	-	212	172
+221	XD-V70 Receiver	alias	-	-	-	213	173
+222	XD-V75 Bodypack	alias	-	-	-	214	174
+223	XD-V75 Handheld	alias	-	-	-	215	175
+224	XD-V75 Receiver	alias	-	-	-	216	176
