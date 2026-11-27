@@ -3,7 +3,9 @@ use super::variax_panel::VariaxEditor;
 use super::*;
 use variax_workbench::ui::{assets, chrome, connections, theme};
 
+mod connection_inventory;
 mod detect;
+pub(super) use connection_inventory::ConnectionInventory;
 #[cfg(test)]
 mod detection_tests;
 pub(super) use detect::DetectConfirmation;
@@ -67,6 +69,8 @@ impl Workbench {
             defaults,
             tabs: Tabs::default(),
             connections: connections::Connections::default(),
+            startup_connection: false,
+            connection_inventory: ConnectionInventory::default(),
             detection: DetectionService::platform(),
             detect_confirmation: None,
             next_detection: Instant::now(),
@@ -100,6 +104,8 @@ impl Workbench {
         } else if options.tab.is_some() || options.screenshot.is_some() {
             app.new_tab(registry::LEGACY_STARTUP);
         }
+        // Screenshot runs target the requested editor view.
+        app.startup_connection = options.screenshot.is_none();
         app.screenshot = options.screenshot;
         // Apply the startup view only while opening the startup file or example.
         app.defaults.startup_panel = None;
@@ -430,12 +436,31 @@ impl Workbench {
             }
             entry.editor.observe_device(entry.device.as_ref());
             entry.editor.poll(ctx);
-            if let Some(event) = entry.editor.take_device_event() {
+            while let Some(event) = entry.editor.take_device_event() {
                 device_events.push((entry.id, event));
             }
         }
         for (tab, event) in device_events {
             self.apply_device_event(tab, event);
+        }
+        self.poll_connection_sync(ctx);
+        if self.startup_connection {
+            if ctx.input(|input| {
+                input.viewport().close_requested()
+                    || input.key_pressed(egui::Key::Q)
+                        && input.modifiers.matches_exact(egui::Modifiers::CTRL)
+            }) {
+                self.request_close(ctx);
+            }
+            let action = connections::show_startup(
+                ctx,
+                &mut self.connections,
+                Instant::now(),
+                connection_artwork,
+            );
+            self.apply_connection_action(action, ctx);
+            self.pending_dialog(ctx);
+            return;
         }
         self.frame_count += 1;
         if self.screenshot.is_some() && self.frame_count <= 5 {
@@ -855,13 +880,11 @@ impl Workbench {
                     }
                 });
         }
-        // Lane 1 will dispatch the returned retry request through the existing
-        // consent and read path. This visual slice supplies no live events.
-        let _retry_request = self.connection_window(ctx);
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.device_check_window(ctx);
         self.detect_dialog(ctx);
+        self.connection_window(ctx);
         // Window closes discard their actions before any late picker result runs.
         self.poll_picker(ctx);
     }
@@ -881,23 +904,40 @@ impl Workbench {
         self.detect_button(ui, start_panel);
     }
 
-    fn connection_window(&mut self, ctx: &egui::Context) -> Option<connections::Attachment> {
+    fn connection_window(&mut self, ctx: &egui::Context) {
         let action = connections::show(
             ctx,
             &mut self.connections,
             Instant::now(),
-            |ui, path, rect| {
-                let image = shell_image(ui.ctx(), path);
-                if image.missing {
-                    return false;
-                }
-                assets::paint(ui, &image, rect);
-                true
-            },
+            connection_artwork,
         );
+        self.apply_connection_action(action, ctx);
+    }
+
+    fn apply_connection_action(
+        &mut self,
+        action: Option<connections::Action>,
+        ctx: &egui::Context,
+    ) {
+        use connections::Action;
+        let Some(action) = action else { return };
+        if self.startup_connection
+            && matches!(
+                action,
+                Action::EnterWorkbench | Action::EditOffline | Action::OpenOfflineEditor(_)
+            )
+        {
+            if action != Action::EnterWorkbench {
+                self.skip_startup_sync();
+            }
+            self.startup_connection = false;
+            self.connections.dismiss();
+            ctx.request_repaint();
+        }
         match action {
-            Some(connections::Action::EditOffline) => self.tabs.active = None,
-            Some(connections::Action::OpenOfflineEditor(editor)) => {
+            Action::EnterWorkbench => {}
+            Action::EditOffline => self.tabs.active = None,
+            Action::OpenOfflineEditor(editor) => {
                 if let Some(family) = registry::FAMILIES
                     .iter()
                     .find(|family| family.info().id == editor)
@@ -905,10 +945,8 @@ impl Workbench {
                     self.new_tab(*family);
                 }
             }
-            Some(connections::Action::Retry(attachment)) => return Some(attachment),
-            None => {}
+            action => self.connection_sync_action(action, ctx),
         }
-        None
     }
 
     fn home_page(&mut self, ui: &mut egui::Ui) {
@@ -1054,6 +1092,15 @@ fn status_line(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         egui::Label::new(egui::RichText::new(text).size(theme::STATUS).color(color))
             .wrap_mode(egui::TextWrapMode::Wrap),
     );
+}
+
+fn connection_artwork(ui: &egui::Ui, path: &'static str, rect: egui::Rect) -> bool {
+    let image = shell_image(ui.ctx(), path);
+    if image.missing {
+        return false;
+    }
+    assets::paint(ui, &image, rect);
+    true
 }
 
 fn connection_chip(ui: &mut egui::Ui, text: &str) {

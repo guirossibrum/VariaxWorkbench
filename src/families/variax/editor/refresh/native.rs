@@ -9,6 +9,7 @@ use line6_devices::{device_lock::DeviceLock, transport::usb::UsbInterfaceLink};
 #[cfg(any(test, target_os = "linux"))]
 pub(super) fn capability(_: &Attachment) -> RouteCapability {
     Ok(DownloadRoute {
+        #[cfg(test)]
         download_on_connect: true,
     })
 }
@@ -24,8 +25,9 @@ pub(super) use unsupported_capability as capability;
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn macos_capability(attachment: &Attachment) -> RouteCapability {
     macos_registry_id(attachment)?;
-    // Leave the sweep behind the explicit Download action on this route.
+    // The startup window asks for consent before starting the sweep.
     Ok(DownloadRoute {
+        #[cfg(test)]
         download_on_connect: false,
     })
 }

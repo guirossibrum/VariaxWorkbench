@@ -4,7 +4,7 @@ use super::{
 };
 use crate::editor::{
     detection::DeviceKey,
-    tabs::{Connection, DeviceTab},
+    tabs::{DeviceEvent, DeviceTab, SyncAdmission, SyncUpdate},
 };
 use line6_devices::family::variax::{self, Restore};
 use std::{
@@ -33,6 +33,7 @@ mod native;
 
 #[derive(Clone, Copy)]
 struct DownloadRoute {
+    #[cfg(test)]
     download_on_connect: bool,
 }
 
@@ -44,7 +45,28 @@ struct Capture {
     release_error: Option<String>,
 }
 
-type ReadLibrary = fn(&Attachment, &AtomicBool, &AtomicUsize) -> Result<Capture, String>;
+struct ReadFailure {
+    message: String,
+    diagnostic: Option<String>,
+}
+
+impl From<String> for ReadFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            diagnostic: None,
+        }
+    }
+}
+
+impl From<&str> for ReadFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+type ReadResult = Result<Capture, ReadFailure>;
+type ReadLibrary = fn(&Attachment, &AtomicBool, &AtomicUsize) -> ReadResult;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Attempt {
@@ -114,7 +136,8 @@ struct Worker {
     replace: Option<DocumentView>,
     stop: Arc<AtomicBool>,
     progress: Arc<AtomicUsize>,
-    thread: JoinHandle<Result<Capture, String>>,
+    acquired: Option<Arc<AtomicBool>>,
+    thread: JoinHandle<ReadResult>,
 }
 
 #[derive(Default)]
@@ -122,31 +145,39 @@ pub(super) struct Refresh {
     attachment: Option<Attachment>,
     #[cfg(test)]
     capability_source: Option<fn(&Attachment) -> RouteCapability>,
+    #[cfg(test)]
     attempted: Option<DeviceKey>,
     active: Option<Attempt>,
     next_attempt: u64,
     latest_download: Option<DownloadedLibrary>,
+    #[cfg(test)]
     explicit_download_required: bool,
     #[cfg(test)]
     auto_source: Option<ReadLibrary>,
     confirmation: Option<ReadLibrary>,
     worker: Option<Worker>,
+    sync_result: Option<Result<(), String>>,
+    cleanup_warning: Option<DeviceEvent>,
 }
 
 impl Refresh {
     pub(super) fn observe(&mut self, device: Option<&DeviceTab>) {
         let attachment = device.and_then(Attachment::verified);
-        if device.is_none_or(|tab| tab.connection == Connection::Disconnected) {
+        #[cfg(test)]
+        if device.is_none_or(|tab| tab.connection == crate::editor::tabs::Connection::Disconnected)
+        {
             self.attempted = None;
         }
         if self.attachment != attachment {
             self.cancel();
             self.active = None;
             self.confirmation = None;
+            self.sync_result = None;
             self.attachment = attachment;
         }
     }
 
+    #[cfg(test)]
     pub(super) fn require_explicit_download(&mut self) {
         // A historical library previously suppressed automatic downloads.
         // Keep that behavior when it is skipped during device-tab startup.
@@ -178,7 +209,12 @@ impl Refresh {
         }
     }
 
-    fn start(&mut self, read: ReadLibrary, replace: Option<DocumentView>) -> Result<(), String> {
+    fn start(
+        &mut self,
+        read: ReadLibrary,
+        replace: Option<DocumentView>,
+        managed: bool,
+    ) -> Result<(), String> {
         let attachment = self
             .attachment
             .clone()
@@ -188,21 +224,41 @@ impl Refresh {
             attachment: attachment.key.clone(),
             id: self.next_attempt,
         };
-        self.attempted = Some(attachment.key.clone());
+        #[cfg(test)]
+        {
+            self.attempted = Some(attachment.key.clone());
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(AtomicUsize::new(0));
         let worker_stop = stop.clone();
         let worker_progress = progress.clone();
+        let acquired = managed.then(|| Arc::new(AtomicBool::new(false)));
+        let worker_acquired = acquired.clone();
         let thread = std::thread::Builder::new()
             .name("variax-refresh".into())
-            .spawn(move || read(&attachment, &worker_stop, &worker_progress))
+            .spawn(move || {
+                if let Some(acquired) = worker_acquired.as_deref() {
+                    #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+                    return read_library_with_wait(
+                        &attachment,
+                        &worker_stop,
+                        &worker_progress,
+                        Some(acquired),
+                    );
+                    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+                    acquired.store(true, Ordering::Release);
+                }
+                read(&attachment, &worker_stop, &worker_progress)
+            })
             .map_err(|error| format!("Could not start Variax Refresh: {error}"))?;
+        self.sync_result = None;
         self.active = Some(attempt.clone());
         self.worker = Some(Worker {
             attempt,
             replace,
             stop,
             progress,
+            acquired,
             thread,
         });
         Ok(())
@@ -313,7 +369,7 @@ impl VariaxEditor {
             && self.name_draft.is_none()
             && self.author_draft.is_none())
         .then(|| DocumentView::capture(self));
-        match self.refresh.start(read, replace) {
+        match self.refresh.start(read, replace, false) {
             Ok(()) => {
                 self.error = None;
                 self.status = "Reading guitar library…".into();
@@ -356,13 +412,12 @@ impl VariaxEditor {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn start_automatic_download(&mut self) {
         #[cfg(test)]
         let Some(read) = self.refresh.auto_source else {
             return;
         };
-        #[cfg(not(test))]
-        let read = read_library;
         if !self
             .download_capability()
             .is_ok_and(|route| route.download_on_connect)
@@ -383,6 +438,78 @@ impl VariaxEditor {
         // Workbench 1.75 refreshed a missing bundle on connect. The editor
         // here starts only the library read and does not send an edit buffer.
         self.start_refresh(read, true);
+    }
+
+    pub(super) fn connection_sync_admission(&self, consent: bool) -> SyncAdmission {
+        if let Err(reason) = self.download_capability() {
+            return SyncAdmission::Unavailable(reason);
+        }
+        #[cfg(test)]
+        if self.refresh.auto_source.is_none() {
+            return SyncAdmission::Unavailable("No simulated Variax library reader is configured.");
+        }
+        // The shared sweep temporarily selects stored presets on all current routes.
+        if !consent {
+            return SyncAdmission::Consent(
+                "Download the guitar library? The guitar will temporarily switch presets. Workbench attempts and checks return when it can identify the starting preset. A partial download can leave return unverified.",
+            );
+        }
+        if !self.can_request_download() {
+            return SyncAdmission::Busy;
+        }
+        SyncAdmission::Ready(
+            variax::Preset::all()
+                .count()
+                .try_into()
+                .expect("Variax presets"),
+        )
+    }
+
+    pub(super) fn start_connection_sync(&mut self) -> Result<(), String> {
+        #[cfg(test)]
+        let read = self
+            .refresh
+            .auto_source
+            .ok_or("No simulated Variax reader.")?;
+        #[cfg(not(test))]
+        let read = read_library;
+        let replace = self
+            .untouched_startup_view()
+            .then(|| DocumentView::capture(self));
+        self.refresh.start(read, replace, true)?;
+        self.error = None;
+        self.status = "Reading guitar library…".into();
+        Ok(())
+    }
+
+    pub(super) fn connection_sync_update(&mut self) -> Option<SyncUpdate> {
+        if let Some(result) = self.refresh.sync_result.take() {
+            return Some(SyncUpdate::Finished(result));
+        }
+        let worker = self.refresh.worker.as_ref()?;
+        let acquired = worker.acquired.as_deref()?;
+        self.refresh.accepts(&worker.attempt).then(|| {
+            if acquired.load(Ordering::Acquire) {
+                SyncUpdate::Reading(worker.progress.load(Ordering::Relaxed))
+            } else {
+                SyncUpdate::WaitingForRig
+            }
+        })
+    }
+
+    pub(super) fn cancel_connection_sync(&self) {
+        if self
+            .refresh
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.acquired.is_some())
+        {
+            self.refresh.cancel();
+        }
+    }
+
+    pub(super) fn take_refresh_warning(&mut self) -> Option<DeviceEvent> {
+        self.refresh.cleanup_warning.take()
     }
 
     pub(super) fn poll_refresh(&mut self, ctx: &egui::Context) {
@@ -407,12 +534,15 @@ impl VariaxEditor {
             .thread
             .join()
             .unwrap_or_else(|_| Err("The Variax Refresh worker stopped unexpectedly.".into()));
-        self.finish_refresh(
+        let result = self.finish_refresh(
             worker.attempt,
             worker.stop.load(Ordering::Relaxed),
             worker.replace,
             result,
         );
+        if worker.acquired.is_some() {
+            self.refresh.sync_result = Some(result);
+        }
     }
 
     fn finish_refresh(
@@ -420,31 +550,51 @@ impl VariaxEditor {
         attempt: Attempt,
         cancelled: bool,
         replace: Option<DocumentView>,
-        result: Result<Capture, String>,
-    ) {
-        if !self.refresh.accepts(&attempt) {
-            return;
+        result: ReadResult,
+    ) -> Result<(), String> {
+        let obsolete = !self.refresh.accepts(&attempt);
+        let disconnected = self.follow.disconnected();
+        if (obsolete || disconnected || cancelled)
+            && let Some(message) = match &result {
+                Ok(capture) => {
+                    cleanup_diagnostic(&capture.restore, capture.release_error.as_deref())
+                }
+                Err(failure) => failure.diagnostic.clone(),
+            }
+        {
+            self.refresh.cleanup_warning = Some(DeviceEvent::GuitarCleanupWarning {
+                attachment: attempt.attachment.clone(),
+                message,
+            });
+        }
+        if obsolete {
+            return Err("The guitar attachment or download attempt changed.".into());
         }
         self.refresh.active = None;
-        if self.follow.disconnected() {
-            return;
+        if disconnected {
+            return Err("The guitar disconnected during download.".into());
         }
-        let result = result.and_then(|capture| {
-            let Restore::Switched { to, verified: true } = capture.restore else {
-                return Err(with_release_error(
-                    restore_notice(&capture.restore),
-                    capture.release_error,
-                ));
-            };
-            if let Some(error) = capture.release_error {
-                return Err(error);
-            }
-            Ok((capture.bundle, to))
-        });
+        let result = result
+            .map_err(|failure| failure.message)
+            .and_then(|capture| {
+                let Restore::Switched { to, verified: true } = capture.restore else {
+                    return Err(with_release_error(
+                        restore_notice(&capture.restore),
+                        capture.release_error,
+                    ));
+                };
+                if let Some(error) = capture.release_error {
+                    return Err(error);
+                }
+                Ok((capture.bundle, to))
+            });
         if cancelled {
             self.status = "Guitar refresh stopped. The open document was kept.".into();
             self.error = result.err();
-            return;
+            return Err(self
+                .error
+                .clone()
+                .unwrap_or_else(|| "Guitar download cancelled.".into()));
         }
 
         let result = result.and_then(|(bundle, to)| {
@@ -460,9 +610,9 @@ impl VariaxEditor {
         let (download, document) = match result {
             Ok(completed) => completed,
             Err(error) => {
-                self.error = Some(error);
+                self.error = Some(error.clone());
                 self.status = "Guitar refresh did not complete. The open document was kept.".into();
-                return;
+                return Err(error);
             }
         };
 
@@ -473,7 +623,10 @@ impl VariaxEditor {
         });
         let origin = download.origin();
         self.refresh.latest_download = Some(download);
-        self.refresh.explicit_download_required = false;
+        #[cfg(test)]
+        {
+            self.refresh.explicit_download_required = false;
+        }
 
         if replace.is_some_and(|view| view.still_open(self))
             && !self.opening_file
@@ -492,6 +645,7 @@ impl VariaxEditor {
                 "Read 60 guitar presets and 12 bank names. The download is ready to open.".into();
         }
         self.error = snapshot_error;
+        Ok(())
     }
 
     pub(super) fn open_download_button(&mut self, ui: &mut egui::Ui) {
@@ -556,6 +710,17 @@ fn restore_notice(restore: &Restore) -> String {
     }
 }
 
+fn cleanup_diagnostic(restore: &Restore, release_error: Option<&str>) -> Option<String> {
+    if matches!(restore, Restore::Switched { verified: true, .. }) {
+        release_error.map(str::to_owned)
+    } else {
+        Some(with_release_error(
+            restore_notice(restore),
+            release_error.map(str::to_owned),
+        ))
+    }
+}
+
 fn with_release_error(message: String, release_error: Option<String>) -> String {
     match release_error {
         Some(error) => format!("{message} {error}"),
@@ -563,12 +728,49 @@ fn with_release_error(message: String, release_error: Option<String>) -> String 
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn read_failure(error: variax::backup::RefreshError, usb_release: Option<String>) -> ReadFailure {
+    use variax::backup::RefreshError;
+
+    let message = with_release_error(error.to_string(), usb_release.clone());
+    let diagnostic = match error {
+        RefreshError::Incomplete {
+            restore,
+            release_error,
+            ..
+        } => cleanup_diagnostic(
+            &restore,
+            combine_releases(release_error, usb_release).as_deref(),
+        ),
+        // Early bridge/session errors carry their release detail in the same text.
+        RefreshError::Read(_) => Some(message.clone()),
+    };
+    ReadFailure {
+        message,
+        diagnostic,
+    }
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn combine_releases(bridge: Option<String>, usb: Option<String>) -> Option<String> {
+    match bridge {
+        Some(message) => Some(with_release_error(message, usb)),
+        None => usb,
+    }
+}
+
 #[cfg(all(any(target_os = "linux", target_os = "macos"), not(test)))]
-fn read_library(
+fn read_library(attachment: &Attachment, stop: &AtomicBool, progress: &AtomicUsize) -> ReadResult {
+    read_library_with_wait(attachment, stop, progress, None)
+}
+
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(test)))]
+fn read_library_with_wait(
     attachment: &Attachment,
     stop: &AtomicBool,
     progress: &AtomicUsize,
-) -> Result<Capture, String> {
+    acquired: Option<&AtomicBool>,
+) -> ReadResult {
     use line6_devices::{
         device_lock::DeviceLock,
         family::variax::backup::refresh_library,
@@ -601,7 +803,10 @@ fn read_library(
         if cancelled() {
             return Err("Guitar refresh cancelled before opening the attachment.".into());
         }
-        let rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
+        let rig = match acquired {
+            Some(acquired) => DeviceLock::acquire_for_download(cancelled, acquired),
+            None => DeviceLock::acquire().map_err(|error| error.to_string()),
+        }?;
         if cancelled() {
             return Err("Guitar refresh cancelled before opening the attachment.".into());
         }
@@ -612,26 +817,31 @@ fn read_library(
         let result = refresh_library(&rig, &mut session, cancelled, |_| {
             progress.fetch_add(1, Ordering::Relaxed);
         });
-        let cleanup = session.link.finish().err();
-        let refreshed =
-            result.map_err(|error| with_release_error(error.to_string(), cleanup.clone()))?;
-        let release_error = match (refreshed.release_error, cleanup) {
-            (Some(message), cleanup) => Some(with_release_error(message, cleanup)),
-            (None, cleanup) => cleanup,
-        };
-        let bundle =
-            BundleFile::from_refreshed_variax(refreshed.library, &refreshed.identified.reply)
-                .map_err(|error| with_release_error(error, release_error.clone()))?;
-        Ok(Capture {
-            bundle,
-            restore: refreshed.restore,
-            release_error,
+        let usb_release = session.link.finish().err();
+        Ok(match result {
+            Err(error) => Err(read_failure(error, usb_release)),
+            Ok(refreshed) => {
+                let release_error = combine_releases(refreshed.release_error, usb_release);
+                BundleFile::from_refreshed_variax(refreshed.library, &refreshed.identified.reply)
+                    .map_err(|error| ReadFailure {
+                        diagnostic: cleanup_diagnostic(
+                            &refreshed.restore,
+                            release_error.as_deref(),
+                        ),
+                        message: with_release_error(error, release_error.clone()),
+                    })
+                    .map(|bundle| Capture {
+                        bundle,
+                        restore: refreshed.restore,
+                        release_error,
+                    })
+            }
         })
-    })
+    })?
 }
 
 #[cfg(any(not(any(target_os = "linux", target_os = "macos")), test))]
-fn read_library(_: &Attachment, _: &AtomicBool, _: &AtomicUsize) -> Result<Capture, String> {
+fn read_library(_: &Attachment, _: &AtomicBool, _: &AtomicUsize) -> ReadResult {
     Err("This build cannot open a USB device for Variax Refresh.".into())
 }
 
@@ -731,7 +941,7 @@ pub(super) mod tests {
         attachment: &Attachment,
         _: &AtomicBool,
         progress: &AtomicUsize,
-    ) -> Result<Capture, String> {
+    ) -> ReadResult {
         assert_eq!(
             (attachment.path.as_str(), attachment.address),
             ("8-2.1", 10)
@@ -1426,6 +1636,58 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn retired_refresh_reports_return_bridge_and_usb_cleanup_without_publishing() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let mut rig = verified_rig();
+        let old = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&old));
+        editor.start_refresh(complete_capture, false);
+        wait_for_completion(editor, &ctx);
+        let previous = editor.refresh.latest_download.as_ref().unwrap().captured_at;
+        editor.change(|preset| preset.rename("Keep edited model"));
+        let prior_document = editor.document.as_ref().unwrap().as_bytes().to_vec();
+
+        let interrupted: ReadLibrary = |_, _, _| {
+            Err(read_failure(
+                variax::backup::RefreshError::Incomplete {
+                    reason: "Missing preset reply".into(),
+                    restore: Restore::NoUniqueMatch { matches: 0 },
+                    release_error: Some("Bridge release failed.".into()),
+                },
+                Some("USB release failed.".into()),
+            ))
+        };
+        editor.start_refresh(interrupted, false);
+        let profiles = crate::editor::registry::DEVICE_PROFILES;
+        rig.report_guitar_disconnect(&old.device.key, profiles)
+            .unwrap();
+        assert!(rig.queue_guitar_refresh(&old.device.key.attachment, false));
+        let replacement = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&replacement));
+        assert_ne!(old.device.key, replacement.device.key);
+        wait_for_completion(editor, &ctx);
+
+        let Some(DeviceEvent::GuitarCleanupWarning {
+            attachment,
+            message,
+        }) = editor.take_refresh_warning()
+        else {
+            panic!("retired refresh should report its cleanup failure");
+        };
+        assert_eq!(attachment, old.device.key);
+        assert!(message.contains("No preset was reselected"));
+        assert!(message.contains("Bridge release failed"));
+        assert!(message.contains("USB release failed"));
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().captured_at,
+            previous
+        );
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), prior_document);
+        assert!(editor.take_refresh_warning().is_none());
+    }
+
+    #[test]
     fn obsolete_attachment_and_attempt_cannot_publish_or_replace_a_library() {
         let (ctx, mut app) = app();
         let editor = app.variax_mut();
@@ -1448,7 +1710,11 @@ pub(super) mod tests {
         editor.start_refresh(complete_capture, true);
         let current = editor.refresh.worker.as_ref().unwrap().attempt.clone();
         let view = DocumentView::capture(editor);
-        editor.finish_refresh(old, false, Some(view), capture());
+        assert!(
+            editor
+                .finish_refresh(old, false, Some(view), capture())
+                .is_err()
+        );
         assert!(editor.refresh.accepts(&current));
         assert_eq!(
             editor.refresh.latest_download.as_ref().unwrap().captured_at,
@@ -1465,7 +1731,11 @@ pub(super) mod tests {
         assert_ne!(first.device.key, second.device.key);
         let bytes = editor.document.as_ref().unwrap().as_bytes().to_vec();
         wait_for_completion(editor, &ctx);
-        editor.finish_refresh(current, false, None, capture());
+        assert!(
+            editor
+                .finish_refresh(current, false, None, capture())
+                .is_err()
+        );
         assert_eq!(
             editor.refresh.latest_download.as_ref().unwrap().captured_at,
             previous

@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 mod view;
-pub use view::{Action, show};
+pub use view::{Action, show, show_startup};
 
 #[cfg(test)]
 mod tests;
@@ -51,7 +51,9 @@ pub enum Detection {
 }
 
 pub enum Verification {
+    Checking,
     Verified,
+    Unverified(String),
     UnverifiedFirmware(String),
     Unsupported,
 }
@@ -60,9 +62,12 @@ pub enum Verification {
 enum Status {
     Checking,
     Connected,
+    Unverified(String),
     UnverifiedFirmware(String),
     Unsupported,
     Waiting,
+    Consent(&'static str),
+    Skipped(&'static str),
     Reading {
         read: Read,
         done: usize,
@@ -77,6 +82,7 @@ struct Row {
     attachment: Attachment,
     device: Device,
     status: Status,
+    wait_reason: Option<&'static str>,
     reconnected: bool,
     shown: bool,
 }
@@ -85,6 +91,7 @@ struct Row {
 pub struct Connections {
     detection: Detection,
     rows: Vec<Row>,
+    diagnostics: Vec<String>,
     visible: bool,
     manual_close: bool,
     completed_read: bool,
@@ -93,6 +100,15 @@ pub struct Connections {
 }
 
 impl Connections {
+    /// Open the startup presentation once, before the first detection result.
+    pub fn begin_detection(&mut self) -> bool {
+        if self.detection != Detection::Idle {
+            return false;
+        }
+        self.detection(Detection::Checking);
+        true
+    }
+
     /// Report the startup check or a meaningful change in detection health.
     pub fn detection(&mut self, status: Detection) {
         if self.detection == status {
@@ -136,6 +152,7 @@ impl Connections {
             attachment,
             device,
             status: Status::Checking,
+            wait_reason: None,
             reconnected: existing.is_some(),
             shown: true,
         };
@@ -148,15 +165,35 @@ impl Connections {
     }
 
     pub fn verified(&mut self, attachment: Attachment, verification: Verification) {
-        if let Some(row) = self.row_mut(attachment)
-            && row.status == Status::Checking
-        {
-            row.status = match verification {
-                Verification::Verified => Status::Connected,
-                Verification::UnverifiedFirmware(reason) => Status::UnverifiedFirmware(reason),
-                Verification::Unsupported => Status::Unsupported,
-            };
+        let Some(row) = self.row_mut(attachment) else {
+            return;
+        };
+        if row.status == Status::Disconnected {
+            return;
         }
+        // A positive snapshot can repeat during an active read or after it
+        // finishes. Only loss of verification should invalidate that state.
+        if matches!(verification, Verification::Verified)
+            && matches!(
+                row.status,
+                Status::Waiting
+                    | Status::Consent(_)
+                    | Status::Skipped(_)
+                    | Status::Reading { .. }
+                    | Status::Complete
+                    | Status::Failed(_)
+            )
+        {
+            return;
+        }
+        row.wait_reason = None;
+        row.status = match verification {
+            Verification::Checking => Status::Checking,
+            Verification::Verified => Status::Connected,
+            Verification::Unverified(reason) => Status::Unverified(reason),
+            Verification::UnverifiedFirmware(reason) => Status::UnverifiedFirmware(reason),
+            Verification::Unsupported => Status::Unsupported,
+        };
     }
 
     pub fn waiting(&mut self, attachment: Attachment) {
@@ -167,12 +204,65 @@ impl Connections {
         }
     }
 
+    pub fn waiting_for_editor(&mut self, attachment: Attachment) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Consent(_) | Status::Waiting
+            )
+        {
+            row.status = Status::Waiting;
+            row.wait_reason = Some("the editor’s current operation");
+        }
+    }
+
+    pub fn consent(&mut self, attachment: Attachment, prompt: &'static str) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_)
+            )
+        {
+            row.status = Status::Consent(prompt);
+        }
+    }
+
+    pub fn skip(&mut self, attachment: Attachment, reason: &'static str) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_) | Status::Reading { .. }
+            )
+        {
+            row.wait_reason = None;
+            row.status = Status::Skipped(reason);
+        }
+    }
+
+    pub fn fail_to_start(&mut self, attachment: Attachment, reason: String) {
+        if let Some(row) = self.row_mut(attachment)
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_)
+            )
+        {
+            row.wait_reason = None;
+            row.status = Status::Failed(reason);
+        }
+    }
+
+    pub fn waiting_for_rig(&mut self, read: Read, resource: &'static str) {
+        if let Some(row) = self.reading_mut(read) {
+            row.wait_reason = Some(resource);
+        }
+    }
+
     /// Call only when an existing authorized reader starts. The total is the
     /// selected reader scope, including setup entries if those are being read.
     pub fn started(&mut self, attachment: Attachment, total: NonZeroUsize) -> Option<Read> {
         if !matches!(
             self.row_mut(attachment)?.status,
-            Status::Waiting | Status::Connected
+            Status::Waiting | Status::Connected | Status::Consent(_)
         ) {
             return None;
         }
@@ -181,7 +271,9 @@ impl Connections {
             attachment,
             sequence: self.read_sequence,
         };
-        self.row_mut(attachment)?.status = Status::Reading {
+        let row = self.row_mut(attachment)?;
+        row.wait_reason = None;
+        row.status = Status::Reading {
             read,
             done: 0,
             total,
@@ -195,6 +287,7 @@ impl Connections {
             && (*done..=total.get()).contains(&completed)
         {
             *done = completed;
+            row.wait_reason = None;
         }
     }
 
@@ -205,6 +298,7 @@ impl Connections {
         let Some(row) = self.reading_mut(read) else {
             return;
         };
+        row.wait_reason = None;
         row.status = match result {
             Ok(()) => Status::Complete,
             Err(reason) => Status::Failed(reason),
@@ -219,6 +313,7 @@ impl Connections {
             return false;
         };
         if matches!(row.status, Status::Failed(_)) {
+            row.wait_reason = None;
             row.status = Status::Waiting;
             true
         } else {
@@ -288,9 +383,17 @@ impl Connections {
         }
     }
 
-    fn dismiss(&mut self) {
+    pub fn report_diagnostic(&mut self, message: String) {
+        self.open();
+        self.diagnostics.push(message);
+        self.manual_close = true;
+        self.close_at = None;
+    }
+
+    pub fn dismiss(&mut self) {
         self.visible = false;
         self.close_at = None;
+        self.diagnostics.clear();
     }
 
     fn shown_rows(&self) -> impl Iterator<Item = &Row> {

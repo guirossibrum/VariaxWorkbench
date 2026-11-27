@@ -333,6 +333,8 @@ struct Workbench {
     recording_capture_attempts: u32,
     tabs: Tabs,
     connections: Connections,
+    startup_connection: bool,
+    connection_inventory: shell::ConnectionInventory,
     detection: Option<DetectionService>,
     detect_confirmation: Option<DetectConfirmation>,
     next_detection: Instant,

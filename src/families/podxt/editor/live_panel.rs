@@ -1,4 +1,5 @@
 use super::*;
+use tabs::{SyncAdmission, SyncUpdate};
 #[cfg(all(not(target_os = "linux"), not(test), feature = "usb"))]
 use variax_workbench::hardware_gates::Gate;
 
@@ -32,8 +33,10 @@ pub(super) struct LivePanel {
     store: store::StorePanel,
     locker: locker::Locker,
     snapshot: Snapshot,
+    historical_library: std::collections::BTreeMap<u16, EditBuffer>,
     show_values: bool,
     startup: Option<Startup>,
+    sync_result: Option<Result<(), String>>,
     pub(super) live_editing: bool,
     panel: Option<StagePanel>,
     scroll_to_panel: bool,
@@ -60,7 +63,14 @@ struct Worker {
     device: detection::DeviceKey,
     stop: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Snapshot>>,
+    acquired: Option<Arc<AtomicBool>>,
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Worker {
+    fn library_progress(&self) -> Option<usize> {
+        self.snapshot.lock().expect("snapshot mutex").library_count
+    }
 }
 
 impl Drop for Worker {
@@ -312,19 +322,68 @@ fn with_platform_link<T>(
 }
 
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+fn with_download_link(
+    device: &detection::DeviceKey,
+    rig: &line6_devices::device_lock::DeviceLock,
+    run: RunOnLink<'_, ()>,
+) -> Result<(), String> {
+    let (path, address) = device
+        .attachment
+        .usb_location()
+        .ok_or("The verified PODxt Live USB attachment is no longer available.")?;
+    #[cfg(target_os = "linux")]
+    {
+        let source = variax_workbench::device_probe::LinuxSysfs::new();
+        if source.usb_device_address(path) != Some(address) {
+            return Err("The PODxt Live USB attachment changed.".into());
+        }
+        with_platform_link(device, rig, run)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let registry_id = device
+            .attachment
+            .usb_registry_id()
+            .ok_or("The verified PODxt Live registry generation is unavailable.")?;
+        variax_workbench::podxt_live::with_verified_workbench_link(
+            rig,
+            path,
+            address,
+            registry_id,
+            run,
+        )
+    }
+}
+
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn platform_read(
     device: &detection::DeviceKey,
     command: ReadCommand,
     stop: &AtomicBool,
     reply_pending: &AtomicBool,
+    acquired: Option<&AtomicBool>,
     publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
     transaction(
         command,
         stop,
         reply_pending,
-        || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
-        |rig, run| with_platform_link(device, rig, run),
+        || {
+            use line6_devices::device_lock::DeviceLock;
+            match acquired {
+                Some(acquired) => {
+                    DeviceLock::acquire_for_download(|| stop.load(Ordering::Acquire), acquired)
+                }
+                None => DeviceLock::acquire().map_err(|error| error.to_string()),
+            }
+        },
+        |rig, run| {
+            if acquired.is_some() {
+                with_download_link(device, rig, run)
+            } else {
+                with_platform_link(device, rig, run)
+            }
+        },
         publish,
     )
 }
@@ -335,9 +394,21 @@ fn platform_read(
     _command: ReadCommand,
     _stop: &AtomicBool,
     _reply_pending: &AtomicBool,
+    _acquired: Option<&AtomicBool>,
     _publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
     Err("PODxt Live reads are unavailable in this build.".into())
+}
+
+fn library_total(command: ReadCommand) -> usize {
+    match command {
+        ReadCommand::ToneBank => usize::from(BankKind::Tones.size()),
+        ReadCommand::Library => BankKind::ALL
+            .into_iter()
+            .map(|bank| usize::from(bank.size()))
+            .sum(),
+        _ => 0,
+    }
 }
 
 const fn title(command: ReadCommand) -> &'static str {
@@ -374,11 +445,13 @@ impl LivePanel {
         }
         self.device = key.cloned();
         self.startup = self.device.as_ref().map(|_| Startup::Current);
+        self.sync_result = None;
         self.live_editing = false;
         if self.panel == Some(StagePanel::Store) {
             self.panel = None;
         }
         self.editor.set_live(false);
+        self.historical_library.append(&mut self.snapshot.library);
         self.snapshot = Snapshot::default();
         self.message = None;
         self.device.is_some()
@@ -406,15 +479,27 @@ impl LivePanel {
     }
 
     fn start(&mut self, command: ReadCommand, ctx: &egui::Context) {
+        if let Err(error) = self.start_read(command, ctx, false) {
+            self.message = Some(error);
+        }
+    }
+
+    fn start_read(
+        &mut self,
+        command: ReadCommand,
+        ctx: &egui::Context,
+        managed: bool,
+    ) -> Result<(), String> {
         #[cfg(test)]
         {
             self.device_requests += 1;
         }
-        let Some(device) = self.device.clone() else {
-            return;
-        };
+        let device = self
+            .device
+            .clone()
+            .ok_or("The PODxt Live connection changed.")?;
         if self.busy() || !self.device_ready() || !Self::admitted(command) {
-            return;
+            return Err("PODxt Live is unavailable for this read.".into());
         }
         if command == ReadCommand::Follow {
             self.store.clear_preparation();
@@ -438,32 +523,43 @@ impl LivePanel {
         let repaint = ctx.clone();
         let endpoint = device.clone();
         let reply_pending = Arc::clone(&self.editor.reply_pending);
+        let acquired = managed.then(|| Arc::new(AtomicBool::new(false)));
+        let worker_acquired = acquired.clone();
         let thread = std::thread::Builder::new()
             .name("podxt-read".into())
             .spawn(move || {
-                platform_read(&endpoint, command, &worker_stop, &reply_pending, |update| {
-                    if !worker_stop.load(Ordering::Acquire) {
-                        worker_snapshot
-                            .lock()
-                            .expect("snapshot mutex")
-                            .apply(update, Instant::now());
-                        repaint.request_repaint();
-                    }
-                })
-            });
-        match thread {
-            Ok(thread) => {
-                self.message = None;
-                self.worker = Some(Worker {
+                platform_read(
+                    &endpoint,
                     command,
-                    device,
-                    thread: Some(thread),
-                    snapshot,
-                    stop,
-                });
-            }
-            Err(error) => self.message = Some(format!("Could not start PODxt read: {error}")),
-        }
+                    &worker_stop,
+                    &reply_pending,
+                    worker_acquired.as_deref(),
+                    |update| {
+                        if !worker_stop.load(Ordering::Acquire) {
+                            let mut snapshot = worker_snapshot.lock().expect("snapshot mutex");
+                            if command == ReadCommand::Follow
+                                && let ReadUpdate::Stored(stored) = &update
+                                && !snapshot.library.contains_key(&stored.location.address())
+                            {
+                                return;
+                            }
+                            snapshot.apply(update, Instant::now());
+                            repaint.request_repaint();
+                        }
+                    },
+                )
+            });
+        let thread = thread.map_err(|error| format!("Could not start PODxt read: {error}"))?;
+        self.message = None;
+        self.worker = Some(Worker {
+            command,
+            device,
+            thread: Some(thread),
+            snapshot,
+            stop,
+            acquired,
+        });
+        Ok(())
     }
 
     fn admitted(command: ReadCommand) -> bool {
@@ -482,6 +578,54 @@ impl LivePanel {
             self.startup = Some(Startup::Tones);
         }
         Some(request)
+    }
+
+    pub(super) fn connection_sync_admission(&self) -> SyncAdmission {
+        if !Self::admitted(ReadCommand::ToneBank) {
+            return SyncAdmission::Unavailable(
+                "PODxt library download is unavailable in this build.",
+            );
+        }
+        if let Some(reason) = self.pending_reply_message() {
+            return SyncAdmission::Blocked(reason);
+        }
+        if self.busy() || self.startup == Some(Startup::Current) {
+            return SyncAdmission::Busy;
+        }
+        SyncAdmission::Ready(
+            library_total(ReadCommand::ToneBank)
+                .try_into()
+                .expect("PODxt tones"),
+        )
+    }
+
+    pub(super) fn start_connection_sync(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        self.startup = None;
+        self.sync_result = None;
+        self.start_read(ReadCommand::ToneBank, ctx, true)
+    }
+
+    pub(super) fn connection_sync_update(&mut self) -> Option<SyncUpdate> {
+        if let Some(result) = self.sync_result.take() {
+            return Some(SyncUpdate::Finished(result));
+        }
+        let worker = self.worker.as_ref()?;
+        let acquired = worker.acquired.as_deref()?;
+        (self.device.as_ref() == Some(&worker.device)).then(|| {
+            if acquired.load(Ordering::Acquire) {
+                SyncUpdate::Reading(worker.library_progress().unwrap_or(0))
+            } else {
+                SyncUpdate::WaitingForRig
+            }
+        })
+    }
+
+    pub(super) fn cancel_connection_sync(&self) {
+        if let Some(worker) = &self.worker
+            && worker.acquired.is_some()
+        {
+            worker.stop.store(true, Ordering::Release);
+        }
     }
 
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
@@ -511,17 +655,15 @@ impl LivePanel {
             self.snapshot.channel = Some(buffer.channel);
         }
         let Some(worker) = &self.worker else {
-            match self.next_startup() {
-                Some(Startup::Current) => {
-                    self.refresh_current(ctx);
-                    ctx.request_repaint();
-                }
-                Some(Startup::Tones) => self.start(ReadCommand::ToneBank, ctx),
-                None => {}
+            // The shell owns ToneBank admission and Retry. Keep the current
+            // tone's existing editor read and its separate gate.
+            if self.startup == Some(Startup::Current) && self.next_startup().is_some() {
+                self.refresh_current(ctx);
+                ctx.request_repaint();
             }
             return;
         };
-        if self.device.as_ref() == Some(&worker.device) {
+        if self.device.as_ref() == Some(&worker.device) && !requires_library(worker.command) {
             self.snapshot = worker.snapshot.lock().expect("snapshot mutex").clone();
         }
         if !worker.thread.as_ref().expect("worker thread").is_finished() {
@@ -546,21 +688,39 @@ impl LivePanel {
         if !same_device {
             return;
         }
-        self.message = Some(match result {
-            Ok(()) if requires_library(command) => format!(
-                "Library read complete. {} entries.",
-                self.snapshot.library.len()
-            ),
-            Ok(()) if command == ReadCommand::Tuner => "Tuner stopped.".into(),
-            Ok(()) => format!("{} complete.", title(command)),
-            Err(error) if stopped && requires_library(command) => {
-                format!(
-                    "Library read stopped after {} entries. {error}",
-                    self.snapshot.library.len()
-                )
+        if requires_library(command) {
+            let result = if stopped {
+                result.and(Err("PODxt Live read cancelled.".into()))
+            } else {
+                result
+            };
+            let count = worker.library_progress().unwrap_or(0);
+            let result = result.and_then(|()| {
+                if count != library_total(command) {
+                    return Err(format!("PODxt library read ended after {count} entries."));
+                }
+                let mut captured = worker.snapshot.lock().expect("snapshot mutex");
+                if command == ReadCommand::Library {
+                    self.snapshot.library.clear();
+                }
+                self.snapshot.library.append(&mut captured.library);
+                self.snapshot.library_count = Some(count);
+                Ok(())
+            });
+            if worker.acquired.is_some() {
+                self.sync_result = Some(result.clone());
             }
-            Err(error) => error,
-        });
+            self.message = Some(match result {
+                Ok(()) => format!("Library read complete. {count} entries."),
+                Err(error) => error,
+            });
+        } else {
+            self.message = Some(match result {
+                Ok(()) if command == ReadCommand::Tuner => "Tuner stopped.".into(),
+                Ok(()) => format!("{} complete.", title(command)),
+                Err(error) => error,
+            });
+        }
         if !self.device_ready() {
             self.startup = None;
         }
@@ -631,6 +791,10 @@ impl LivePanel {
 
     pub(super) fn stored_tone(&self, slot: Location) -> Option<&EditBuffer> {
         self.snapshot.library.get(&slot.address())
+    }
+
+    pub(super) fn historical_tone(&self, slot: Location) -> Option<&EditBuffer> {
+        self.historical_library.get(&slot.address())
     }
 
     pub(super) fn refresh_current(&mut self, ctx: &egui::Context) {
@@ -789,13 +953,9 @@ impl LivePanel {
         }
         if let Some(worker) = &self.worker
             && requires_library(worker.command)
-            && let Some(count) = self.snapshot.library_count
+            && let Some(count) = worker.library_progress()
         {
-            let total = if worker.command == ReadCommand::ToneBank {
-                128
-            } else {
-                299
-            };
+            let total = library_total(worker.command);
             ui.weak(format!("Reading library · {count}/{total}"));
             if ui.button("Cancel library read").clicked() {
                 worker.stop.store(true, Ordering::Release);
@@ -985,11 +1145,9 @@ impl LivePanel {
         if let Some(warning) = &self.snapshot.warning {
             ui.label(warning);
         }
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.command == ReadCommand::Library)
-            && let Some(count) = self.snapshot.library_count
+        if let Some(worker) = &self.worker
+            && worker.command == ReadCommand::Library
+            && let Some(count) = worker.library_progress()
         {
             let total: u16 = BankKind::ALL.into_iter().map(BankKind::size).sum();
             ui.add(

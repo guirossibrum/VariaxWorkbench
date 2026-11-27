@@ -130,6 +130,7 @@ enum StageSource {
     Default,
     Backup(Option<Location>),
     DeviceCopy(Location),
+    HistoricalCopy(Location),
 }
 
 struct StageDocument {
@@ -606,6 +607,7 @@ impl PodxtEditor {
                     StageSource::Default => "Default tone · offline",
                     StageSource::Backup(_) => "Library backup · offline",
                     StageSource::DeviceCopy(_) => "Device library copy · file only",
+                    StageSource::HistoricalCopy(_) => "Previous PODxt library copy · file only",
                 }
             };
             controls::readout(ui, source);
@@ -647,9 +649,9 @@ impl PodxtEditor {
                     ))
                 })
                 .unwrap_or_else(|| match self.stage.source {
-                    StageSource::Backup(Some(slot)) | StageSource::DeviceCopy(slot) => {
-                        slot.slot_name()
-                    }
+                    StageSource::Backup(Some(slot))
+                    | StageSource::DeviceCopy(slot)
+                    | StageSource::HistoricalCopy(slot) => slot.slot_name(),
                     _ => "No channel · file only".into(),
                 });
             ui.horizontal_wrapped(|ui| {
@@ -678,6 +680,13 @@ impl PodxtEditor {
         #[cfg(not(feature = "usb"))]
         let on_device = false;
 
+        #[cfg(feature = "usb")]
+        let historical = !on_device
+            && self.stage.backup.is_none()
+            && Location::all(&[bank]).any(|slot| self.live.historical_tone(slot).is_some());
+        #[cfg(not(feature = "usb"))]
+        let historical = false;
+
         for slot in Location::all(&[bank]) {
             #[cfg(feature = "usb")]
             let device = self.live.stored_tone(slot).filter(|_| on_device);
@@ -695,7 +704,13 @@ impl PodxtEditor {
                         .find(|entry| entry.location == slot)
                         .map(|entry| &entry.tone)
                 });
-            if let Some(dump) = device.or(backup) {
+            #[cfg(feature = "usb")]
+            let previous = historical
+                .then(|| self.live.historical_tone(slot))
+                .flatten();
+            #[cfg(not(feature = "usb"))]
+            let previous = None;
+            if let Some(dump) = device.or(backup).or(previous) {
                 rows.push((slot, dump.clone()));
             }
         }
@@ -728,6 +743,8 @@ impl PodxtEditor {
                 "On PODxt Live"
             } else if self.stage.backup.is_some() {
                 "Library backup"
+            } else if historical {
+                "Previous PODxt library · offline"
             } else {
                 "Reading PODxt library"
             });
@@ -748,11 +765,11 @@ impl PodxtEditor {
             egui::ScrollArea::vertical().id_salt("saved-tones").max_height(330.0).show(ui, |ui| {
                 for (slot, dump) in &rows {
                     #[cfg(feature = "usb")]
-                    let playing = current && self.live.playing_channel() == Some(*slot);
+                    let playing = on_device && current && self.live.playing_channel() == Some(*slot);
                     #[cfg(not(feature = "usb"))]
                     let playing = false;
                     let browsing = matches!(
-                        self.stage.source, StageSource::Backup(Some(ch)) | StageSource::DeviceCopy(ch) if ch == *slot
+                        self.stage.source, StageSource::Backup(Some(ch)) | StageSource::DeviceCopy(ch) | StageSource::HistoricalCopy(ch) if ch == *slot
                     ) && !current;
                     #[cfg(feature = "usb")]
                     let unsynchronized = on_device && self.live.channel_modified(*slot);
@@ -766,7 +783,9 @@ impl PodxtEditor {
                         "Unsynchronized with the saved POD slot"
                     } else if unsaved {
                         "Unsaved file edits"
-                    } else if current {
+                    } else if historical {
+                        "Open a copy of the previous connection’s tone."
+                    } else if on_device && current {
                         "Enable Live editing to recall a channel, or right-click to open a file copy."
                     } else { "" });
                     #[cfg(feature = "usb")]
@@ -796,13 +815,15 @@ impl PodxtEditor {
                 return;
             }
             if let Some((slot, dump)) =
-                file_copy.or_else(|| (!current).then_some(selected).flatten())
+                file_copy.or_else(|| (!current || historical).then_some(selected).flatten())
             {
                 if let Some(tone) = decode_tone(dump, slot.kind()) {
                     self.open_stage_copy(
                         tone,
                         if on_device {
                             StageSource::DeviceCopy(slot)
+                        } else if historical {
+                            StageSource::HistoricalCopy(slot)
                         } else {
                             StageSource::Backup(Some(slot))
                         },
