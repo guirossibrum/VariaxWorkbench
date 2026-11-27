@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn reverified_attachment_discards_queued_follow_updates_and_keeps_the_earlier_library() {
+    fn reverified_refresh_discards_queued_follow_updates_then_follows_the_current_library() {
         let (ctx, mut app) = app();
         let editor = app.variax_mut();
         let mut rig = refresh_tests::verified_rig();
@@ -796,11 +796,12 @@ mod tests {
         let selected = document.selection();
         let before = document.as_bytes().to_vec();
         assert_ne!(selected, Some((4, 2)));
+        assert_ne!(selected, Some((5, 1)));
 
         let old_source: Source = |_, _, publish| {
             let now = Instant::now();
             publish(
-                FollowUpdate::ProgramChange(Preset::new(4, 2).unwrap()),
+                FollowUpdate::ProgramChange(Preset::new(5, 1).unwrap()),
                 now - Duration::from_secs(2),
             );
             publish(FollowUpdate::TonePosition(12), now);
@@ -824,7 +825,9 @@ mod tests {
         assert_eq!(first.device.support, second.device.support);
         assert_ne!(first.device.key, second.device.key);
         editor.observe_device(Some(&second));
-        poll_follow(editor, &ctx);
+        // The old snapshot and the new attachment's completed Refresh reach
+        // the editor in the same poll.
+        refresh_tests::download_and_keep(editor, &ctx);
         assert!(!editor.follow.busy());
         assert!(!editor.follow.disconnected());
         assert!(editor.take_device_event().is_none());
@@ -833,8 +836,21 @@ mod tests {
         assert_eq!(editor.document.as_ref().unwrap().selection(), selected);
 
         assert!(editor.has_historical_guitar_library());
-        editor.follow.start(fake_source, &ctx).unwrap();
-        poll_until(editor, &ctx, |follow| follow.snapshot.queue_overflow);
+        assert!(matches!(
+            editor.library_origin.as_ref(),
+            Some(super::super::LibraryOrigin::AttachedDownload(_, key)) if *key == first.device.key
+        ));
+        editor.follow.test_source = Some(fake_source);
+        let started = Instant::now();
+        while !editor.follow.snapshot.queue_overflow {
+            editor.poll(&ctx);
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            editor.follow.worker.as_ref().unwrap().attachment.key,
+            second.device.key
+        );
         assert_eq!(
             editor.follow.snapshot.program.unwrap().0,
             Preset::new(4, 2).unwrap()
@@ -843,7 +859,30 @@ mod tests {
         let document = editor.document.as_ref().unwrap();
         assert_eq!(document.selection(), selected);
         assert_eq!(document.as_bytes(), before);
-        assert!(document.can_undo());
+        assert!(document.is_dirty() && document.can_undo());
+
+        // The retained download is available for explicit opening. Undo the
+        // edit first so opening uses the clean-document path.
+        editor.undo();
+        assert!(!editor.dirty());
+        editor.open_download();
+        assert!(editor.has_current_guitar_library());
+        assert!(matches!(
+            editor.library_origin.as_ref(),
+            Some(super::super::LibraryOrigin::AttachedDownload(_, key)) if *key == second.device.key
+        ));
+        assert_eq!(editor.document.as_ref().unwrap().selection(), Some((3, 2)));
+        editor.change(|preset| preset.rename("New rig edit"));
+        let edited = editor.document.as_ref().unwrap().as_bytes().to_vec();
+
+        editor.poll(&ctx);
+
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.selection(), Some((4, 2)));
+        assert_eq!(document.as_bytes(), edited);
+        assert!(document.slot_is_dirty(3, 2) && document.can_undo());
+        assert_eq!(editor.follow.snapshot.tone, Some(127));
+        assert!(editor.take_device_event().is_none());
     }
 
     #[test]

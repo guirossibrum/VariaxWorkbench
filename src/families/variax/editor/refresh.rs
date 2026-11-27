@@ -716,6 +716,17 @@ pub(super) mod tests {
         assert!(editor.has_current_guitar_library());
     }
 
+    pub(in crate::editor::variax_panel) fn download_and_keep(
+        editor: &mut VariaxEditor,
+        ctx: &egui::Context,
+    ) {
+        // Use the same start path as “Download and keep current document.”
+        editor.start_refresh(complete_capture, false);
+        wait_for_worker(editor);
+        editor.poll(ctx);
+        assert!(!editor.refresh.busy());
+    }
+
     #[test]
     fn a_verified_connection_downloads_once_and_cancel_remains_available() {
         let (ctx, mut app) = app();
