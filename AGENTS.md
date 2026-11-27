@@ -279,10 +279,10 @@ At lane startup, the Gatekeeper asks the agent to read `AGENTS.md` and
 ask it to reread the relevant file when its rules have changed since that
 lane read it. Name the change and the commit that contains it. Each delivery
 prompt repeats the worktree requirements for the final report.
-Every lane reply starts with the Markdown heading `## Lane #<number>`, such as
-`## Lane #3`.
-Use the fixed Markdown headings and order in the lane reply template in
-`docs/parallel-work.md` for every delivery, status update, and blocker.
+Use the fixed Markdown headings in the completed handoff template in
+`docs/parallel-work.md` only when delivering finished work for Gatekeeper
+review. Reply in plain language to questions, acknowledgements, progress
+requests, and blockers.
 
 A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway

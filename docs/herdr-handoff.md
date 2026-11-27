@@ -41,7 +41,9 @@ example IDs are placeholders.
 }
 ```
 
-The default report is `## Lane #1` followed by the four standard sections.
+Use the report format only for completed deliveries ready for review. The
+default report is `## Lane #1` followed by the four standard sections.
+Questions, progress updates, and blockers are ordinary conversation.
 The watcher also accepts their rendered plain-text form, including a Grok
 title such as `Lane #2` with a right-aligned time. It preserves closed
 box-drawn tables inside the report, stops at terminal prompts and footers,

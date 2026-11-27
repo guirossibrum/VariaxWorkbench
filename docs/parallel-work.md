@@ -54,8 +54,9 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   Use `git show origin/master:AGENTS.md` and
   `git show origin/master:docs/parallel-work.md` when the lane branch is older.
   Repeat the final report requirements in delivery and review follow-up prompts.
-- Start every lane reply with the Markdown heading `## Lane #<number>`, such
-  as `## Lane #3`. This applies to deliveries, status updates, and blockers.
+- Reply in plain language to questions, acknowledgements, progress requests,
+  and blockers. Use the [completed handoff template](#completed-handoff-template)
+  only when delivering finished work for Gatekeeper review.
 - One worktree and branch per issue, created from `origin/master` under the
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).
@@ -159,9 +160,9 @@ issue is ready, the binding is blocked, or receipt cannot be verified, record
 the concrete blocker and next action in the Gatekeeper handoff and report
 them in the same cycle.
 
-## Lane reply template
+## Completed handoff template
 
-Use these exact Markdown headings in this order for every lane reply. Keep
+Use these exact Markdown headings in this order for a completed delivery. Keep
 each heading even if a section is empty. Write `None` or `Not applicable` as
 appropriate. Use bullets, tables, and fenced command blocks within sections
 when they help. Put recommendations under Remaining work.
@@ -171,7 +172,7 @@ when they help. Put recommendations under Remaining work.
 
 ### Result
 
-- Issue, branch, commit, and what changed or what is blocked.
+- Issue, branch, commit, and what changed.
 
 ### Verification
 
