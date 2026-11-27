@@ -9,6 +9,9 @@ from zipfile import ZipFile
 from build import smoke
 from package import APPS, CONTENTS, CHECKSUMS, build_zip, verify_zip, windows_imports
 
+REVISION = "a" * 40
+WINDOWS_FIELDS = ["Windows version: 10.0.26100", "Windows build: 26100", "Architecture: x86_64"]
+
 
 def executable(dll=b"Kernel32.dll", *, delay=None, machine=0x8664, signed=False):
     """One mapped import section in a synthetic PE, with no executable code."""
@@ -79,7 +82,8 @@ class PackageTests(unittest.TestCase):
 
     def smoke_with_report(self, system_results, *, device_outcome="not_available",
                           reason="The Windows connection isn't available in this version yet.",
-                          usb_outcome="skipped", audio_outcome="skipped", messages=0):
+                          usb_outcome="skipped", audio_outcome="skipped", messages=0,
+                          version="Variax Workbench 0.09 (build 468)", revision=REVISION):
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
 
@@ -87,7 +91,7 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(cwd, scratch / "extracted")
                 self.assertEqual(env["XDG_DATA_HOME"], str(scratch / "xdg-data"))
                 if args[1] == "--version":
-                    return "Variax Workbench 0.09"
+                    return version
                 if args[1] == "--catalogue":
                     return "0.1 Computer and operating system\n8.1 Audio device inventory"
                 destination = Path(args[-1])
@@ -110,20 +114,37 @@ class PackageTests(unittest.TestCase):
                         {"id": "8.1", "outcome": audio_outcome, "messages": 0},
                     ]
                     # A version in the report summary cannot satisfy the step check.
+                    record = {"finished": True, "git_commit": revision, "steps": steps}
                     contents = (
                         "Operating system: Windows\nWindows version: 10.0.26100\n"
                         "[0.3] Engine check (no device) — PASSED\n"
                         "Synthetic preset (full pipeline): all 1,092 words identical\n"
                         "The Windows connection isn't available in this version yet.\n"
                         "BEGIN RIG CHECK JSON\n"
-                        f"{json.dumps({'finished': True, 'steps': steps})}\n"
+                        f"{json.dumps(record)}\n"
                         "END RIG CHECK JSON\n"
                     )
                 (destination / "run.txt").write_text(contents, encoding="utf-8")
                 return ""
 
             with patch("build.run", side_effect=fake_run):
-                return smoke(scratch / "extracted", scratch, {})
+                env = {"VARIAX_BUILD_NUMBER": "468", "RIG_CHECK_GIT_COMMIT": REVISION}
+                return smoke(scratch / "extracted", scratch, env)
+
+    def test_smoke_records_numbered_workbench_and_rig_check_source(self):
+        verification = self.smoke_with_report(WINDOWS_FIELDS)
+        self.assertIn("Variax Workbench 0.09 (build 468)\n", verification)
+        self.assertIn(f"Rig Check report revision: {REVISION}\n", verification)
+
+    def test_smoke_refuses_unstamped_or_mismatched_workbench(self):
+        for build in ("dev", "21", "4680"):
+            with self.subTest(build=build), self.assertRaisesRegex(ValueError, r"build 468"):
+                self.smoke_with_report(WINDOWS_FIELDS, version=f"Variax Workbench 0.09 (build {build})")
+
+    def test_smoke_refuses_unstamped_or_mismatched_rig_check(self):
+        for revision in (None, "b" * 40):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "does not identify source"):
+                self.smoke_with_report(WINDOWS_FIELDS, revision=revision)
 
     def test_smoke_records_step_01_version_build_and_recognized_architecture(self):
         for version, architecture in (
@@ -163,10 +184,7 @@ class PackageTests(unittest.TestCase):
             ({"audio_outcome": "passed"}, "Unexpected computer outcomes"),
         ):
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, error):
-                self.smoke_with_report(
-                    ["Windows version: 10.0.26100", "Windows build: 26100", "Architecture: x86_64"],
-                    **options,
-                )
+                self.smoke_with_report(WINDOWS_FIELDS, **options)
 
 
 if __name__ == "__main__":
