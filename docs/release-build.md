@@ -52,7 +52,20 @@ cross-builds both Windows applications for `x86_64-pc-windows-gnu` on Linux.
 The complete set appears in a new directory under `backups/packages` after
 all three packages pass the metadata and checksum checks. Use `--output DIR`
 to choose a different destination and `--mac-host HOST` to select the Mac
-build host. The DMG stays in the complete set for manual transfer.
+build and delivery host. Once the complete set is saved, the command copies
+its verified DMG to that Mac's Downloads folder and prints the destination
+and SHA-256. The filename includes the build number, short revision and
+checksum prefix. An existing file with the matching checksum counts as
+delivered, and a conflicting destination is preserved.
+
+If delivery cannot be confirmed, the command exits with an error and prints
+the retained set's path and a retry command. Retry from the saved set with
+the same Mac host. The command rechecks all three packages against the saved
+manifest and retries only the DMG transfer.
+
+```sh
+bash packaging/build-release.sh --retry-owner-dmg '/path/to/saved-owner-set' --mac-host HOST
+```
 
 In addition to the private USB build dependencies below, the Linux host
 needs Rust stable with `x86_64-pc-windows-gnu` already installed, MinGW-w64
@@ -73,7 +86,8 @@ and [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279).
 
 With explicit Actions authorization, `--owner-delivery-hosted` uses the
 artifact-only workflow's native Windows MSVC ZIP alongside the private
-Linux and macOS packages. It records the hosted artifact run ID.
+Linux and macOS packages. It records the hosted artifact run ID and keeps
+the DMG in the local set for manual transfer.
 
 ## Private owner USB build
 

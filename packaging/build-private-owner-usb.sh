@@ -14,7 +14,8 @@ stage_only=${5:-}
 [[ "$(uname -s)" == Linux ]] || die 'Start the private USB build from Linux.'
 [[ "$mac_host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._@-]*$ ]] || die 'Use a valid SSH hostname or alias.'
 repo=$(git rev-parse --show-toplevel)
-worker=$(cd "$(dirname -- "$0")/linux" && pwd -P)/build-apps.sh
+scripts=$(cd "$(dirname -- "$0")" && pwd -P)
+worker="$scripts/linux/build-apps.sh"
 [[ "$revision" =~ ^[a-f0-9]{40}$ ]] || die 'Expected the pinned source commit.'
 ssh_options=(-o BatchMode=yes -o ConnectTimeout=10)
 short=${revision:0:8}
@@ -187,22 +188,9 @@ if [[ "$stage_only" == --stage-only ]]; then
 fi
 
 printf 'Delivering the verified DMG to Mac Downloads…\n'
-ssh "${ssh_options[@]}" "$mac_host" /bin/bash -s -- "$remote" "$version" "$revision" "$build_id" "$digest" \
-    <<'REMOTE' > "$stage/pair/mac-download.txt"
-set -euo pipefail
-source="$1/owner.dmg"
-downloads="$HOME/Downloads"
-dest="$downloads/Variax Workbench $2 ($3 Owner USB $4).dmg"
-test -d "$downloads"
-[[ ! -e "$dest" && ! -L "$dest" ]]
-temp=$(mktemp "$downloads/.variax-owner-pair.XXXXXXXX")
-trap 'rm -f -- "$temp"' EXIT
-cp "$source" "$temp"
-test "$(shasum -a 256 "$temp" | awk '{ print $1 }')" = "$5"
-ln "$temp" "$dest"
-test "$(shasum -a 256 "$dest" | awk '{ print $1 }')" = "$5"
-printf '%s\n' "$dest"
-REMOTE
+source "$scripts/deliver-owner-dmg.sh"
+deliver_owner_dmg "$mac_host" "Variax Workbench $version ($revision Owner USB $build_id).dmg" \
+    "$digest" "$remote/owner.dmg" </dev/null > "$stage/pair/mac-download.txt"
 [[ ! -e "$release" && ! -L "$release" ]] || die "Output already exists: $release"
 mv -T --no-clobber "$stage/pair" "$release"
 [[ ! -e "$stage/pair" ]] || die "Could not publish the local pair: $release"

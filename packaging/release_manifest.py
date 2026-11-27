@@ -9,6 +9,7 @@ from zipfile import BadZipFile
 
 from windows.package import GNU_BUILD_ORIGIN, GNU_TARGET, GNU_VERIFICATION, compiler_commit, verify_zip
 
+OWNER_DMG = "Variax Workbench - Owner USB.dmg"
 PACKAGES = {"linux": "*.tar.gz", "macos": "*.dmg", "windows": "*.zip"}
 TARGETS = {
     "linux": ["x86_64-unknown-linux-gnu"],
@@ -131,7 +132,6 @@ def verify_owner_delivery(directory, revision, build_number, run_id=None):
     features = ["gui", "portable-math", "usb"]
     linux = directory / "linux"
     artwork = linux / "assets/ui"
-    dmg_name = "Variax Workbench - Owner USB.dmg"
     artwork_files = [list(artwork.glob(f"{group}/*.png")) for group in ("shell", "pod-farm")]
     if not all(artwork_files):
         raise ValueError("linux: missing bundled artwork")
@@ -142,7 +142,7 @@ def verify_owner_delivery(directory, revision, build_number, run_id=None):
                 "release-notes.md", "verification.txt",
             )
         ] + [artwork / "SOURCES.md", *artwork_files[0], *artwork_files[1]],
-        "macos": [directory / "macos" / name for name in (dmg_name, "verification.txt")],
+        "macos": [directory / "macos" / name for name in (OWNER_DMG, "verification.txt")],
     }
     checksums = (directory / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     actual_checksums = []
@@ -169,7 +169,7 @@ def verify_owner_delivery(directory, revision, build_number, run_id=None):
             "Profile ": f"owner-usb ({','.join(features)})",
         }
         if platform == "macos":
-            metadata["Package SHA-256 "] = digests[dmg_name]
+            metadata["Package SHA-256 "] = digests[OWNER_DMG]
         for prefix, expected in metadata.items():
             if [line for line in lines if line.startswith(prefix)] != [prefix + expected]:
                 raise ValueError(f"{platform}: expected verification entry {prefix}{expected}")
@@ -222,6 +222,7 @@ def main():
     mode.add_argument("--owner-delivery", metavar="HOSTED_RUN_ID")
     mode.add_argument("--local-owner-delivery", action="store_true")
     mode.add_argument("--check-local-owner-delivery", action="store_true")
+    parser.add_argument("--print-owner-dmg-digest", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("provide a full commit SHA")
@@ -233,6 +234,8 @@ def main():
     ):
         parser.error("owner delivery requires a build number and hosted run ID")
     local_owner = args.local_owner_delivery or args.check_local_owner_delivery
+    if args.print_owner_dmg_digest and not local_owner:
+        parser.error("a verified DMG digest requires local owner delivery")
     if local_owner and build_number is None:
         parser.error("local owner delivery requires a build number")
     try:
@@ -252,8 +255,10 @@ def main():
             reported = json.loads(manifest_path.read_text(encoding="utf-8"))
             if reported != manifest:
                 raise ValueError("release set differs from the combined manifest")
-            return
-        write_manifest(manifest_path, manifest)
+        else:
+            write_manifest(manifest_path, manifest)
+        if args.print_owner_dmg_digest:
+            print(manifest["platforms"]["macos"]["files"][OWNER_DMG])
     except (BadZipFile, OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
 
