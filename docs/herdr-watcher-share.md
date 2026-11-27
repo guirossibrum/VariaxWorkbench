@@ -1,5 +1,11 @@
 # Share this Herdr watcher with another repository
 
+**Historical reference.** The owner stopped and disabled the Herdr
+Dispatcher on November 27, 2026. Use
+[direct Herdr handoffs](parallel-work.md#herdr-handoffs-for-gatekeepers).
+Keep the service disabled and use its saved records only to reconcile old
+deliveries. The deployment procedures below describe the former setup.
+
 The running service is `herdr-completion-handoff`. It watches Herdr's
 `default` session on the host. It discovers completed turns across Git
 repositories, including linked worktrees. VariaxWorkbench has a configured
