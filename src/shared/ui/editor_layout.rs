@@ -4,26 +4,14 @@
 //! [`body_canvas::fitted_stage`] supplies the one scale. This module does not
 //! move pickup inches, change hit testing, or paint the shell.
 //!
-//! # Lane 3 wiring after #289
+//! [`bottom_band_regions`] is the full-width layout contract for #280.
+//! The editor supplies the clipped workspace below the family header and
+//! the height of the entire window. Body, inspector and tuning children
+//! use their returned rects as layout and clip bounds. The inspector and
+//! tuning content can scroll independently within those bounds.
 //!
-//! Call [`editor_regions`] with the rect under the guitar header, the body
-//! art size from [`body_canvas::placement_for_body`], and whether
-//! `can_edit(TUNING, Some(MIX))` is true. Replace the equal `ui.columns(2)`
-//! split and the full-width `guitar-tuning` panel with one child per rect:
-//!
-//! - [`EditorRegions::body`] is the well passed to `guitar()`. Its size is the
-//!   fitted art, so [`BodyCanvas`] fills it and keeps the placement map.
-//! - [`EditorRegions::inspector`] is the leftover column. The existing
-//!   inspector frame and scroll area go inside it.
-//! - [`EditorRegions::tuning`] is the whole tuning band. Its width is capped
-//!   so the semitone neck stays at most [`NECK_MAX`].
-//! - [`EditorRegions::twelve_string_width`] is [`TWELVE_STRING_COLUMN`] only
-//!   when the section is available. Inside the tuning child, add that space
-//!   and show `twelve_string_panel` only when the width is greater than zero.
-//!   Do not paint “No 12-String available” in a reserved column.
-//!
-//! `guitar()` reads `ui.available_width()`. The body child has to be created
-//! with `max_rect` equal to [`EditorRegions::body`] before that call.
+//! [`editor_regions`] remains available for the family editor until it
+//! switches to the bottom-band layout.
 
 use eframe::egui::{Pos2, Rect, Vec2, vec2};
 
@@ -48,6 +36,8 @@ pub const TUNING_BLOCK_HEIGHT: f32 = 300.0;
 /// The body keeps the rest. An even split of the short twelve-string workspace
 /// (944×297 under a 960×680 window) fitted the 426×412 photo to 145×141.
 const STACK_TUNING_SHARE: f32 = 0.38;
+/// Midpoint of the requested 20–25% of the window's logical height.
+const WINDOW_TUNING_SHARE: f32 = 0.225;
 /// Inspector keeps at least this much width when the page can spare it.
 pub const INSPECTOR_MIN_WIDTH: f32 = 320.0;
 /// Side-by-side layout is used only when the body can keep this scale.
@@ -70,7 +60,7 @@ pub struct EditorRegions {
     pub body_art: Vec2,
     /// Well for the body canvas. Same size as [`Self::body_art`].
     pub body: Rect,
-    /// Column to the right of the body, or beside it in the top band.
+    /// Inspector column to the right of the body.
     pub inspector: Rect,
     /// Tuning band, including the twelve-string column when that width is set.
     pub tuning: Rect,
@@ -110,6 +100,48 @@ pub fn laptop_workspace() -> Rect {
     let height =
         LAPTOP_WINDOW.y - SHELL_HEADER_ALLOWANCE - SHELL_FOOTER_HEIGHT - GUITAR_HEADER_ALLOWANCE;
     Rect::from_min_size(Pos2::ZERO, vec2(LAPTOP_WINDOW.x, height))
+}
+
+/// Lay out the body and inspector above a full-width, bottom-aligned tuning band.
+///
+/// Pass the window height in logical points, before subtracting shell and
+/// editor chrome. The band takes 22.5% of that height at normal window sizes.
+/// When chrome leaves less room, keep at least half the usable workspace for
+/// the upper row. The twelve-string column consumes space inside the band,
+/// so switching it on or off leaves all three outer rects in place.
+pub fn bottom_band_regions(
+    workspace: Rect,
+    viewport_height: f32,
+    art: Vec2,
+    twelve_string: bool,
+) -> EditorRegions {
+    let workspace = finite_workspace(workspace);
+    let viewport_height = if viewport_height.is_finite() && viewport_height > 0.0 {
+        viewport_height
+    } else {
+        workspace.height()
+    };
+    let gap = COLUMN_GAP.min(workspace.height() * 0.25);
+    let usable_height = workspace.height() - gap;
+    let tuning_height = (viewport_height * WINDOW_TUNING_SHARE)
+        .min(usable_height * 0.5)
+        .min(TUNING_BLOCK_HEIGHT);
+    let tuning = Rect::from_min_max(
+        Pos2::new(workspace.left(), workspace.bottom() - tuning_height),
+        workspace.max,
+    );
+    let top = Rect::from_min_max(
+        workspace.min,
+        Pos2::new(workspace.right(), tuning.top() - gap),
+    );
+    let (body, inspector) = body_and_inspector(top, finite_art(art));
+    EditorRegions {
+        body_art: body.size(),
+        body,
+        inspector,
+        tuning,
+        twelve_string_width: twelve_string_column(twelve_string),
+    }
 }
 
 /// Place the body, the inspector, and the tuning band in `workspace`.
@@ -177,23 +209,25 @@ fn stack_regions(workspace: Rect, art: Vec2, twelve_string: bool) -> EditorRegio
         vec2(tuning_w, tune_h),
     );
     let top = Rect::from_min_size(workspace.min, vec2(width, top_h));
-    let inspector_budget = INSPECTOR_MIN_WIDTH
-        .min(width * 0.46)
-        .min((width - COLUMN_GAP - 1.0).max(1.0));
-    let body_budget = (width - COLUMN_GAP - inspector_budget).max(1.0);
-    let fitted = fit_inside(art, vec2(body_budget, top_h));
-    let body = Rect::from_min_size(top.min, fitted);
-    let inspector = Rect::from_min_max(
-        Pos2::new(body.right() + COLUMN_GAP, top.top()),
-        Pos2::new(workspace.right(), top.bottom()),
-    );
+    let (body, inspector) = body_and_inspector(top, art);
     EditorRegions {
-        body_art: fitted,
+        body_art: body.size(),
         body,
         inspector,
         tuning,
         twelve_string_width: twelve_string_column(twelve_string),
     }
+}
+
+fn body_and_inspector(top: Rect, art: Vec2) -> (Rect, Rect) {
+    let width = top.width();
+    let gap = COLUMN_GAP.min(width * 0.25);
+    let inspector_budget = INSPECTOR_MIN_WIDTH.min(width * 0.46);
+    let body_budget = width - gap - inspector_budget;
+    let fitted = fit_inside(art, vec2(body_budget, top.height()));
+    let body = Rect::from_min_size(top.min, fitted);
+    let inspector = Rect::from_min_max(Pos2::new(body.right() + gap, top.top()), top.max);
+    (body, inspector)
 }
 
 fn tuning_block_height(workspace_height: f32) -> f32 {

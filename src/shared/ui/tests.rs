@@ -2746,3 +2746,241 @@ fn editor_regions_omit_the_unavailable_twelve_string_column() {
         );
     }
 }
+
+// Workspace bounds from the headless compact family header checkpoint, in
+// offline and verified-route fixtures. Neither route is opened by these tests.
+fn bottom_band_workspaces() -> impl Iterator<Item = (Vec2, bool, Rect)> {
+    [
+        (egui::vec2(960.0, 680.0), [297.0, 460.0]),
+        (egui::vec2(1120.0, 760.0), [247.0, 388.0]),
+        (egui::vec2(1440.0, 900.0), [247.0, 364.0]),
+    ]
+    .into_iter()
+    .flat_map(|(size, tops)| {
+        [false, true]
+            .into_iter()
+            .zip(tops)
+            .map(move |(verified, top)| {
+                let workspace =
+                    Rect::from_min_max(Pos2::new(8.0, top), Pos2::new(size.x - 8.0, size.y - 28.0));
+                (size, verified, workspace)
+            })
+    })
+}
+
+#[test]
+fn bottom_band_regions_fit_tuning_under_the_body_and_inspector() {
+    let art = body_canvas::DEFAULT_ART;
+    for (size, verified, workspace) in bottom_band_workspaces() {
+        let six = editor_layout::bottom_band_regions(workspace, size.y, art, false);
+        let twelve = editor_layout::bottom_band_regions(workspace, size.y, art, true);
+        assert_eq!(six.twelve_string_width, 0.0);
+        assert_eq!(
+            twelve.twelve_string_width,
+            editor_layout::TWELVE_STRING_COLUMN
+        );
+        assert_eq!(six.body, twelve.body);
+        assert_eq!(six.inspector, twelve.inspector);
+        assert_eq!(six.tuning, twelve.tuning);
+        assert_eq!(six.tuning.width(), workspace.width());
+        assert_eq!(six.tuning.bottom(), workspace.bottom());
+        let share = six.tuning.height() / size.y;
+        if verified && size.x == 960.0 {
+            assert_eq!(six.tuning.height(), six.inspector.height());
+        } else {
+            assert!((0.20..=0.25).contains(&share), "{size:?}: {share}");
+        }
+        assert!(six.body.bottom() < six.tuning.top());
+        assert_eq!(
+            six.inspector.bottom() + editor_layout::COLUMN_GAP,
+            six.tuning.top()
+        );
+        assert!(six.inspector.left() > six.body.right());
+        assert!(six.inspector.width() >= editor_layout::INSPECTOR_MIN_WIDTH);
+        assert_inside(workspace, six.body);
+        assert_inside(workspace, six.inspector);
+        assert_inside(workspace, six.tuning);
+        assert_aspect(art, six.body_art);
+    }
+}
+
+#[test]
+fn bottom_band_regions_stay_contained_when_chrome_leaves_little_space() {
+    let workspace = Rect::from_min_size(Pos2::new(12.0, 30.0), egui::vec2(25.0, 11.0));
+    let art = body_canvas::DEFAULT_ART;
+    let regions = editor_layout::bottom_band_regions(workspace, f32::INFINITY, art, true);
+    for rect in [regions.body, regions.inspector, regions.tuning] {
+        assert!(rect.is_positive() && workspace.contains_rect(rect));
+    }
+    assert!(regions.body.bottom() < regions.tuning.top());
+    assert!(regions.inspector.height() >= regions.tuning.height());
+    assert_aspect(art, regions.body_art);
+}
+
+#[test]
+fn bottom_band_keeps_pickup_hits_tuning_scroll_and_keyboard_focus_at_both_densities() {
+    let art = body_canvas::DEFAULT_ART;
+    let placement = body_canvas::placement_for_body(0x0310_0003);
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let sprites = [PickupSprite {
+        position_inches: 1.8,
+        angle_degrees: 8.7,
+        enabled: true,
+        selected: true,
+        image: &pickup,
+    }];
+    let labels = std::array::from_fn(|_| "0 semitones".to_owned());
+    let rows = open_rows(&labels);
+
+    for (size, verified, workspace) in bottom_band_workspaces() {
+        for twelve in [false, true] {
+            let mut density_reference: Option<(EditorRegions, Pos2, f32)> = None;
+            for density in [1.0, 2.0] {
+                let mut harness = Harness::new();
+                let mut draw = |events| {
+                    let mut frame = None;
+                    let output = harness.run_screen(size, density, events, |ctx, ui| {
+                        let regions = editor_layout::bottom_band_regions(
+                            workspace,
+                            ctx.viewport_rect().height(),
+                            art,
+                            twelve,
+                        );
+                        let mut body_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("body")
+                                .max_rect(regions.body),
+                        );
+                        body_ui.set_clip_rect(regions.body.intersect(ui.clip_rect()));
+                        let body = BodyCanvas::new(&body, &sprites)
+                            .placement(placement)
+                            .show(&mut body_ui);
+                        let mut tuning_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("tuning")
+                                .max_rect(regions.tuning),
+                        );
+                        tuning_ui.set_clip_rect(regions.tuning.intersect(ui.clip_rect()));
+                        let scroll = egui::ScrollArea::vertical()
+                            .min_scrolled_height(0.0)
+                            .auto_shrink([false, false])
+                            .animated(false)
+                            .show(&mut tuning_ui, |ui| {
+                                ui.horizontal_top(|ui| {
+                                    if twelve {
+                                        ui.add_space(regions.twelve_string_width);
+                                    }
+                                    TuningPanel::new(&rows).lock(twelve, false).show(ui)
+                                })
+                                .inner
+                            });
+                        let focus = ctx
+                            .memory(|memory| memory.focused())
+                            .and_then(|id| ctx.read_response(id));
+                        frame = Some((regions, body, scroll, focus));
+                    });
+                    assert_eq!(output.pixels_per_point, density);
+                    frame.unwrap()
+                };
+
+                let (regions, _, _, _) = draw(vec![]);
+                let (_, body, scroll, _) = draw(vec![]);
+                assert_aspect(art, body.art_rect.size());
+                assert_inside(regions.body, body.art_rect);
+                assert_inside(regions.tuning, scroll.inner_rect);
+                let neck = scroll.inner.neck;
+                println!(
+                    "{size:?}, {density}x, verified={verified}, twelve={twelve}: body {:?}, inspector {:?}, band {:?}, neck {:.1} pt",
+                    regions.body.size(),
+                    regions.inspector.size(),
+                    regions.tuning.size(),
+                    neck.width()
+                );
+                let center = placement.screen_point(body.art_rect, 1.8);
+                assert!(neck.width() > 380.0 && neck.right() <= regions.tuning.right());
+                let table_and_frame =
+                    editor_layout::TUNING_TABLE_WIDTH + editor_layout::TUNING_CHROME_WIDTH;
+                assert!(
+                    (neck.left()
+                        - regions.tuning.left()
+                        - table_and_frame
+                        - regions.twelve_string_width)
+                        .abs()
+                        < 12.0
+                );
+                if let Some((previous_regions, previous_center, previous_neck)) = density_reference
+                {
+                    assert_eq!(regions, previous_regions);
+                    assert!(center.distance(previous_center) < 0.5);
+                    assert!((neck.width() - previous_neck).abs() < 1.0);
+                } else {
+                    density_reference = Some((regions, center, neck.width()));
+                }
+                let (_, body, _, _) = draw(vec![
+                    egui::Event::PointerMoved(center),
+                    pointer(center, true),
+                ]);
+                assert!(body.events.contains(&BodyEvent::PickupClicked { index: 0 }));
+                draw(vec![pointer(center, false)]);
+                let scroll_by = |delta| {
+                    vec![
+                        egui::Event::PointerMoved(regions.tuning.center()),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, delta),
+                            modifiers: Modifiers::NONE,
+                        },
+                    ]
+                };
+                let scroll = if scroll.inner_rect.contains_rect(scroll.inner.rows[0].lane) {
+                    scroll
+                } else {
+                    draw(scroll_by(
+                        scroll.inner_rect.center().y - scroll.inner.rows[0].y,
+                    ));
+                    for _ in 0..8 {
+                        draw(vec![]);
+                    }
+                    draw(vec![]).2
+                };
+                let row = &scroll.inner.rows[0];
+                let semitone = Pos2::new(tuning_panel::scale_x(neck, 7), row.y);
+                assert!(scroll.inner_rect.contains(semitone));
+                draw(vec![
+                    egui::Event::PointerMoved(semitone),
+                    pointer(semitone, true),
+                ]);
+                let (_, _, scroll, _) = draw(vec![pointer(semitone, false)]);
+                assert!(scroll.inner.events.contains(&TuningEvent::Shift {
+                    id: 5,
+                    semitones: 7
+                }));
+
+                let (_, _, scroll, _) = draw(scroll_by(-700.0));
+                assert!(scroll.state.offset.y > 0.0);
+                let (_, _, scroll, _) = draw(vec![egui::Event::PointerGone]);
+                assert!(scroll.inner_rect.contains_rect(scroll.inner.reset));
+                draw(scroll_by(700.0));
+                for _ in 0..8 {
+                    draw(vec![]);
+                }
+                assert_eq!(draw(vec![egui::Event::PointerGone]).2.state.offset.y, 0.0);
+                let mut reset_reached = false;
+                for _ in 0..24 {
+                    draw(vec![key(egui::Key::Tab)]);
+                    let (_, _, scroll, focus) = draw(vec![]);
+                    if let Some(focus) = focus
+                        && focus.rect == scroll.inner.reset
+                    {
+                        assert_eq!(focus.interact_rect, focus.rect);
+                        assert!(regions.tuning.contains_rect(focus.rect));
+                        reset_reached = true;
+                        break;
+                    }
+                }
+                assert!(reset_reached, "{size:?} at {density}x, twelve {twelve}");
+            }
+        }
+    }
+}
