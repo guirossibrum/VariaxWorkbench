@@ -53,19 +53,54 @@ python3 scripts/reconcile_device_inventory.py | sha256sum
 Expected SHA-256
 `2595a15cc64f5af580c47e9cc1c545ad7aab305eb2f89f1d935a66c71a01522e`.
 
+## Public inventory candidate
+
+[Schema 3](../research/device-inventory.tsv) uses the approved #96 name and
+role projection in its original order. The generator pins the SHA-256 of that
+projection and both drafts as tracked at
+`a55a70a854f56fcfd3c9e3582ce746416f8a3884`.
+[The identifier input](../research/device-inventory-identifiers.tsv) cites a
+line or range at that same revision for each of the 27 populated identifier
+fields. These are published catalog and driver references. They carry no new
+claims about live identity, alias equivalence, audio routes or access capability.
+
+`ordinal` is the one-based row in the frozen #96 projection. The draft columns
+give one-based line numbers joined by exact spelling. A draft line can map to
+multiple ordinals. Underscore line 162 maps to both `TonePort` product rows.
+All 392 draft lines remain traceable. Draft identifier and status fields stay
+in their source files. All 186 aliases have `-` in each identifier column.
+Elsewhere `-` means the candidate carries no value or draft reference in that
+cell. `unresolved` marks a known gap in the reviewed identifier inputs.
+
+| Unresolved field | Frozen ordinals and names |
+| --- | --- |
+| USB PID | 18 Bass PODxt Live |
+| Line 6 product ID | 17 Bass PODxt, 19 Bass PODxt Pro, 50–51 Flextone II and III, 56–57 GuitarPort 1 and 2, 59 HD147, 84–86 POD 1.x, POD 2.0 and POD 2.0 Pro, 112 PODxt, 114 PODxt Pro, 164–165 both TonePort rows, 209–211 Vetta II, Vetta II Combo and Vetta II Head |
+
+Run from the repository root. Generation uses tracked checkout files. The
+citation test also requires the pinned revision in the local Git history.
+
+```sh
+python3 scripts/build_device_inventory.py --check
+python3 -m unittest discover -s scripts -p test_build_device_inventory.py
+```
+
+The candidate SHA-256 is
+`cd6a6182fb45145654a734ea30709f4f943e6e20751a4d223498ff0a312ff61c`.
+Running the generator without `--check` writes canonical LF bytes to stdout.
+
 ## Gatekeeper review
 
-The historical generator is
-`508cd000cc7f0cb074cde0056a8b1a52fab4cbdf:scripts/build_supported_devices.py`.
-It parses two matching decompiled Workbench `L6ProductConstants` inputs
-and a local extract of Monkey hardware definitions before rendering the
-full table. Those three inputs are absent from the pinned trees and fall
-under the repository's local-material rules. The hyphen argument serves
-only as a diagnostic report input. The comparison reproduces the frozen
-names and roles from committed evidence. Full generator reproducibility
-and a publication-ready path for the unified inventory remain pending.
+The historical generator at
+`508cd000cc7f0cb074cde0056a8b1a52fab4cbdf:scripts/build_supported_devices.py`
+uses two preserved decompiled Workbench `L6ProductConstants` inputs and a
+local extract of Monkey hardware definitions. The private rebuild matched
+the frozen schema-2 hash. Publication approval for historical identifier
+inputs remains open. The schema-3 candidate carries the reviewed public
+identifiers and preserves the frozen names, roles, and ordinals. Historical
+capability and device-test columns remain in the private snapshot.
 
-For review, retain `research/audio-inventory-schema2.tsv` as the existing
-#96 accounting reference. Preserve the two drafts and the frozen ordinals
-through the review. A future unified path and generator require an approved
-input set before adoption and any #96 path or pin update.
+The existing [#96 projection](../research/audio-inventory-schema2.tsv),
+source pin, and consumers remain in place. After Gatekeeper review, #96
+adoption can reference the reviewed path and output hash while preserving the
+historical source hash and ordinal mapping.

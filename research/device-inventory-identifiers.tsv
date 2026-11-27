@@ -1,0 +1,47 @@
+source_revision	a55a70a854f56fcfd3c9e3582ce746416f8a3884
+ordinal	name	field	value	source_location
+17	Bass PODxt	l6_product	unresolved	-
+18	Bass PODxt Live	usb_pid	unresolved	-
+18	Bass PODxt Live	l6_product	0x0003000B	docs/pod-presets.md:23
+19	Bass PODxt Pro	l6_product	unresolved	-
+50	Flextone II	l6_product	unresolved	-
+51	Flextone III	l6_product	unresolved	-
+56	GuitarPort 1	l6_product	unresolved	-
+57	GuitarPort 2	l6_product	unresolved	-
+59	HD147	l6_product	unresolved	-
+84	POD 1.x	l6_product	unresolved	-
+85	POD 2.0	l6_product	unresolved	-
+86	POD 2.0 Pro	l6_product	unresolved	-
+91	POD HD	usb_vid	0x0E41	src/pod_hd500x.rs:18
+91	POD HD	usb_pid	0x4156	src/pod_hd500x.rs:46
+92	POD HD 300	usb_vid	0x0E41	src/pod_hd500x.rs:18
+92	POD HD 300	usb_pid	0x5057	src/pod_hd500x.rs:58
+93	POD HD 400	usb_vid	0x0E41	src/pod_hd500x.rs:18
+93	POD HD 400	usb_pid	0x5058	src/pod_hd500x.rs:62
+94	POD HD 500	usb_vid	0x0E41	src/pod_hd500x.rs:18
+94	POD HD 500	usb_pid	0x414D	src/pod_hd500x.rs:28
+96	POD HD Pro	usb_vid	0x0E41	src/pod_hd500x.rs:18
+96	POD HD Pro	usb_pid	0x4157	src/pod_hd500x.rs:50
+98	POD HD Pro X	usb_vid	0x0E41	src/pod_hd500x.rs:18
+98	POD HD Pro X	usb_pid	0x415A	src/pod_hd500x.rs:54
+103	POD HD500X	usb_vid	0x0E41	src/pod_hd500x.rs:18
+103	POD HD500X	usb_pid	0x4159	src/pod_hd500x.rs:20
+112	PODxt	l6_product	unresolved	-
+113	PODxt Live	usb_vid	0x0E41	src/linux_transport.rs:96
+113	PODxt Live	usb_pid	0x4650	src/linux_transport.rs:97
+113	PODxt Live	l6_product	0x0003000A	docs/native-analysis.md:109
+114	PODxt Pro	l6_product	unresolved	-
+164	TonePort	l6_product	unresolved	-
+165	TonePort	l6_product	unresolved	-
+186	Tyler Variax	l6_product	0x00070005	docs/artifact-provenance.md:86-87
+193	Variax 300/600	l6_product	0x00070004	docs/native-analysis.md:110
+196	Variax 500/700	l6_product	0x00070000	docs/artifact-provenance.md:86-87
+199	Variax Acoustic	l6_product	0x00070001	docs/artifact-provenance.md:86-87
+200	Variax Bass	l6_product	0x00070002	docs/artifact-provenance.md:86-87
+201	Variax Bass 705	l6_product	0x00070006	docs/artifact-provenance.md:86-87
+205	Variax USB Interface	usb_vid	0x0E41	src/linux_transport.rs:105
+205	Variax USB Interface	usb_pid	0x534D	src/linux_transport.rs:106
+205	Variax USB Interface	l6_product	0x00700001	docs/native-analysis.md:111
+209	Vetta II	l6_product	unresolved	-
+210	Vetta II Combo	l6_product	unresolved	-
+211	Vetta II Head	l6_product	unresolved	-
