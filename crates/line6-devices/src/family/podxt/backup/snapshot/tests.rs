@@ -103,6 +103,7 @@ fn fixture(
     for entry in &library.entries {
         add(&podxt_entry_name(entry.location), &entry.tone.raw);
     }
+    folder.record("PODxt Live library backup at 2024-01-01 00:00:00 UTC.".into());
     // A log line cannot prove release, even when manifested.
     folder.record("Interface released successfully.".to_owned());
     folder.finish(complete).unwrap()

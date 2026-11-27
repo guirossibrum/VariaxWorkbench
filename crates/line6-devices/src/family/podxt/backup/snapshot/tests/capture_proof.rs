@@ -122,6 +122,92 @@ fn script(library: &Library) -> Vec<(PodxtRequest, Vec<Vec<u8>>)> {
 }
 
 #[test]
+fn explicit_import_preserves_all_banks_while_snapshot_proof_requires_playing_tone_and_cleanup() {
+    use crate::backup::load_podxt_library;
+    use crate::family::podxt::verify_tone_backup;
+
+    let root = FixtureRoot::new();
+    let library = capture();
+    let assert_import = |path: &Path, omitted: Option<&str>| {
+        // These are the two checks used by the editor's explicit backup import.
+        verify_tone_backup(path, Location::new(BankKind::Tones, 0).unwrap()).unwrap();
+        let imported = load_podxt_library(path).unwrap();
+        assert_eq!(
+            imported.before.as_ref(),
+            (omitted != Some(BEFORE)).then_some(&library.before)
+        );
+        assert_eq!(
+            imported.after.as_ref(),
+            (omitted != Some(AFTER)).then_some(library.after.as_ref().unwrap())
+        );
+        for (kind, count) in BankKind::ALL.into_iter().zip([128, 107, 64]) {
+            assert_eq!(
+                imported
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.location.kind() == kind)
+                    .count(),
+                count
+            );
+        }
+        for (loaded, original) in imported.entries.iter().zip(&library.entries) {
+            assert_eq!(loaded.location, original.location);
+            assert_eq!(
+                loaded.tone,
+                original.tone,
+                "address {}",
+                loaded.location.address()
+            );
+        }
+    };
+
+    for omitted in [BEFORE, AFTER] {
+        let legacy = fixture(&root, omitted, &library, true, |key, bytes| {
+            (key != omitted).then(|| bytes.to_vec())
+        });
+        assert_import(&legacy, Some(omitted));
+        assert_eq!(
+            validation_error(&legacy),
+            format!("PODxt snapshot manifest is missing {omitted}.")
+        );
+    }
+
+    let complete = fixture(&root, "complete", &library, true, |_, bytes| {
+        Some(bytes.to_vec())
+    });
+    assert_import(&complete, None);
+    let report = validate_snapshot(&complete, &identity()).unwrap();
+    report.check_capture_matches(&library).unwrap();
+
+    let finalize = |trace, fail_finish| {
+        capture_fresh_usb(
+            || Ok(()),
+            || Ok(ScopedFake::open(trace, script(&library), fail_finish)),
+            ScopedFake::finish,
+            &ReadsOnly,
+            &mut Quiet,
+            |_| {},
+        )
+    };
+    let failed = Trace::default();
+    assert!(matches!(
+        finalize(&failed, true),
+        Err(error) if error.contains("link cleanup failed: synthetic release failure")
+    ));
+    assert_eq!(failed.writes.get(), 302);
+    assert_eq!(failed.finalized.get(), 1);
+
+    let successful = Trace::default();
+    let receipt = finalize(&successful, false).unwrap().bind(&report).unwrap();
+    assert_eq!(successful.finalized.get(), 1);
+    assert_eq!(
+        receipt.manifest_sha256(),
+        digest(&fs::read(complete.join(MANIFEST)).unwrap())
+    );
+    assert_import(&complete, None);
+}
+
+#[test]
 fn complete_capture_finalizes_its_link_under_lock_and_binds_one_manifest() {
     let root = FixtureRoot::new();
     let library = capture();
