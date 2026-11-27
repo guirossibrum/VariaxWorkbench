@@ -1920,6 +1920,58 @@ fn laptop_mockup_states() -> [(&'static str, Wizard); 10] {
     ]
 }
 
+// Use the synthetic 2.2 recheck mismatch covered by the continuation tests.
+fn blocked_resume_mockups() -> [(&'static str, Wizard); 2] {
+    let reason = concat!(
+        "The PODxt Live channel or tone differs from the saved starting state. Use the original ",
+        "report to return the channel and current tone settings by hand, then reopen it. ",
+        "Leave the bank unchanged."
+    );
+    let blocked = BlockedResume {
+        target: StepId(3, 3),
+        check: StepId(2, 2),
+        reason: reason.into(),
+        details: vec![
+            "PODxt Live channel · expected 5B · observed 5B".into(),
+            "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15 · XOR 0x01 · 1 bit(s)"
+                .into(),
+        ],
+    };
+    let error = "PODxt Live interface 0 release failed: simulated USB release error";
+    [
+        (
+            "resume-blocked",
+            ResumeCleanup::Released,
+            "PODxt Live interface 0 released.".to_owned(),
+        ),
+        (
+            "resume-cleanup-failed",
+            ResumeCleanup::Failed(error.into()),
+            format!("USB cleanup failed: {error}"),
+        ),
+    ]
+    .map(|(name, cleanup, status)| {
+        let mut run = RunRecord::new(Mode::Practice, "2026-11-25 22:00:00 UTC".into());
+        run.finished = true;
+        run.continued_from = Some("demo/rig-check-source.txt".into());
+        run.continuation_pending = true;
+        run.resume_cleanup = Some(cleanup);
+        run.blocked_resume = Some(blocked.clone());
+        run.rig_state = format!("{reason} {status}");
+        let report = super::report::render_plain(&run, "2026-11-25 22:02:00 UTC");
+        let wizard = Wizard {
+            mode: Some(Mode::Practice),
+            prompt: Some(Prompt::Done {
+                run: Box::new(run),
+                report,
+                path: "demo/rig-check-attempt.txt".into(),
+            }),
+            ..Wizard::default()
+        };
+        (name, wizard)
+    })
+}
+
 /// Render every mockup screen into `dir` as PNG (new files only).
 pub fn write_mockups(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -1946,7 +1998,10 @@ pub fn write_mockups(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, S
     }
     let (width, height) = LAPTOP_MOCKUP_SIZE;
     for (prefix, scale) in LAPTOP_MOCKUP_SCALES {
-        for (name, mut wizard) in laptop_mockup_states() {
+        for (name, mut wizard) in laptop_mockup_states()
+            .into_iter()
+            .chain(blocked_resume_mockups())
+        {
             save(
                 &format!("{prefix}-{name}"),
                 raster::render_scaled(width, height, scale, |ctx| wizard.show(ctx)),

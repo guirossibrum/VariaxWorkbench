@@ -15,23 +15,31 @@ fn frame(ctx: &egui::Context, wizard: &mut Wizard, events: Vec<Event>) -> Vec<St
     labels(&output).into_iter().map(|(text, _)| text).collect()
 }
 
-fn labels(output: &egui::FullOutput) -> Vec<(String, Pos2)> {
-    fn walk(shape: &egui::Shape, texts: &mut Vec<(String, Pos2)>) {
+fn label_bounds(output: &egui::FullOutput) -> Vec<(String, Rect, Rect)> {
+    fn walk(shape: &egui::Shape, clip: Rect, texts: &mut Vec<(String, Rect, Rect)>) {
         match shape {
             egui::Shape::Text(text) => texts.push((
                 text.galley.text().to_owned(),
-                text.pos + text.galley.rect.center().to_vec2(),
+                text.galley.rect.translate(text.pos.to_vec2()),
+                clip,
             )),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, texts)),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, texts)),
             _ => {}
         }
     }
+
     let mut texts = Vec::new();
-    output
-        .shapes
-        .iter()
-        .for_each(|s| walk(&s.shape, &mut texts));
+    for shape in &output.shapes {
+        walk(&shape.shape, shape.clip_rect, &mut texts);
+    }
     texts
+}
+
+fn labels(output: &egui::FullOutput) -> Vec<(String, Pos2)> {
+    label_bounds(output)
+        .into_iter()
+        .map(|(label, bounds, _)| (label, bounds.center()))
+        .collect()
 }
 
 fn key(key: Key) -> Event {
@@ -568,6 +576,90 @@ fn inventory_interface_and_guard_mockups_have_evidence_and_safe_defaults() {
                 },
                 "{name} at {scale}× took the wrong default: {reply:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn blocked_resume_mockups_fit_and_focus_open_report_at_both_scales() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("rig-check-source.txt");
+    std::fs::write(&source, "Synthetic source report").unwrap();
+    let (width, height) = LAPTOP_MOCKUP_SIZE;
+    let screen = Rect::from_min_size(Pos2::ZERO, vec2(width as f32, height as f32));
+
+    for (_, scale) in LAPTOP_MOCKUP_SCALES {
+        for (name, mut wizard) in blocked_resume_mockups() {
+            let released = name == "resume-blocked";
+            if released {
+                let mut app = App::new(dir.path().to_owned(), None, None, |_, _, _| {
+                    panic!("reviewing a report must not start the runner");
+                });
+                let mut launch = app.wizard.launch.take().unwrap();
+                launch.report = Some(source.clone());
+                wizard.launch = Some(launch);
+            }
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            let mut input = RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale as f32);
+            let mut output = ctx.run(input.clone(), |ctx| wizard.show(ctx));
+            for _ in 1..4 {
+                output = ctx.run(input.clone(), |ctx| wizard.show(ctx));
+            }
+            assert_eq!(output.pixels_per_point, scale as f32);
+            let bounds_by_label = label_bounds(&output);
+            let visible = |expected: &str| {
+                bounds_by_label.iter().any(|(label, bounds, clip)| {
+                    label.contains(expected) && screen.intersect(*clip).contains_rect(*bounds)
+                })
+            };
+            for expected in [
+                "Resume blocked",
+                "Selected target 3.3",
+                "Blocking check 2.2",
+                "expected 5B · observed 5B",
+                "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15",
+                "Working report: demo/rig-check-attempt.txt",
+                "Open report",
+            ] {
+                assert!(visible(expected), "{name} at {scale}×: {expected}");
+            }
+            if released {
+                assert!(visible("PODxt Live interface 0 released."));
+                assert!(visible("Start fresh"));
+            } else {
+                assert!(visible(
+                    "USB cleanup failed: PODxt Live interface 0 release failed"
+                ));
+                assert!(visible(VERIFY_USB_CLEANUP));
+                assert!(
+                    !bounds_by_label
+                        .iter()
+                        .any(|(label, ..)| label == "Start fresh")
+                );
+            }
+
+            input.events.push(key(Key::Enter));
+            let output = ctx.run(input, |ctx| wizard.show(ctx));
+            if released {
+                assert_eq!(wizard.mode, None);
+                assert_eq!(wizard.launch.unwrap().report, Some(source.clone()));
+            } else {
+                assert!(wizard.preview);
+                assert!(
+                    labels(&output)
+                        .iter()
+                        .any(|(label, _)| label.contains("RIG CHECK REPORT"))
+                );
+            }
         }
     }
 }
