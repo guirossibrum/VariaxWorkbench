@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Three headless Rig Check tests at 1120 × 760 cover the Practice identity (2.1), channel name and display comparison (2.3), and the reason and Repeat action for a lost 2.3 reply. A synthetic fixture for the retired 2.4 step checks that four channel names fit. All four views keep raw messages and full hashes out of the default result and focus Continue. A second simulated read succeeds after the one lost reply. [#272](https://github.com/guirossibrum/VariaxWorkbench/issues/272).
+
 - [x] Rig Check #248 adds four synthetic blocked-continuation screenshots for the #297 path. The 2.2 recheck blocks target 3.3 and shows the CC 120 mismatch. Headless checks at laptop 1× and Retina 2× verified text fit and Open report focus, with separate source and attempt destinations and Start fresh available only after verified release. Two offline renders produced 38 byte-identical PNGs, including all 34 prior images. [Owner review checklist](design/rig-check-wizard-review.md#checklist).
 
 - [x] Rig Check #248 adds headless Practice cards and results for 0.2, 1.2 and 6.2 at laptop 1× and Retina 2×. Two software draws produced 34 byte-identical PNGs. Keyboard checks confirmed Skip on the new cards and Continue on their results at both scales. The central panels fit, and the 6.2 sidebar row requires scrolling. [Owner review checklist](design/rig-check-wizard-review.md).

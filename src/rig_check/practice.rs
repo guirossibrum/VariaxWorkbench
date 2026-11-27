@@ -123,6 +123,8 @@ pub struct SimRig {
     #[cfg(test)]
     pub(super) next_podxt_dump: Option<TestPodxtDump>,
     #[cfg(test)]
+    pub(super) drop_next_stored_tone: bool,
+    #[cfg(test)]
     pub(super) variax_evidence_replay: Option<Vec<Vec<u8>>>,
     pub variax_claimed: bool,
     pub driver_bound: bool,
@@ -314,6 +316,8 @@ impl SimRig {
             #[cfg(test)]
             next_podxt_dump: None,
             #[cfg(test)]
+            drop_next_stored_tone: false,
+            #[cfg(test)]
             variax_evidence_replay: None,
             written: Vec::new(),
             variax_claimed: false,
@@ -452,6 +456,10 @@ impl SimRig {
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x73, hi, lo, 0, 0, 0xf7] => {
                 let address = (u16::from(*hi) << 7) | u16::from(*lo);
                 if let Some(index) = location_from_address(address) {
+                    #[cfg(test)]
+                    if std::mem::take(&mut self.drop_next_stored_tone) {
+                        return;
+                    }
                     let dump = Self::tone_dump(&self.podxt.stored[index]);
                     self.reply_podxt(&dump);
                 }
