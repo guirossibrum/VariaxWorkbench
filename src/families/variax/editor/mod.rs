@@ -1452,23 +1452,25 @@ impl FamilyTab for VariaxEditor {
             || self.new_model_collision.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
-        self.new_file_menu(ui, services);
-        #[cfg(feature = "usb")]
-        self.sync_button(ui);
-        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
-        self.string_volume_button(ui);
-        #[cfg(feature = "usb")]
-        let has_download = {
-            self.open_download_button(ui);
-            let ready = self.download_target_ready();
-            if ready && self.document.is_some() {
-                self.download_button(ui);
-            }
-            ready
-        };
-        #[cfg(not(feature = "usb"))]
-        let has_download = false;
-        self.connection_controls(ui, services, has_download);
+        ui.horizontal_wrapped(|ui| {
+            self.new_file_menu(ui, services);
+            #[cfg(feature = "usb")]
+            self.sync_button(ui);
+            #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+            self.string_volume_button(ui);
+            #[cfg(feature = "usb")]
+            let has_download = {
+                self.open_download_button(ui);
+                let ready = self.download_target_ready();
+                if ready && self.document.is_some() {
+                    self.download_button(ui);
+                }
+                ready
+            };
+            #[cfg(not(feature = "usb"))]
+            let has_download = false;
+            self.connection_controls(ui, services, has_download);
+        });
     }
 }
 

@@ -59,6 +59,34 @@ fn text_bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
     }
 }
 
+#[cfg(feature = "usb")]
+#[test]
+fn verified_connection_label_fits_the_toolbar_at_both_densities() {
+    const LABEL: &str = "Guitar: Variax 600 3.10 via PODxt Live";
+
+    for size in SIZES {
+        for density in [1.0, 2.0] {
+            let (ctx, mut app) = app();
+            app.clear_window_controls = true;
+            let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+            app.tabs.entries[index].device = Some(super::refresh::tests::verified_tab());
+            let output = render(&mut app, &ctx, size, density, vec![], egui::Modifiers::NONE);
+            let (label, clip) = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    text_bounds(&shape.shape, LABEL).map(|label| (label, shape.clip_rect))
+                })
+                .expect("verified connection label");
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            assert!(
+                clip.intersect(viewport).expand(0.5).contains_rect(label),
+                "{size:?} at {density}x clips {label:?} to {clip:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn populated_bank_slots_show_names_and_keep_their_controls_at_both_densities() {
     let artwork = tempfile::tempdir().unwrap();
