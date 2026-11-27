@@ -3,7 +3,9 @@ use super::variax_panel::VariaxEditor;
 use super::*;
 use variax_workbench::ui::{assets, chrome, connections, theme};
 
+mod connection_inventory;
 mod detect;
+pub(super) use connection_inventory::ConnectionInventory;
 #[cfg(test)]
 mod detection_tests;
 pub(super) use detect::DetectConfirmation;
@@ -67,6 +69,7 @@ impl Workbench {
             defaults,
             tabs: Tabs::default(),
             connections: connections::Connections::default(),
+            connection_inventory: ConnectionInventory::default(),
             detection: DetectionService::platform(),
             detect_confirmation: None,
             next_detection: Instant::now(),
@@ -855,13 +858,12 @@ impl Workbench {
                     }
                 });
         }
-        // Lane 1 will dispatch the returned retry request through the existing
-        // consent and read path. This visual slice supplies no live events.
-        let _retry_request = self.connection_window(ctx);
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.device_check_window(ctx);
         self.detect_dialog(ctx);
+        // Read scheduling consumes Retry in a separate integration.
+        let _retry_request = self.connection_window(ctx);
         // Window closes discard their actions before any late picker result runs.
         self.poll_picker(ctx);
     }

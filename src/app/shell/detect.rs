@@ -23,7 +23,18 @@ pub(in crate::editor) enum DetectConfirmation {
 
 impl Workbench {
     pub(super) fn poll_detection(&mut self, ctx: &egui::Context) {
-        if self.detection.is_none() || self.has_prompt() || self.permit_close {
+        if self.has_prompt() || self.permit_close {
+            return;
+        }
+        if self.detection.is_none() {
+            // A file or editor chosen at launch can be used immediately in
+            // an offline build. Show the unavailable state when Home opens.
+            if self.tabs.active.is_none() && self.connections.begin_detection() {
+                let reason = variax_workbench::offline_device_notice()
+                    .unwrap_or(chrome::DETECTION_UNAVAILABLE);
+                self.connections
+                    .detection(connections::Detection::Unavailable(reason.into()));
+            }
             return;
         }
         if Instant::now() >= self.next_detection {
@@ -40,8 +51,11 @@ impl Workbench {
         let Some(service) = &mut self.detection else {
             return;
         };
+        self.connections.begin_detection();
         match service.refresh(scan, registry::DEVICE_PROFILES) {
             Ok(devices) => {
+                self.connections.detection(connections::Detection::Complete);
+                self.reconcile_connection_inventory(&devices);
                 if matches!(scan, Scan::Confirmed) {
                     self.shell_status = if devices.is_empty() {
                         "No supported devices found.".into()
@@ -55,6 +69,8 @@ impl Workbench {
                     .err();
             }
             Err(error) => {
+                self.connections
+                    .detection(connections::Detection::Failed(error.to_string()));
                 self.tabs.mark_presence_uncertain();
                 self.detection_status = Some(format!("Device detection: {error}."));
             }
@@ -78,6 +94,7 @@ impl Workbench {
             .as_mut()
             .and_then(|service| service.report_guitar_disconnect(&key, registry::DEVICE_PROFILES))
         {
+            self.reconcile_connection_inventory(&devices);
             self.detection_status = self
                 .tabs
                 .reconcile_devices(devices, registry::FAMILIES, &self.defaults)

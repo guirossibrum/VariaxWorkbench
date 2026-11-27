@@ -62,6 +62,16 @@ pub(super) struct DeviceKey {
     linked_generation: Option<u64>,
 }
 
+impl DeviceKey {
+    pub fn podxt_upstream(&self) -> Option<Self> {
+        self.linked_generation.map(|_| Self {
+            attachment: self.attachment.clone(),
+            family_id: "podxt",
+            linked_generation: None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DeviceSupport {
     IdentityPending,
@@ -612,6 +622,33 @@ impl DetectionService {
         self.known.values().filter(|device| {
             device.key.attachment.usb_registry_id().is_some()
                 && device.key.linked_generation.is_none()
+        })
+    }
+
+    /// File-only products are visible in the cached inventory before the
+    /// user chooses whether to open their editor.
+    pub fn offline_inventory<'a>(
+        &'a self,
+        profiles: &'a [DiscoveryProfile],
+    ) -> impl Iterator<Item = (DeviceKey, &'static str)> + 'a {
+        self.attachments.values().flat_map(|attachment| {
+            profiles.iter().filter_map(move |profile| {
+                let DeviceDiscovery::Manual(id) = profile.discovery else {
+                    return None;
+                };
+                if id != Self::usb_id(&attachment.usb) {
+                    return None;
+                }
+                let family = profile.family.info();
+                Some((
+                    DeviceKey {
+                        attachment: attachment.key.clone(),
+                        family_id: family.id,
+                        linked_generation: None,
+                    },
+                    family.title,
+                ))
+            })
         })
     }
 

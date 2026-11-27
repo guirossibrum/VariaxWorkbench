@@ -258,6 +258,9 @@ fn passive_readiness_reason_updates_without_an_identity_job() {
         let (_, _, entry) = entries(&app)[0];
         assert_eq!(entry.device.support, DeviceSupport::UsbOnly);
         assert_eq!(entry.device.guitar_status.as_deref(), Some(reason));
+        let output = frame(&ctx, &mut app, vec![]);
+        assert!(has_label(&output.shapes, "USB identity unverified"));
+        assert!(has_label(&output.shapes, reason));
     }
     assert!(source.0.borrow().completed.is_empty());
 }
@@ -1712,4 +1715,163 @@ fn mac_discovery_stops_on_unverified_identity_or_receive_error() {
             .unwrap();
         assert_eq!(source.0.borrow().completed.len(), 1);
     }
+}
+
+#[test]
+fn connection_window_distinguishes_unavailable_failed_and_empty_inventory() {
+    let (ctx, mut app, source) = fixture();
+    let detection = app.detection.take();
+    app.new_tab(registry::LEGACY_STARTUP);
+    let editor = app.tabs.active;
+    frame(&ctx, &mut app, vec![]);
+    let editing = frame(&ctx, &mut app, vec![]);
+    assert!(!has_label(&editing.shapes, "Device detection unavailable"));
+    assert_eq!(app.tabs.active, editor);
+
+    app.tabs.active = None;
+    frame(&ctx, &mut app, vec![]);
+    let offline = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&offline.shapes, "Device detection unavailable"));
+    assert!(has_label(&offline.shapes, "Edit offline"));
+    assert!(!has_label(
+        &offline.shapes,
+        "No supported device is connected"
+    ));
+    assert_eq!(source.0.borrow().reads, 0);
+
+    app.detection = detection;
+    source.0.borrow_mut().fail = true;
+    tick(&ctx, &mut app);
+    let failed = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&failed.shapes, "Device check failed"));
+    assert!(has_label(
+        &failed.shapes,
+        "could not read injected USB metadata"
+    ));
+    assert!(!has_label(
+        &failed.shapes,
+        "No supported device is connected"
+    ));
+
+    source.0.borrow_mut().fail = false;
+    tick(&ctx, &mut app);
+    let empty = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&empty.shapes, "No supported device is connected"));
+    assert!(!has_label(&empty.shapes, "Device check failed"));
+    assert!(app.tabs.active.is_none());
+    assert!(entries(&app).is_empty());
+}
+
+#[test]
+fn connection_window_updates_after_startup_and_keeps_the_open_editor() {
+    let (ctx, mut app, source) = fixture();
+    app.new_tab(registry::LEGACY_STARTUP);
+    let editor = app.tabs.active.unwrap();
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
+    app.with_tab(editor, |entry, _| {
+        let editor = entry.editor.as_mut() as &mut dyn std::any::Any;
+        let editor = editor.downcast_mut::<VariaxEditor>().unwrap();
+        editor.load(&file);
+        editor.change(|preset| preset.rename("Unsaved model"));
+    });
+    app.tabs.active = None;
+    tick(&ctx, &mut app);
+    let empty = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&empty.shapes, "No supported device is connected"));
+
+    source.usb(true, true);
+    tick(&ctx, &mut app);
+    let waiting = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&waiting.shapes, "PODxt Live"));
+    assert!(has_label(&waiting.shapes, "Checking connection…"));
+    assert!(has_label(&waiting.shapes, "POD HD500X Connected"));
+    assert!(has_label(&waiting.shapes, "Live connection not supported"));
+    assert!(!has_label(
+        &waiting.shapes,
+        "No supported device is connected"
+    ));
+    assert_eq!(
+        entries(&app).len(),
+        1,
+        "passive inventory may not open the HD editor"
+    );
+    assert!(app.tabs.active.is_none(), "Home stays selected");
+
+    app.tabs.active = Some(editor);
+    let relay = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(relay);
+    tick(&ctx, &mut app);
+    let verified = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&verified.shapes, "PODxt Live Connected"));
+    assert!(has_label(&verified.shapes, "Variax 300/600 Connected"));
+    assert!(has_label(&verified.shapes, "Library sync has not started"));
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    assert_eq!(app.tabs.active, Some(editor));
+    assert_eq!(
+        app.variax().document.as_ref().unwrap().preset().name(),
+        "Unsaved model"
+    );
+}
+
+#[test]
+fn connection_window_scopes_disconnect_and_reconnect_to_the_current_generation() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, true);
+    tick(&ctx, &mut app);
+    let relay = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(relay.clone());
+    tick(&ctx, &mut app);
+    let (_, guitar, device) = entries(&app)[1];
+    let old_guitar = device.device.key.clone();
+    let active = app.tabs.active;
+    assert!(active.is_some());
+
+    app.apply_device_event(
+        guitar,
+        tabs::DeviceEvent::GuitarDisconnected(old_guitar.clone()),
+    );
+    let guitar_lost = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&guitar_lost.shapes, "Disconnected"));
+    assert!(!has_label(&guitar_lost.shapes, "Variax 300/600 Connected"));
+    assert!(has_label(&guitar_lost.shapes, "PODxt Live Connected"));
+    assert!(has_label(&guitar_lost.shapes, "POD HD500X Connected"));
+
+    source.notice(&relay, SimulatedNotice::Connected);
+    tick(&ctx, &mut app);
+    source.guitar(relay);
+    tick(&ctx, &mut app);
+    let returned_guitar = entries(&app)[1].2.device.key.clone();
+    assert_ne!(returned_guitar, old_guitar);
+
+    source.0.borrow_mut().fail = true;
+    tick(&ctx, &mut app);
+    let failed = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&failed.shapes, "Device check failed"));
+    assert!(has_label(&failed.shapes, "PODxt Live Connected"));
+
+    source.0.borrow_mut().fail = false;
+    source.usb(false, true);
+    tick(&ctx, &mut app);
+    let relay_lost = frame(&ctx, &mut app, vec![]);
+    assert!(!has_label(&relay_lost.shapes, "PODxt Live Connected"));
+    assert!(!has_label(&relay_lost.shapes, "Variax 300/600 Connected"));
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    assert!(has_label(&relay_lost.shapes, "POD HD500X Connected"));
+
+    source.usb(true, true);
+    tick(&ctx, &mut app);
+    let new_relay = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    assert_ne!(new_relay, old_guitar.attachment);
+    source.guitar(new_relay);
+    tick(&ctx, &mut app);
+    app.apply_device_event(
+        guitar,
+        tabs::DeviceEvent::GuitarDisconnected(returned_guitar),
+    );
+    let returned = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&returned.shapes, "Reconnected after disconnect"));
+    assert!(has_label(&returned.shapes, "Variax 300/600 Connected"));
+    assert!(!has_label(&returned.shapes, "Disconnected"));
+    assert_eq!(entries(&app)[1].1, guitar);
+    assert_eq!(app.tabs.active, active);
 }

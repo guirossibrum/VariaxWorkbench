@@ -51,7 +51,9 @@ pub enum Detection {
 }
 
 pub enum Verification {
+    Checking,
     Verified,
+    Unverified(String),
     UnverifiedFirmware(String),
     Unsupported,
 }
@@ -60,6 +62,7 @@ pub enum Verification {
 enum Status {
     Checking,
     Connected,
+    Unverified(String),
     UnverifiedFirmware(String),
     Unsupported,
     Waiting,
@@ -93,6 +96,15 @@ pub struct Connections {
 }
 
 impl Connections {
+    /// Open the startup presentation once, before the first detection result.
+    pub fn begin_detection(&mut self) -> bool {
+        if self.detection != Detection::Idle {
+            return false;
+        }
+        self.detection(Detection::Checking);
+        true
+    }
+
     /// Report the startup check or a meaningful change in detection health.
     pub fn detection(&mut self, status: Detection) {
         if self.detection == status {
@@ -148,15 +160,29 @@ impl Connections {
     }
 
     pub fn verified(&mut self, attachment: Attachment, verification: Verification) {
-        if let Some(row) = self.row_mut(attachment)
-            && row.status == Status::Checking
-        {
-            row.status = match verification {
-                Verification::Verified => Status::Connected,
-                Verification::UnverifiedFirmware(reason) => Status::UnverifiedFirmware(reason),
-                Verification::Unsupported => Status::Unsupported,
-            };
+        let Some(row) = self.row_mut(attachment) else {
+            return;
+        };
+        if row.status == Status::Disconnected {
+            return;
         }
+        // A positive snapshot can repeat during an active read or after it
+        // finishes. Only loss of verification should invalidate that state.
+        if matches!(verification, Verification::Verified)
+            && matches!(
+                row.status,
+                Status::Waiting | Status::Reading { .. } | Status::Complete | Status::Failed(_)
+            )
+        {
+            return;
+        }
+        row.status = match verification {
+            Verification::Checking => Status::Checking,
+            Verification::Verified => Status::Connected,
+            Verification::Unverified(reason) => Status::Unverified(reason),
+            Verification::UnverifiedFirmware(reason) => Status::UnverifiedFirmware(reason),
+            Verification::Unsupported => Status::Unsupported,
+        };
     }
 
     pub fn waiting(&mut self, attachment: Attachment) {

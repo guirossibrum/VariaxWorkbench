@@ -177,6 +177,11 @@ fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
     match &row.status {
         Status::Checking => ui.label("Checking connection…"),
         Status::Connected => ui.label("Library sync has not started"),
+        Status::Unverified(reason) => {
+            ui.label("USB identity unverified");
+            ui.label(reason);
+            return offline_editor(ui, row);
+        }
         Status::UnverifiedFirmware(reason) => {
             ui.label(RichText::new("Unverified firmware").color(theme::AMBER));
             ui.label(reason);
