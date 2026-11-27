@@ -280,7 +280,8 @@ impl StepRecord {
             && self.duration_ms.is_some()
             && self.save_phase == Some(SavePhase::PreSend)
             && matches!(&self.outcome, Outcome::Failed(reason)
-                if reason == line6_devices::family::variax::procedures::SAVE_PREFLIGHT_REOPEN_EXHAUSTED)
+                if reason == super::variax_save::RETRYABLE_IDENTITY_FAILURE
+                    || reason == line6_devices::family::variax::procedures::SAVE_PREFLIGHT_REOPEN_EXHAUSTED)
     }
 
     pub fn can_repeat(&self) -> bool {

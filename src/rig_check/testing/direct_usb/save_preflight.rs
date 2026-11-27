@@ -193,36 +193,46 @@ fn stopping_during_the_identity_backoff_does_not_count_a_retry() {
 
 #[test]
 fn operator_can_retry_the_mac_identity_failure_before_any_upload() {
-    let mut port = Port::new(Faults::default());
-    port.bus.borrow_mut().save.scripted = [None, Some(vec![0xf7]), Some(vec![0xf7])].into();
-    let mut person = Script::run_all();
-    person.repeat_once = Some(SAVE);
-    let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+    for replies in [
+        vec![None, None],
+        vec![None, Some(vec![0xf7]), Some(vec![0xf7])],
+    ] {
+        let mut port = Port::new(Faults::default());
+        let failed_requests = replies.len();
+        port.bus.borrow_mut().save.scripted = replies.into();
+        let mut person = Script::run_all();
+        person.repeat_once = Some(SAVE);
+        let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
 
-    let first = run
-        .prior_attempts
-        .iter()
-        .find(|step| step.id == SAVE)
-        .unwrap();
-    assert!(first.can_retry_save_preflight());
-    assert_eq!(first.save_phase, Some(SavePhase::PreSend));
-    assert_eq!(person.cards.iter().filter(|&&id| id == SAVE).count(), 2);
-    assert_eq!(run.step(SAVE).attempt, Some(2));
-    assert!(run.step(SAVE).outcome.passed());
-    assert!(!run.step(SAVE).can_repeat());
-    assert!(run.step(RIG_GUARD).outcome.passed());
-    let bus = port.bus.borrow();
-    assert_eq!(bus.save.writes[..4], [REQUEST; 4]);
-    assert!(bus.save.releases >= 2);
-    assert!(first.answers.is_empty());
-    assert_eq!(run.step(SAVE).answers.len(), 1);
-    let wire = bus.save.writes.concat();
-    assert_eq!(
-        wire.windows(STORE.len())
-            .filter(|bytes| *bytes == STORE)
-            .count(),
-        1
-    );
+        let first = run
+            .prior_attempts
+            .iter()
+            .find(|step| step.id == SAVE)
+            .unwrap();
+        assert!(first.can_retry_save_preflight());
+        assert_eq!(first.save_phase, Some(SavePhase::PreSend));
+        assert_eq!(person.cards.iter().filter(|&&id| id == SAVE).count(), 2);
+        assert_eq!(run.step(SAVE).attempt, Some(2));
+        assert!(run.step(SAVE).outcome.passed());
+        assert!(!run.step(SAVE).can_repeat());
+        assert!(run.step(RIG_GUARD).outcome.passed());
+        let bus = port.bus.borrow();
+        assert!(
+            bus.save.writes[..=failed_requests]
+                .iter()
+                .all(|bytes| *bytes == REQUEST)
+        );
+        assert!(bus.save.releases >= 1);
+        assert!(first.answers.is_empty());
+        assert_eq!(run.step(SAVE).answers.len(), 1);
+        let wire = bus.save.writes.concat();
+        assert_eq!(
+            wire.windows(STORE.len())
+                .filter(|bytes| *bytes == STORE)
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]
