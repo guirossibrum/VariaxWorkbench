@@ -31,6 +31,16 @@ alpha, append `--alpha-number N` with an unused positive number. All
 three packages and the manifest are published under a single prerelease
 tag after verification succeeds.
 
+## Owner comparison across operating systems
+
+Deliver Linux, macOS and Windows from one source revision and build number.
+The hosted packages support offline editing and Rig Check Practice on all
+three. For a hardware comparison, run the private USB build below at the same
+full SHA and provide the Linux and macOS USB packages alongside the Windows
+offline ZIP. The current Windows package cannot run live PODxt or Variax
+checks. Track Windows device support under [#262](https://github.com/guirossibrum/VariaxWorkbench/issues/262)
+and cross-platform release verification under [#263](https://github.com/guirossibrum/VariaxWorkbench/issues/263).
+
 ## Private owner USB build
 
 Run the same command from Linux with the owner profile.

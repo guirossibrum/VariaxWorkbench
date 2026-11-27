@@ -48,13 +48,16 @@ below apply.
 ## Release builds
 
 Use [the unified release command](docs/release-build.md) for releases and
-owner deliveries. Resolve the Git source once to a full commit SHA. Every
-requested platform builds that exact checkout and records its SHA, build
-number, target, profile and package checksums. Deliver the set only after all requested
-packages verify. Platform scripts are native build workers and local checks.
-The private owner USB profile covers Linux and macOS. The hosted offline
-profile covers Linux, macOS and Windows. Publication and hardware approvals
-follow their existing rules.
+owner deliveries. Include Linux, macOS and Windows in every set. Resolve the
+Git source once to a full commit SHA. Every platform builds that exact
+checkout and records its SHA, build number, target, profile and package
+checksums. Deliver the set only after all three packages verify. Platform
+scripts are native build workers and local checks. Use the hosted offline
+profile for cross-platform comparison. For owner USB testing, also build the
+private Linux and macOS USB packages at the same SHA and provide the Windows
+offline package while Windows live device support is pending. State which
+tests each profile can run. Publication and hardware approvals follow their
+existing rules.
 
 ## Hardware boundary — user requirement
 
