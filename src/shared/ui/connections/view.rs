@@ -111,10 +111,16 @@ fn detection_summary(ui: &mut egui::Ui, connections: &Connections) -> Option<Act
         Detection::Checking => ("Checking for devices…", None),
         Detection::Unavailable(reason) => ("Device detection unavailable", Some(reason.as_str())),
         Detection::Failed(reason) => ("Device check failed", Some(reason.as_str())),
-        Detection::Complete if connections.shown_rows().next().is_none() => (
-            "No device connected",
-            Some("No supported device is connected"),
-        ),
+        Detection::Complete
+            if connections
+                .shown_rows()
+                .all(|row| row.status == Status::Unsupported) =>
+        {
+            (
+                "No device connected",
+                Some("No supported device is connected"),
+            )
+        }
         _ => return None,
     };
     ui.label(RichText::new(title).size(theme::SECTION).strong());

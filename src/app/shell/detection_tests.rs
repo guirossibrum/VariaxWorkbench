@@ -1875,3 +1875,21 @@ fn connection_window_scopes_disconnect_and_reconnect_to_the_current_generation()
     assert_eq!(entries(&app)[1].1, guitar);
     assert_eq!(app.tabs.active, active);
 }
+
+#[test]
+fn unsupported_only_startup_keeps_no_supported_device_summary() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(false, true);
+    tick(&ctx, &mut app);
+    let started = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&started.shapes, "POD HD500X Connected"));
+    assert!(has_label(&started.shapes, "Live connection not supported"));
+    assert!(has_label(&started.shapes, "Open offline editor"));
+    assert!(entries(&app).is_empty());
+    assert!(source.0.borrow().completed.is_empty());
+    assert!(
+        has_label(&started.shapes, "No supported device is connected"),
+        "the startup summary disappeared when only an offline-only device was present"
+    );
+    assert!(has_label(&started.shapes, "Edit offline"));
+}
