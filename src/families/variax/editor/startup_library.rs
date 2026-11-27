@@ -212,8 +212,16 @@ fn latest_library(preferences: &Path) -> Result<Option<(BundleFile, LibraryOrigi
 }
 
 pub(super) fn factory_bundle(path: &Path) -> Result<BundleFile, String> {
-    let bytes = tabs::open_candidate(path, MAX_CONTAINER_BYTES as u64)?;
-    let reference = FactoryReference::parse(&bytes)
+    let bytes = factory_archive_bytes(path)?;
+    factory_bundle_from_bytes(&bytes)
+}
+
+pub(super) fn factory_archive_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    tabs::open_candidate(path, MAX_CONTAINER_BYTES as u64)
+}
+
+pub(super) fn factory_bundle_from_bytes(bytes: &[u8]) -> Result<BundleFile, String> {
+    let reference = FactoryReference::parse(bytes)
         .map_err(|error| format!("Could not open Variax factory presets: {error}"))?;
     BundleFile::from_variax_factory(&reference)
 }

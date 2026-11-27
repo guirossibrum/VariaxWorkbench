@@ -1,10 +1,6 @@
 use super::{BODY, EditorDocument, ModelArt, PICKUP1, PICKUP2, VariaxEditor, egui};
 use line6_devices::family::variax::{BANKS, PRESETS_PER_BANK};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::path::{Path, PathBuf};
 use variax_workbench::{
     bundle::BundleFile, edit::is_acoustic, preset::PresetFile, variax_library::LibraryPreferences,
 };
@@ -68,82 +64,61 @@ fn model_label(preset: &PresetFile, catalog: &[ModelArt]) -> String {
     label
 }
 
-#[derive(PartialEq, Eq)]
-struct ArchiveStamp {
+struct CachedArchive {
     path: PathBuf,
-    length: u64,
-    modified: Option<SystemTime>,
-    created: Option<SystemTime>,
-    #[cfg(unix)]
-    identity: (u64, u64, i64, i64),
-}
-
-impl ArchiveStamp {
-    fn read(path: PathBuf) -> Option<Self> {
-        let metadata = fs::metadata(&path).ok()?;
-        if !metadata.is_file() {
-            return None;
-        }
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Some(Self {
-            path,
-            length: metadata.len(),
-            modified: metadata.modified().ok(),
-            created: metadata.created().ok(),
-            #[cfg(unix)]
-            identity: (
-                metadata.dev(),
-                metadata.ino(),
-                metadata.ctime(),
-                metadata.ctime_nsec(),
-            ),
-        })
-    }
+    bytes: Vec<u8>,
+    labels: Option<PositionLabels>,
 }
 
 #[derive(Default)]
 pub(super) struct FactorySelector {
-    cache: Option<(ArchiveStamp, Option<PositionLabels>)>,
+    cache: Option<CachedArchive>,
 }
 
 impl FactorySelector {
     #[cfg(test)]
     fn seed(&mut self, archive: &Path, bundle: &BundleFile, catalog: &[ModelArt]) {
-        self.cache = Some((
-            ArchiveStamp::read(archive.to_owned()).unwrap(),
-            Some(position_labels(bundle, catalog)),
-        ));
+        self.cache = Some(CachedArchive {
+            path: archive.to_owned(),
+            bytes: super::startup_library::factory_archive_bytes(archive).unwrap(),
+            labels: Some(position_labels(bundle, catalog)),
+        });
     }
 
     fn positions(
         &mut self,
         preferences: &Path,
         bank: usize,
-        read: impl FnOnce(&Path) -> Result<PositionLabels, String>,
+        read: impl FnOnce(&[u8]) -> Result<PositionLabels, String>,
     ) -> Option<&[String]> {
-        // Watch the selected path and its file stamp only while open.
-        // A changed stamp requires full verification before any row is shown.
+        // Metadata can stay identical after a same-size write. Compare the
+        // bounded snapshot and derive labels from the same bytes we cache.
         let archive = LibraryPreferences::new(preferences)
             .factory_archive()
-            .and_then(ArchiveStamp::read);
-        let Some(archive) = archive else {
+            .and_then(|path| {
+                super::startup_library::factory_archive_bytes(&path)
+                    .ok()
+                    .map(|bytes| (path, bytes))
+            });
+        let Some((path, bytes)) = archive else {
             self.cache = None;
             return None;
         };
         if self
             .cache
             .as_ref()
-            .is_none_or(|(previous, _)| previous != &archive)
+            .is_none_or(|previous| previous.path != path || previous.bytes != bytes)
         {
-            let labels = read(&archive.path)
-                .ok()
-                .filter(|_| ArchiveStamp::read(archive.path.clone()).as_ref() == Some(&archive));
-            self.cache = Some((archive, labels));
+            let labels = read(&bytes).ok();
+            self.cache = Some(CachedArchive {
+                path,
+                bytes,
+                labels,
+            });
         }
         self.cache
             .as_ref()?
-            .1
+            .labels
             .as_ref()?
             .get(bank - FIRST_MODEL_BANK)
             .map(Vec::as_slice)
@@ -174,8 +149,8 @@ impl VariaxEditor {
         popup.show(|ui| {
             ui.set_max_width(420.0);
             ui.style_mut().interaction.selectable_labels = false;
-            let positions = self.factory_selector.positions(preferences, bank, |path| {
-                super::startup_library::factory_bundle(path)
+            let positions = self.factory_selector.positions(preferences, bank, |bytes| {
+                super::startup_library::factory_bundle_from_bytes(bytes)
                     .map(|bundle| position_labels(&bundle, &self.catalog))
             });
             show_positions(ui, positions);
@@ -205,11 +180,12 @@ fn show_positions(ui: &mut egui::Ui, positions: Option<&[String]>) {
 mod tests {
     use super::super::{
         load_catalog,
-        startup_library::{factory_bundle, record_unchecked_archive},
+        startup_library::{factory_bundle_from_bytes, record_unchecked_archive},
     };
     use super::*;
     use crate::editor::FakeDialogs;
     use crate::editor::tests::app;
+    use std::fs;
 
     #[test]
     fn factory_selector_covers_all_positions_and_uses_catalog_labels() {
@@ -292,8 +268,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let preferences = temp.path().join("editor-preferences");
         let archive = temp.path().join("picked.vxf");
-        let load = |path: &Path| {
-            factory_bundle(path).map(|bundle| position_labels(&bundle, &load_catalog()))
+        let load = |bytes: &[u8]| {
+            factory_bundle_from_bytes(bytes).map(|bundle| position_labels(&bundle, &load_catalog()))
         };
         let mut selector = FactorySelector::default();
         assert!(
@@ -306,8 +282,8 @@ mod tests {
         record_unchecked_archive(&preferences, &archive);
         let catalog = load_catalog();
         let bundle = BundleFile::new_default_bundle().unwrap();
-        let synthetic_load = |path: &Path| {
-            assert_eq!(fs::read(path).unwrap(), b"synthetic accepted fixture");
+        let synthetic_load = |bytes: &[u8]| {
+            assert_eq!(bytes, b"synthetic accepted fixture");
             Ok(position_labels(&bundle, &catalog))
         };
         assert_eq!(
@@ -356,7 +332,15 @@ mod tests {
                 .positions(&preferences, 1, synthetic_load)
                 .is_some()
         );
+        let old_stamp = fs::metadata(&archive).unwrap();
         fs::write(&archive, b"invalid archive content   ").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&archive)
+            .unwrap()
+            .set_modified(old_stamp.modified().unwrap())
+            .unwrap();
+        assert_eq!(fs::metadata(&archive).unwrap().len(), old_stamp.len());
         assert!(selector.positions(&preferences, 1, load).is_none());
         assert_eq!(fs::read(&archive).unwrap(), b"invalid archive content   ");
 
@@ -365,10 +349,7 @@ mod tests {
         record_unchecked_archive(&preferences, &replacement);
         assert!(
             selector
-                .positions(&preferences, 1, |path| {
-                    assert_eq!(path, replacement);
-                    synthetic_load(path)
-                })
+                .positions(&preferences, 1, synthetic_load)
                 .is_some()
         );
     }
