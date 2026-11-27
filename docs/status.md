@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] The Variax inspector places the body name, tabs, and Preferences on one wrapping row and fits the scrolling controls to the available height. Headless editor checks at 960×680 and 1120×760 at 1× and 2× cover initial visibility, access to the final Pickups and Controls rows, pointer edits, and keyboard Undo and Redo. [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224).
+
 - [x] [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224) shows the verified Variax firmware and PODxt Live route together in one toolbar label. Injected editor checks preserve checking, cancelled, unverified, uncertain, detached and offline messages. The family toolbar wraps as needed to keep the verified label readable at both tested laptop sizes and densities.
 
 - [x] [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224) anchors the read-only factory selector reference beneath the bank strip. Opening the five-row reference preserves body, inspector and tuning bounds at 960×680 and 1120×760 at both tested densities. Headless checks cover verified archive reopening, keyboard dismissal and preservation of the active library.

@@ -924,7 +924,7 @@ impl VariaxEditor {
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui, height: f32) {
+    fn controls(&mut self, ui: &mut egui::Ui, available: bool, can_edit: bool) {
         let slider_width = (ui.available_width() * 0.45).min(190.0);
         let compact = ui.ctx().content_rect().height() < 720.0;
         let style = ui.style_mut();
@@ -933,10 +933,11 @@ impl VariaxEditor {
         style.spacing.interact_size.y = if compact { 15.0 } else { 17.0 };
         style.spacing.slider_width = slider_width;
         ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), height),
+            ui.available_size(),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    ui.strong(self.model_name(BODY));
                     for (tab, title) in [
                         (Tab::Body, "Body type"),
                         (Tab::Pickups, "Pickups"),
@@ -944,15 +945,20 @@ impl VariaxEditor {
                     ] {
                         let button = egui::Button::selectable(self.tab == tab, title)
                             .min_size(egui::vec2(0.0, variax_workbench::ui::theme::TARGET));
-                        if ui.add(button).clicked() {
+                        if ui.add_enabled(can_edit, button).clicked() {
                             self.tab = tab;
                         }
                     }
+                    ui.add_enabled_ui(available, |ui| self.preference_button(ui));
                 });
                 ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt(self.tab)
-                    .show(ui, |ui| self.tab_controls(ui));
+                ui.add_enabled_ui(can_edit, |ui| {
+                    // Scroll to the end even when the inspector is shorter than egui's default minimum.
+                    egui::ScrollArea::vertical()
+                        .min_scrolled_height(0.0)
+                        .id_salt(self.tab)
+                        .show(ui, |ui| self.tab_controls(ui));
+                });
             },
         );
     }
@@ -1143,11 +1149,7 @@ impl VariaxEditor {
             .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
             .show(&mut inspector, |ui| {
                 ui.set_min_size(ui.available_size());
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(self.model_name(BODY));
-                    ui.add_enabled_ui(available, |ui| self.preference_button(ui));
-                });
-                ui.add_enabled_ui(can_edit, |ui| self.controls(ui, ui.available_height()));
+                self.controls(ui, available, can_edit);
             });
 
         let mut tuning = ui.new_child(

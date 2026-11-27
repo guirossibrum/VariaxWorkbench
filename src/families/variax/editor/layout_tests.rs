@@ -88,6 +88,134 @@ fn verified_connection_label_fits_the_toolbar_at_both_densities() {
 }
 
 #[test]
+fn inspector_exposes_initial_and_final_controls_at_both_densities() {
+    const PHASE: &str = "Reverse pickup 2 phase";
+    const AUTO: &str = "Auto-select Tone/Volume defaults when selecting pickup types";
+
+    for size in SIZES {
+        for density in [1.0, 2.0] {
+            let (ctx, mut app) = app();
+            ctx.style_mut(|style| style.animation_time = 0.0);
+            app.clear_window_controls = true;
+            let editor = app.variax_mut();
+            editor.open_example();
+            editor.document.as_mut().unwrap().select(0, 1).unwrap();
+            #[cfg(feature = "usb")]
+            {
+                let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+                app.tabs.entries[index].device = Some(super::refresh::tests::verified_tab());
+            }
+            let frame = |app: &mut Workbench, events| {
+                render(
+                    &mut *app,
+                    &ctx,
+                    size,
+                    density,
+                    events,
+                    egui::Modifiers::NONE,
+                )
+            };
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            let (body, inspector) = app.variax().workspace_cards.unwrap();
+            let tuning = app.variax().workspace_tuning;
+            let bounds = |output: &egui::FullOutput, label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        let rect = text_bounds(&shape.shape, label)?;
+                        inspector
+                            .intersect(shape.clip_rect)
+                            .contains_rect(rect)
+                            .then_some(rect)
+                    })
+                    .unwrap_or_else(|| panic!("{size:?} at {density}x clips {label:?}"))
+            };
+            let click = |app: &mut Workbench, position| {
+                frame(app, vec![egui::Event::PointerMoved(position)]);
+                frame(app, vec![pointer(position, true)]);
+                frame(app, vec![pointer(position, false)]);
+                frame(app, vec![])
+            };
+            let scroll = |app: &mut Workbench, delta| {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(
+                            inspector.center().x,
+                            inspector.bottom() - 16.0,
+                        )),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Page,
+                            delta: egui::vec2(0.0, delta),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                frame(app, vec![])
+            };
+
+            let output = click(&mut app, bounds(&output, "Pickups").center());
+            bounds(&output, "Pickup 2");
+            bounds(&output, "Enabled");
+            if size.x == 1120.0 {
+                bounds(&output, "Position");
+            }
+            let phase_before = app.variax().integer(super::PICKUP2, 0x200002).unwrap();
+            let output = scroll(&mut app, -2.0);
+            click(&mut app, bounds(&output, PHASE).center());
+            let phase_after = app.variax().integer(super::PICKUP2, 0x200002).unwrap();
+            assert_ne!(phase_before, phase_after);
+            for (shift, expected) in [(false, phase_before), (true, phase_after)] {
+                let modifiers = egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift,
+                    ..Default::default()
+                };
+                render(
+                    &mut app,
+                    &ctx,
+                    size,
+                    density,
+                    vec![egui::Event::Key {
+                        key: egui::Key::Z,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    modifiers,
+                );
+                assert_eq!(
+                    app.variax().integer(super::PICKUP2, 0x200002),
+                    Some(expected)
+                );
+                frame(&mut app, vec![]);
+            }
+
+            let output = scroll(&mut app, 2.0);
+            bounds(&output, "Pickup 1");
+            let output = click(&mut app, bounds(&output, "Controls").center());
+            bounds(&output, "Volume knob");
+            if size.x == 1120.0 {
+                bounds(&output, "500k Ω");
+                bounds(&output, "Audio");
+            }
+            let auto_before = app.variax().auto_select_controls;
+            let output = scroll(&mut app, -2.0);
+            click(&mut app, bounds(&output, AUTO).center());
+            assert_ne!(app.variax().auto_select_controls, auto_before);
+            let output = scroll(&mut app, 2.0);
+            bounds(&output, "Volume knob");
+            assert_eq!(app.variax().workspace_cards, Some((body, inspector)));
+            assert_eq!(app.variax().workspace_tuning, tuning);
+        }
+    }
+}
+
+#[test]
 fn populated_bank_slots_show_names_and_keep_their_controls_at_both_densities() {
     let artwork = tempfile::tempdir().unwrap();
     let directory = artwork.path().join("bodies/buttons");
