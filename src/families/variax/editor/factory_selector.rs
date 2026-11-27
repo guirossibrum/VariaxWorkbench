@@ -122,7 +122,7 @@ impl FactorySelector {
         bank: usize,
         read: impl FnOnce(&Path) -> Result<PositionLabels, String>,
     ) -> Option<&[String]> {
-        // Watch the selected path and its file stamp only while expanded.
+        // Watch the selected path and its file stamp only while open.
         // A changed stamp requires full verification before any row is shown.
         let archive = LibraryPreferences::new(preferences)
             .factory_archive()
@@ -164,17 +164,26 @@ impl VariaxEditor {
             self.factory_selector.cache = None;
             return;
         };
-        let response =
-            egui::CollapsingHeader::new(format!("Factory selector reference · {}", BANKS[bank]))
-                .id_salt("factory-selector-reference")
-                .show(ui, |ui| {
-                    let positions = self.factory_selector.positions(preferences, bank, |path| {
-                        super::startup_library::factory_bundle(path)
-                            .map(|bundle| position_labels(&bundle, &self.catalog))
-                    });
-                    show_positions(ui, positions);
-                });
-        if response.fully_closed() {
+        let trigger = ui.button(format!("Factory selector reference · {}", BANKS[bank]));
+        let popup = egui::Popup::from_toggle_button_response(&trigger)
+            .gap(4.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let popup_id = popup.get_id();
+        let dismiss_with_escape =
+            popup.is_open() && ui.input(|input| input.key_pressed(egui::Key::Escape));
+        popup.show(|ui| {
+            ui.set_max_width(420.0);
+            ui.style_mut().interaction.selectable_labels = false;
+            let positions = self.factory_selector.positions(preferences, bank, |path| {
+                super::startup_library::factory_bundle(path)
+                    .map(|bundle| position_labels(&bundle, &self.catalog))
+            });
+            show_positions(ui, positions);
+        });
+        if trigger.clicked() || dismiss_with_escape {
+            trigger.request_focus();
+        }
+        if !egui::Popup::is_id_open(ui.ctx(), popup_id) {
             // Check the fingerprint again every time the reference is opened.
             self.factory_selector.cache = None;
         }

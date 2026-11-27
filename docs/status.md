@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224) anchors the read-only factory selector reference beneath the bank strip. Opening the five-row reference preserves body, inspector and tuning bounds at 960×680 and 1120×760 at both tested densities. Headless checks cover verified archive reopening, keyboard dismissal and preservation of the active library.
+
 - [x] Spider V30 offline audit checkpoint [#311](https://github.com/guirossibrum/VariaxWorkbench/issues/311). Eight pinned input hashes, dual-platform Ghidra identity and framing trace, 910 symbol records and 14 private static/synthetic checks verified. The [trace](research/spider-v30-static-trace.md) and [tab plan](research/spider-v30-tab-plan.md) record the remaining editor and hardware evidence.
 
 - [x] [#310](https://github.com/guirossibrum/VariaxWorkbench/issues/310) makes Home permanent and adds the movable connection window and its presentation reducer. Twelve synthetic tests exercise startup, per-device progress with selected totals, waiting, unsupported and unverified hardware, retry, stale events, upstream loss, disconnect after dismissal, sticky dismissal, and workspace focus. [Lane 1 integration handoff](design/home-connection-window.md).
