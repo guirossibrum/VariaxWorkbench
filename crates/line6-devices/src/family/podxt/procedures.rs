@@ -88,10 +88,11 @@ fn exchange_identity<L: Link>(
 
 /// Workbench startup uses the same identity sends and orphan recovery as Rig
 /// Check, and keeps listening through its existing duplicate-reply window.
+/// A completely silent exchange returns `None`.
 pub fn discover_unique_identity<L: Link>(
     session: &mut Session<L>,
     check: impl Fn() -> Result<(), String>,
-) -> Result<Identity, String> {
+) -> Result<Option<Identity>, String> {
     const DISCOVERY_WINDOW: Duration = Duration::from_secs(3);
     let mut packets = 0;
     let mut orphans = 0;
@@ -139,10 +140,10 @@ pub fn discover_unique_identity<L: Link>(
         Ok(identity.map_or(Wait::Timeout, Wait::Found))
     })?;
     if let Wait::Found(reply) = answer {
-        return Ok(Identity::parse(&reply).expect("checked above"));
+        return Ok(Some(Identity::parse(&reply).expect("checked above")));
     }
     if packets == 0 {
-        return Err("No PODxt identity answered. No receive chunks in three seconds.".into());
+        return Ok(None);
     }
     Err(format!(
         "No PODxt identity answered. Receive chunks: {packets}, orphan bytes: {orphans}, \

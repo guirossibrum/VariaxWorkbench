@@ -1270,3 +1270,232 @@ fn driver_repair_consent_does_not_carry_over_to_a_new_usb_address() {
         SimulatedJobKind::Initial
     );
 }
+
+#[test]
+fn mac_discovery_retries_at_cadence_until_the_two_identities_verify() {
+    let (_, mut app, source) = fixture();
+    source.usb(true, false);
+    source.0.borrow_mut().registry_id = Some(30);
+    let service = app.detection.as_mut().unwrap();
+    let start = Instant::now();
+    let profiles = registry::DEVICE_PROFILES;
+    service
+        .refresh_at(Scan::Confirmed, profiles, start)
+        .unwrap();
+    let key = service.attachment_key("8-2.1");
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(key.clone(), SimulatedOutcome::MacPodSilent);
+
+    service
+        .refresh_at(Scan::Automatic, profiles, start)
+        .unwrap();
+    source.finish(key.clone(), SimulatedGuitar::Silent);
+    service
+        .refresh_at(
+            Scan::Automatic,
+            profiles,
+            start + Duration::from_millis(499),
+        )
+        .unwrap();
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    let first_retry = start + Duration::from_millis(500);
+    service
+        .refresh_at(Scan::Automatic, profiles, first_retry)
+        .unwrap();
+
+    source.guitar(key.clone());
+    let guitar_retry = first_retry + Duration::from_millis(500);
+    source.0.borrow_mut().interfaces_unavailable = true;
+    service
+        .refresh_at(Scan::Automatic, profiles, guitar_retry)
+        .unwrap();
+    assert_eq!(source.0.borrow().completed.len(), 2);
+    source.0.borrow_mut().interfaces_unavailable = false;
+    let devices = service
+        .refresh_at(
+            Scan::Automatic,
+            profiles,
+            guitar_retry + Duration::from_millis(500),
+        )
+        .unwrap();
+    let guitar_key = devices
+        .iter()
+        .find(|device| device.support == DeviceSupport::Verified("3.10"))
+        .unwrap()
+        .key
+        .clone();
+
+    source.guitar(key.clone());
+    service
+        .refresh_at(
+            Scan::Automatic,
+            profiles,
+            guitar_retry + Duration::from_secs(20),
+        )
+        .unwrap();
+    let kinds: Vec<_> = source
+        .0
+        .borrow()
+        .completed
+        .iter()
+        .map(|job| job.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            super::super::detection::SimulatedJobKind::Initial,
+            super::super::detection::SimulatedJobKind::Initial,
+            super::super::detection::SimulatedJobKind::DiscoverGuitar,
+        ]
+    );
+
+    // Interface publication can temporarily disappear on a still-present USB
+    // attachment. It withdraws the tab's connection without rearming identity.
+    source.0.borrow_mut().interfaces_unavailable = true;
+    let devices = service
+        .refresh_at(
+            Scan::Automatic,
+            profiles,
+            guitar_retry + Duration::from_secs(21),
+        )
+        .unwrap();
+    assert!(
+        devices
+            .iter()
+            .all(|device| device.support == DeviceSupport::UsbOnly)
+    );
+    source.0.borrow_mut().interfaces_unavailable = false;
+    let devices = service
+        .refresh_at(
+            Scan::Automatic,
+            profiles,
+            guitar_retry + Duration::from_secs(22),
+        )
+        .unwrap();
+    assert!(devices.iter().any(
+        |device| device.key == guitar_key && device.support == DeviceSupport::Verified("3.10")
+    ));
+    assert_eq!(source.0.borrow().completed.len(), 3);
+
+    service
+        .report_guitar_disconnect(&guitar_key, profiles)
+        .unwrap();
+    service
+        .refresh_at(
+            Scan::Automatic,
+            profiles,
+            guitar_retry + Duration::from_secs(23),
+        )
+        .unwrap();
+    assert_eq!(
+        source.0.borrow().completed.last().unwrap().kind,
+        super::super::detection::SimulatedJobKind::DiscoverGuitar
+    );
+    assert_eq!(source.0.borrow().completed.len(), 4);
+}
+
+#[test]
+fn mac_discovery_defers_for_a_busy_rig_and_stops_on_failed_cleanup() {
+    for busy in [
+        SimulatedOutcome::Deferred,
+        SimulatedOutcome::OtherProcessBusy,
+    ] {
+        let (_, mut app, source) = fixture();
+        source.usb(true, false);
+        source.0.borrow_mut().registry_id = Some(30);
+        let service = app.detection.as_mut().unwrap();
+        let start = Instant::now();
+        let profiles = registry::DEVICE_PROFILES;
+        service
+            .refresh_at(Scan::Confirmed, profiles, start)
+            .unwrap();
+        let key = service.attachment_key("8-2.1");
+        source.0.borrow_mut().results.insert(key.clone(), busy);
+        service
+            .refresh_at(Scan::Automatic, profiles, start)
+            .unwrap();
+        source.finish(key.clone(), SimulatedGuitar::CleanupFailed);
+        service
+            .refresh_at(
+                Scan::Automatic,
+                profiles,
+                start + Duration::from_millis(499),
+            )
+            .unwrap();
+        assert_eq!(source.0.borrow().completed.len(), 1);
+        service
+            .refresh_at(
+                Scan::Automatic,
+                profiles,
+                start + Duration::from_millis(500),
+            )
+            .unwrap();
+        source.guitar(key);
+        source.0.borrow_mut().interfaces_unavailable = true;
+        service
+            .refresh_at(Scan::Automatic, profiles, start + Duration::from_secs(1))
+            .unwrap();
+        source.0.borrow_mut().interfaces_unavailable = false;
+        service
+            .refresh_at(Scan::Automatic, profiles, start + Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(source.0.borrow().completed.len(), 2);
+
+        source.0.borrow_mut().registry_id = Some(31);
+        service
+            .refresh_at(Scan::Confirmed, profiles, start + Duration::from_secs(3))
+            .unwrap();
+        source.guitar(service.attachment_key("8-2.1"));
+        let devices = service
+            .refresh_at(Scan::Automatic, profiles, start + Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(source.0.borrow().completed.len(), 3);
+        assert!(
+            devices
+                .iter()
+                .any(|device| device.support == DeviceSupport::Verified("3.10"))
+        );
+    }
+}
+
+#[test]
+fn mac_discovery_stops_on_unverified_identity_or_receive_error() {
+    use line6_devices::identity::Identity;
+    use variax_workbench::{firmware_notice::FirmwareNotice, identity_stage::bridge_reply};
+
+    let mut wrong_firmware = bridge_reply();
+    wrong_firmware[15] = 2;
+    let identity = Identity::parse(&wrong_firmware).unwrap();
+    for terminal in [
+        SimulatedOutcome::UnverifiedPod(FirmwareNotice::podxt(&identity).unwrap()),
+        SimulatedOutcome::Finished {
+            pod_firmware: Some("3.01"),
+            guitar: SimulatedGuitar::Unavailable(
+                "The guitar sent data without a valid identity.".into(),
+            ),
+        },
+    ] {
+        let (_, mut app, source) = fixture();
+        source.usb(true, false);
+        source.0.borrow_mut().registry_id = Some(30);
+        let service = app.detection.as_mut().unwrap();
+        let start = Instant::now();
+        let profiles = registry::DEVICE_PROFILES;
+        service
+            .refresh_at(Scan::Confirmed, profiles, start)
+            .unwrap();
+        let key = service.attachment_key("8-2.1");
+        source.0.borrow_mut().results.insert(key.clone(), terminal);
+        service
+            .refresh_at(Scan::Automatic, profiles, start)
+            .unwrap();
+        source.guitar(key);
+        service
+            .refresh_at(Scan::Automatic, profiles, start + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(source.0.borrow().completed.len(), 1);
+    }
+}

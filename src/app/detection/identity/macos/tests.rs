@@ -182,13 +182,35 @@ fn startup_matches_the_successful_rig_check_request_sequence() {
 }
 
 #[test]
-fn pod_startup_distinguishes_silent_and_unaccepted_receive_data() {
+fn pod_startup_classifies_only_empty_receive_as_silence_after_release() {
+    for fail_finish in [None, Some(Interface::Podxt)] {
+        let rig = Rig {
+            pod_replies: Some(vec![vec![]]),
+            fail_finish,
+            ..Default::default()
+        };
+        let outcome = rig.run(JobKind::Initial);
+        match fail_finish {
+            None => assert!(matches!(outcome, Outcome::MacPodSilent)),
+            Some(_) => assert!(matches!(
+                outcome,
+                Outcome::Finished {
+                    guitar: Guitar::CleanupFailed,
+                    ..
+                }
+            )),
+        }
+        rig.assert_pod_only(&[200]);
+    }
+}
+
+#[test]
+fn pod_startup_reports_unaccepted_receive_data() {
     let valid = bridge_reply();
     let truncated = valid[..16].to_vec();
     let mut short_identity = valid[..15].to_vec();
     short_identity.push(0xf7);
     for (packets, expected_detail) in [
-        (vec![], "No receive chunks in three seconds."),
         (
             vec![truncated],
             "Receive chunks: 1, orphan bytes: 0, malformed identity frames: 0, other messages: 0.",
@@ -287,11 +309,7 @@ fn pod_startup_does_not_retry_a_pre_drain_orphan() {
         pod_replies: Some(vec![vec![], split_reply(bridge_reply())]),
         ..Default::default()
     };
-    assert!(matches!(
-        rig.run(JobKind::Initial),
-        Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
-            if reason == "No PODxt identity answered. No receive chunks in three seconds."
-    ));
+    assert!(matches!(rig.run(JobKind::Initial), Outcome::MacPodSilent));
     rig.assert_pod_only(&[200]);
 }
 

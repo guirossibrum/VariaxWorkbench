@@ -9,6 +9,7 @@ use variax_workbench::{firmware_notice::FirmwareNotice, identity_stage::Unverifi
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::editor) enum JobKind {
     Initial,
+    DiscoverGuitar,
     RefreshGuitar,
     ReattachGuitarDriver,
     Listen,
@@ -86,6 +87,11 @@ pub(in crate::editor) enum Outcome {
         allow(dead_code)
     )]
     UnverifiedPod(FirmwareNotice),
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "macos"))),
+        allow(dead_code)
+    )]
+    MacPodSilent,
     Finished {
         pod_firmware: Option<&'static str>,
         guitar: Guitar,
@@ -410,13 +416,12 @@ mod pod {
     pub(super) fn identify_macos_startup(
         link: impl Link,
         cancel: &AtomicBool,
-    ) -> Result<Option<FirmwareNotice>, String> {
+    ) -> Result<Option<line6_devices::identity::Identity>, String> {
         let mut quiet = Quiet;
         let mut session = Session::new(link, &IdentityOnly, &mut quiet);
-        let reply = line6_devices::family::podxt::discover_unique_identity(&mut session, || {
+        line6_devices::family::podxt::discover_unique_identity(&mut session, || {
             check_cancel(cancel)
-        })?;
-        Ok(FirmwareNotice::podxt(&reply))
+        })
     }
 
     #[cfg(any(test, target_os = "linux"))]

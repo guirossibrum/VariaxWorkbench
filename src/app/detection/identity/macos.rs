@@ -100,12 +100,17 @@ fn identify_on<L: Link>(
                 return finished(None, Guitar::CleanupFailed);
             }
             match pod {
-                Ok(None) => Some(BRIDGE_VERSION),
-                Ok(Some(notice)) => return Outcome::UnverifiedPod(notice),
+                Ok(Some(identity)) => {
+                    if let Some(notice) = FirmwareNotice::podxt(&identity) {
+                        return Outcome::UnverifiedPod(notice);
+                    }
+                    Some(BRIDGE_VERSION)
+                }
+                Ok(None) => return Outcome::MacPodSilent,
                 Err(error) => return finished(None, Guitar::Unavailable(error)),
             }
         }
-        JobKind::RefreshGuitar => None,
+        JobKind::DiscoverGuitar | JobKind::RefreshGuitar => None,
         JobKind::ReattachGuitarDriver | JobKind::Listen => {
             return finished(
                 None,
@@ -125,7 +130,8 @@ fn identify_on<L: Link>(
             .map_err(|error| format!("Variax USB interface 1 open failed: {error}"))?;
         let mut quiet = Quiet;
         let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
-        let silence_delay = (kind == JobKind::Initial).then_some(STARTUP_SILENCE_DELAY);
+        let silence_delay = matches!(kind, JobKind::Initial | JobKind::DiscoverGuitar)
+            .then_some(STARTUP_SILENCE_DELAY);
         let reply = variax::identify_if_present_cancellable(&mut session, silence_delay, &stopping);
         if let Err(error) = finish(&mut link) {
             eprintln!("PODxt Live interface 1 cleanup: {error}");
