@@ -111,11 +111,10 @@ struct EditPolicy(Action);
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 impl GatePolicy for EditPolicy {
     fn allows(&self, operation: Operation) -> bool {
+        if ReadBufferPolicy.allows(operation) {
+            return true;
+        }
         match operation {
-            Operation::PodxtIdentity
-            | Operation::PodxtRead
-            | Operation::PodxtGlobalRead
-            | Operation::PodxtPackQuery => !hardware_gates::is_locked(Gate::CurrentSettingsRead),
             Operation::PodxtLibraryRead => {
                 matches!(self.0, Action::ResendWholeTone | Action::Recall(_))
                     && !hardware_gates::is_locked(Gate::FullBackupRead)
@@ -134,6 +133,22 @@ impl GatePolicy for EditPolicy {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+pub(super) struct ReadBufferPolicy;
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+impl GatePolicy for ReadBufferPolicy {
+    fn allows(&self, operation: Operation) -> bool {
+        matches!(
+            operation,
+            Operation::PodxtIdentity
+                | Operation::PodxtRead
+                | Operation::PodxtGlobalRead
+                | Operation::PodxtPackQuery
+        ) && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
     }
 }
 
@@ -272,6 +287,43 @@ impl LiveEditor {
         self.needs_get = false;
         self.last_dispatch = None;
         self.message = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn stage_test_target(&mut self, target: LiveTarget) {
+        self.pending.set(target);
+    }
+
+    pub(super) fn detach_attachment(&mut self) {
+        let staged = if self.stage_only {
+            let mut staged = std::mem::take(&mut self.pending);
+            if let Some(worker) = &self.worker
+                && worker.action == Action::Send
+            {
+                for &target in &worker.targets {
+                    staged.set(target);
+                }
+            }
+            staged
+        } else {
+            Pending::default()
+        };
+        self.detach();
+        self.pending = staged;
+    }
+
+    pub(super) fn discard_staged(&mut self) {
+        self.pending.0.clear();
+    }
+
+    pub(super) fn accept_follow(&mut self, buffer: EditorBuffer) {
+        self.whole_tone_backup = None;
+        self.completed(Action::Get, Ok(buffer));
+        self.message = None;
+    }
+
+    pub(super) fn recall_ready(&self) -> bool {
+        self.session.is_some() && !self.needs_get
     }
 
     fn admitted(action: Action) -> bool {
@@ -421,6 +473,12 @@ impl LiveEditor {
                 if !self.stage_only && !self.pending.0.is_empty() {
                     ctx.request_repaint();
                 }
+                if worker.action == Action::Send && self.stage_only && result.is_err() {
+                    self.needs_get = true;
+                    self.pending.0 = worker.targets.clone();
+                    self.message = Some(result.map(|_| String::new()));
+                    return None;
+                }
                 return self.completed(worker.action, result);
             }
         }
@@ -438,7 +496,9 @@ impl LiveEditor {
     }
 
     pub(super) fn get(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
-        self.start(Action::Get, device, ctx);
+        if !self.has_pending() {
+            self.start(Action::Get, device, ctx);
+        }
     }
 
     pub(super) fn recall(
@@ -458,12 +518,6 @@ impl LiveEditor {
 
     pub(super) fn set_live(&mut self, on: bool) {
         self.stage_only = !on;
-    }
-
-    pub(super) fn begin_live(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
-        self.detach();
-        self.set_live(true);
-        self.get(device, ctx);
     }
 
     pub(super) fn can_change(&self, control: LiveControl, block: &str) -> bool {
@@ -588,8 +642,8 @@ impl LiveEditor {
                 self.start(action, device, ui.ctx());
             }
         }
-        if self.stage_only && self.has_pending() && ui.button("Clear staged edits").clicked() {
-            self.pending.0.clear();
+        if self.stage_only && self.has_pending() && ui.button("Discard staged edits").clicked() {
+            self.discard_staged();
         }
     }
 

@@ -1,7 +1,15 @@
-//! Code-derived Workbench 1.75 PODxt/Vetta notices. Their delivery on
-//! PODxt Live under Linux still needs an owner capture.
+//! Passive PODxt Live input shared by Variax presence and channel Follow.
+#[cfg(any(test, all(feature = "usb", target_os = "linux")))]
+use line6_devices::midi::{Assembler, Event};
+use std::time::Instant;
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
 use variax_workbench::midi::SysexDecoder;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::editor) struct PodxtProgram {
+    pub channel: u8,
+    pub observed_at: Instant,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
@@ -11,6 +19,7 @@ use variax_workbench::midi::SysexDecoder;
 pub(in crate::editor) enum Notice {
     Connected,
     Disconnected,
+    PodxtProgram(PodxtProgram),
 }
 
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
@@ -42,12 +51,34 @@ fn decode(frame: &[u8]) -> Option<Result<Notice, &'static str>> {
 
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
 #[derive(Default)]
-pub(super) struct NoticeStream(SysexDecoder);
+pub(super) struct NoticeStream {
+    sysex: SysexDecoder,
+    midi: Assembler,
+}
 
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
 impl NoticeStream {
     pub fn receive(&mut self, packet: &[u8], notices: &mut Vec<Notice>, mut log: impl FnMut(&str)) {
-        match self.0.feed_with_discard(packet, |bytes| {
+        // Keep the Variax decoder's existing malformed-packet handling.
+        // Assemble short MIDI in parallel from the same passive input.
+        if let Ok(events) = self.midi.feed(packet) {
+            let observed_at = Instant::now();
+            notices.extend(events.into_iter().filter_map(|event| {
+                let Event::Short(message) = event else {
+                    return None;
+                };
+                match message.as_slice() {
+                    [status, channel] if status & 0xf0 == 0xc0 => {
+                        Some(Notice::PodxtProgram(PodxtProgram {
+                            channel: *channel,
+                            observed_at,
+                        }))
+                    }
+                    _ => None,
+                }
+            }));
+        }
+        match self.sysex.feed_with_discard(packet, |bytes| {
             if known_prefix(bytes) {
                 log("interrupted notice");
             }
@@ -56,7 +87,10 @@ impl NoticeStream {
                 for frame in frames {
                     match decode(&frame) {
                         Some(Ok(notice)) => {
-                            if notices.last() != Some(&notice) {
+                            let last_presence = notices.iter().rev().find(|notice| {
+                                matches!(notice, Notice::Connected | Notice::Disconnected)
+                            });
+                            if last_presence != Some(&notice) {
                                 notices.push(notice);
                             }
                         }
@@ -70,7 +104,7 @@ impl NoticeStream {
     }
 
     pub fn finish(self, mut log: impl FnMut(&str)) {
-        if known_prefix(self.0.unfinished()) {
+        if known_prefix(self.sysex.unfinished()) {
             log("unfinished notice");
         }
     }
@@ -121,6 +155,30 @@ mod tests {
             [Notice::Connected]
         );
         assert_eq!(logged, ["unknown 03 notice opcode"]);
+    }
+
+    #[test]
+    fn shared_input_assembles_program_changes_and_preserves_variax_notices() {
+        let mut packets = std::collections::VecDeque::from([
+            vec![0xb0, 0, 4, 0xc0],
+            vec![3, 127, 0xf0, 0, 1, 12, 3, 0x11, 0, 0, 0, 7, 0xf7],
+        ]);
+        let result = read_notices(
+            |_| Ok(packets.pop_front()),
+            || false,
+            |error| panic!("{error}"),
+        );
+        let [
+            Notice::PodxtProgram(first),
+            Notice::PodxtProgram(last),
+            Notice::Connected,
+        ] = result.as_slice()
+        else {
+            panic!("unexpected notices {result:?}");
+        };
+        assert_eq!([first.channel, last.channel], [3, 127]);
+        assert_eq!(first.observed_at, last.observed_at);
+        assert!(packets.is_empty());
     }
 
     #[test]

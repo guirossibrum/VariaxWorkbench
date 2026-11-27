@@ -4,6 +4,7 @@ use tabs::{SyncAdmission, SyncUpdate};
 use variax_workbench::hardware_gates::Gate;
 
 mod edit;
+mod follow;
 mod locker;
 mod store;
 use line6_devices::family::podxt::{
@@ -19,8 +20,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-const PENDING_REPLY: &str =
-    "A PODxt reply may still be pending. Reconnect the PODxt Live before using device actions.";
+const PENDING_REPLY: &str = "A PODxt reply may still be pending or the link did not close cleanly. Reconnect the PODxt Live before using device actions.";
 const PULSE: Duration = Duration::from_millis(850);
 const REPAINT_WHILE_READING: Duration = Duration::from_millis(80);
 
@@ -30,6 +30,13 @@ pub(super) struct LivePanel {
     device_tab: bool,
     worker: Option<Worker>,
     editor: edit::LiveEditor,
+    follow: follow::Follow,
+    resume_live: bool,
+    reveal_playing: bool,
+    live_since: Option<Instant>,
+    linux_program_seen: Option<Instant>,
+    linux_follow_due: Option<Instant>,
+    linux_follow_read: bool,
     store: store::StorePanel,
     locker: locker::Locker,
     snapshot: Snapshot,
@@ -434,10 +441,23 @@ impl LivePanel {
         });
         let key = verified.map(|tab| &tab.device.key);
         if self.device.as_ref() == key {
+            if let Some(program) = verified.and_then(|tab| tab.device.podxt_program)
+                && Location::new(BankKind::Tones, u16::from(program.channel)).is_some()
+                && self
+                    .live_since
+                    .is_some_and(|since| program.observed_at >= since)
+                && self
+                    .linux_program_seen
+                    .is_none_or(|seen| program.observed_at > seen)
+            {
+                self.linux_program_seen = Some(program.observed_at);
+                self.linux_follow_due = Some(program.observed_at + follow::CHANNEL_SETTLE);
+            }
             return false;
         }
         self.cancel();
-        self.editor.detach();
+        self.editor.detach_attachment();
+        self.follow.reset();
         self.store.detach();
         self.locker.detach(&mut self.store);
         if let Some(tab) = verified {
@@ -447,12 +467,20 @@ impl LivePanel {
         self.startup = self.device.as_ref().map(|_| Startup::Current);
         self.sync_result = None;
         self.live_editing = false;
+        self.live_since = None;
+        self.linux_program_seen = None;
+        self.resume_live = self.device_ready() && !self.editor.has_pending();
         if self.panel == Some(StagePanel::Store) {
             self.panel = None;
         }
         self.editor.set_live(false);
         self.historical_library.append(&mut self.snapshot.library);
-        self.snapshot = Snapshot::default();
+        let previous = std::mem::take(&mut self.snapshot);
+        if self.editor.has_pending() {
+            self.snapshot.tone = previous.tone;
+            self.snapshot.channel = previous.channel;
+            self.snapshot.packs = previous.packs;
+        }
         self.message = None;
         self.device.is_some()
     }
@@ -471,6 +499,10 @@ impl LivePanel {
 
     pub(super) fn cancel(&mut self) {
         self.startup = None;
+        self.resume_live = false;
+        self.linux_follow_due = None;
+        self.linux_follow_read = false;
+        self.follow.pause();
         self.editor.cancel();
         self.store.cancel();
         if let Some(worker) = &self.worker {
@@ -501,12 +533,7 @@ impl LivePanel {
         if self.busy() || !self.device_ready() || !Self::admitted(command) {
             return Err("PODxt Live is unavailable for this read.".into());
         }
-        if command == ReadCommand::Follow {
-            self.store.clear_preparation();
-            self.editor.detach();
-            self.editor.set_live(false);
-            self.live_editing = false;
-        }
+        self.follow.pause();
         let mut previous = self.snapshot.clone();
         previous.warning = None;
         previous.clip = None;
@@ -628,7 +655,72 @@ impl LivePanel {
         }
     }
 
+    fn update_playing(&mut self, buffer: podxt::EditorBuffer) {
+        if self.panel == Some(StagePanel::Store)
+            && (self.snapshot.tone.as_ref() != Some(&buffer.tone)
+                || self.snapshot.channel != Some(buffer.channel))
+        {
+            self.store.clear_preparation();
+        }
+        self.snapshot.tone = Some(buffer.tone);
+        self.snapshot.packs = Some(buffer.packs);
+        self.snapshot.channel = Some(buffer.channel);
+    }
+
+    fn accept_editor_read(&mut self, buffer: podxt::EditorBuffer, ctx: &egui::Context) {
+        self.update_playing(buffer);
+        self.reveal_playing |= std::mem::take(&mut self.linux_follow_read);
+        if self.resume_live {
+            self.resume_live = false;
+            self.live_editing = true;
+            self.live_since = Some(Instant::now());
+            self.editor.set_live(true);
+            ctx.request_repaint();
+        }
+    }
+
+    pub(super) fn take_playing_reveal(&mut self) -> bool {
+        std::mem::take(&mut self.reveal_playing)
+    }
+
+    fn poll_follow(&mut self, ctx: &egui::Context) {
+        let eligible = self.live_editing
+            && self.device_ready()
+            && !self.busy()
+            && (self.startup.is_none()
+                || self.startup == Some(Startup::Tones)
+                    && hardware_gates::is_locked(Gate::FullBackupRead))
+            && self.has_current()
+            && !hardware_gates::is_locked(Gate::CurrentSettingsRead);
+        if !eligible {
+            self.follow.pause();
+        } else if let Some(due) = self.linux_follow_due {
+            let remaining = due.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.linux_follow_due = None;
+                self.linux_follow_read = true;
+                self.refresh_current(ctx);
+            } else {
+                ctx.request_repaint_after(remaining);
+            }
+        }
+        match self.follow.poll(
+            self.device.as_ref().filter(|_| eligible),
+            &self.editor.reply_pending,
+            ctx,
+        ) {
+            Ok(Some(update)) => {
+                self.reveal_playing |= update.program_change;
+                self.editor.accept_follow(update.buffer.clone());
+                self.update_playing(update.buffer);
+            }
+            Ok(None) => {}
+            Err(error) => self.message = Some(format!("PODxt Follow stopped. {error}")),
+        }
+    }
+
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_follow(ctx);
         if let Some((device, result)) = self.store.poll(ctx) {
             let result = if self.device.as_ref() == Some(&device) {
                 result
@@ -644,15 +736,13 @@ impl LivePanel {
             self.worker.is_none() && !self.store.busy() && ready,
             ctx,
         ) {
-            if self.panel == Some(StagePanel::Store)
-                && (self.snapshot.tone.as_ref() != Some(&buffer.tone)
-                    || self.snapshot.channel != Some(buffer.channel))
-            {
-                self.store.clear_preparation();
+            let buffer = buffer.clone();
+            self.accept_editor_read(buffer, ctx);
+        } else if !self.editor.busy() {
+            self.linux_follow_read = false;
+            if self.startup != Some(Startup::Current) {
+                self.resume_live = false;
             }
-            self.snapshot.tone = Some(buffer.tone.clone());
-            self.snapshot.packs = Some(buffer.packs);
-            self.snapshot.channel = Some(buffer.channel);
         }
         let Some(worker) = &self.worker else {
             // The shell owns ToneBank admission and Retry. Keep the current
@@ -723,12 +813,6 @@ impl LivePanel {
         }
         if !self.device_ready() {
             self.startup = None;
-        }
-        if command == ReadCommand::Follow {
-            self.snapshot.tuner_mode = false;
-            if !stopped {
-                self.refresh_current(ctx);
-            }
         }
     }
 
@@ -806,6 +890,7 @@ impl LivePanel {
             && self.device_ready()
             && let Some(device) = &self.device
         {
+            self.follow.pause();
             self.editor.get(device, ctx);
         }
     }
@@ -828,11 +913,17 @@ impl LivePanel {
         {
             self.device_requests += 1;
         }
-        if self.live_editing
-            && self.device_ready()
-            && !self.busy()
-            && let Some(device) = &self.device
-        {
+        if !self.live_editing || !self.device_ready() {
+            return;
+        }
+        if self.busy() {
+            self.message =
+                Some("Wait for the current PODxt operation, then select the channel again.".into());
+        } else if !self.editor.recall_ready() {
+            self.message = Some("Refresh the playing tone before selecting a channel.".into());
+        } else if let Some(device) = &self.device {
+            self.message = None;
+            self.follow.pause();
             self.editor.recall(slot, device, ctx);
         }
     }
@@ -845,23 +936,67 @@ impl LivePanel {
         self.locker.discard(&mut self.store);
     }
 
+    pub(super) fn enter_edit(&mut self) {
+        self.resume_live = false;
+        self.live_editing = false;
+        self.live_since = None;
+        self.linux_follow_due = None;
+        self.linux_follow_read = false;
+        self.editor.set_live(false);
+        self.follow.reset();
+    }
+
+    fn enter_live(&mut self, ctx: &egui::Context) {
+        if !self.device_ready() || self.busy() || self.editor.has_pending() {
+            return;
+        }
+        self.resume_live = true;
+        self.follow.reset();
+        self.refresh_current(ctx);
+    }
+
+    pub(super) fn has_staged_edits(&self) -> bool {
+        !self.live_editing && self.editor.has_pending()
+    }
+
+    pub(super) fn discard_staged(&mut self) {
+        self.editor.discard_staged();
+    }
+
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui, current: &mut bool) {
-        let command_running = self.worker.as_ref().map(|worker| worker.command);
         let idle = !self.busy();
         let connected = self.device_ready();
-        if *current
-            && ui
-                .add_enabled(
-                    connected && idle && !self.editor.has_pending() && self.snapshot.tone.is_some(),
-                    egui::Checkbox::new(&mut self.live_editing, "Live editing"),
-                )
-                .changed()
-        {
-            if let Some(device) = self.device.as_ref().filter(|_| self.live_editing) {
-                self.editor.begin_live(device, ui.ctx());
-            } else {
-                self.editor.set_live(false);
+        if self.connected() {
+            if ui
+                .add_enabled(idle && self.live_editing, egui::Button::new("Edit"))
+                .clicked()
+            {
+                self.enter_edit();
             }
+            let staged = self.has_staged_edits();
+            if ui
+                .add_enabled(
+                    connected
+                        && idle
+                        && !self.live_editing
+                        && !self.resume_live
+                        && !staged
+                        && Self::admitted(ReadCommand::Current),
+                    egui::Button::new("Live"),
+                )
+                .on_disabled_hover_text(if staged {
+                    "Send or discard the staged edits before returning to Live."
+                } else {
+                    "Wait for the PODxt Live to be ready."
+                })
+                .clicked()
+            {
+                self.enter_live(ui.ctx());
+                *current = true;
+            }
+        }
+        if !*current && self.has_staged_edits() && ui.button("Staged PODxt tone").clicked() {
+            *current = true;
         }
         if *current {
             self.editor.toolbar(
@@ -870,30 +1005,22 @@ impl LivePanel {
                 connected && self.worker.is_none() && !self.store.busy(),
             );
         }
-        for (command, idle_label, active_label) in [
-            (ReadCommand::Tuner, "Tuner", "Stop tuner"),
-            (ReadCommand::Follow, "Follow", "Stop following"),
-        ] {
-            if !self.visible() {
-                continue;
-            }
-            let running = command_running == Some(command);
-            let ready = connected
-                && idle
-                && Self::admitted(command)
-                && (command != ReadCommand::Follow
-                    || self.snapshot.channel.is_some() && !self.editor.has_pending());
+        if self.visible() {
+            let running = self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.command == ReadCommand::Tuner);
             if ui
                 .add_enabled(
-                    running || ready,
-                    egui::Button::new(if running { active_label } else { idle_label }),
+                    running || connected && idle && Self::admitted(ReadCommand::Tuner),
+                    egui::Button::new(if running { "Stop tuner" } else { "Tuner" }),
                 )
                 .clicked()
             {
                 if running {
                     self.cancel();
                 } else {
-                    self.start(command, ui.ctx());
+                    self.start(ReadCommand::Tuner, ui.ctx());
                 }
             }
         }
@@ -1107,7 +1234,6 @@ impl LivePanel {
             if let Some(worker) = &self.worker {
                 let label = match worker.command {
                     ReadCommand::Tuner => "Stop tuner",
-                    ReadCommand::Follow => "Stop following",
                     _ => "Cancel read",
                 };
                 if ui
@@ -1133,7 +1259,6 @@ impl LivePanel {
                 ui.weak("Finishing the current device operation…");
             } else {
                 ui.weak(match worker.command {
-                    ReadCommand::Follow => "Following the POD · rig lock held",
                     ReadCommand::Tuner => "Tuning · rig lock held",
                     _ => "Reading from the PODxt Live…",
                 });

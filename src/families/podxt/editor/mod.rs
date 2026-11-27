@@ -563,6 +563,25 @@ impl PodxtEditor {
                 });
             return;
         }
+        #[cfg(feature = "usb")]
+        if self.live.has_staged_edits() {
+            egui::Window::new("Staged PODxt tone edits")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Closing discards the staged edits to the PODxt tone.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Keep editing").clicked() {
+                            services.close = CloseResult::Cancelled;
+                        }
+                        if ui.button("Discard staged edits").clicked() {
+                            self.live.discard_staged();
+                            services.finish_close_if(!self.needs_close());
+                        }
+                    });
+                });
+            return;
+        }
         if self.pod_eq_reset_pending.is_some() {
             self.pod_eq_reset_quit_dialog(services, ctx);
             return;
@@ -3841,7 +3860,7 @@ impl PodxtEditor {
 
     fn needs_close(&self) -> bool {
         #[cfg(feature = "usb")]
-        if self.live.locker_dirty() {
+        if self.live.locker_dirty() || self.live.has_staged_edits() {
             return true;
         }
         self.pod_dirty() || self.pod_has_staged_edit()
@@ -3909,8 +3928,15 @@ impl FamilyTab for PodxtEditor {
         #[cfg(feature = "usb")]
         {
             if self.live.set_device(device) {
-                self.stage.view_current = true;
-            } else if !self.live.connected() {
+                if self.pod_dirty()
+                    || self.pod_has_staged_edit()
+                    || self.stage_has_pending_document()
+                {
+                    self.live.enter_edit();
+                } else {
+                    self.stage.view_current = true;
+                }
+            } else if !self.live.connected() && !self.live.has_staged_edits() {
                 self.stage.view_current = false;
             }
         }
@@ -3941,7 +3967,17 @@ impl FamilyTab for PodxtEditor {
     }
     fn poll(&mut self, _ctx: &egui::Context) {
         #[cfg(feature = "usb")]
-        self.live.poll(_ctx);
+        {
+            let was_live = self.live.live_editing;
+            let before = self.live.playing_channel();
+            self.live.poll(_ctx);
+            let reveal = self.live.take_playing_reveal();
+            if self.live.live_editing
+                && (reveal || !was_live || before != self.live.playing_channel())
+            {
+                self.stage.reveal_playing_channel();
+            }
+        }
         self.invalidate_stale_eq_reset_stage();
     }
 }
