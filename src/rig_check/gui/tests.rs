@@ -3,6 +3,7 @@ use crate::rig_check::practice::Faults;
 use crate::rig_check::run_practice;
 use crate::rig_check::runner::NoReport;
 use crate::rig_check::steps::RunData;
+use crate::rig_check::testing::Script;
 use eframe::egui::{Event, Key, Modifiers, Pos2, RawInput, Rect};
 
 fn frame(ctx: &egui::Context, wizard: &mut Wizard, events: Vec<Event>) -> Vec<String> {
@@ -686,6 +687,164 @@ fn try_again_is_shown_only_for_an_active_save_result_before_upload() {
             assert!(matches!(replies.try_recv(), Ok(Reply::Repeat)));
         }
     }
+}
+
+#[test]
+fn practice_identity_and_channel_results_fit_the_laptop() {
+    let identity = StepId(2, 1);
+    let channel = StepId(2, 3);
+    let (run, _, _) = run_practice(
+        Faults::default(),
+        &mut Script::run_all(),
+        &mut NoReport,
+        RunData::default(),
+    );
+
+    check_laptop_result(
+        run.step(identity),
+        &["PASSED", "PODxt Live, firmware 3.01 (verified device)"],
+    );
+    check_laptop_result(
+        run.step(channel),
+        &[
+            "PASSED",
+            "Channel 1A: Practice 1A",
+            "If the PODxt Live is already on this channel, does its display show the same name? Expected: \"Practice 1A\".",
+        ],
+    );
+}
+
+#[test]
+fn historical_bank_result_fits_four_channel_names_on_the_laptop() {
+    // #277 retired 2.4. Use its historical title and observations to check
+    // the four-row result layout independently of the current run catalogue.
+    let mut bank = StepRecord::new(StepId(2, 4));
+    bank.title = "PODxt Live one bank (A-D)".into();
+    bank.started = Some("practice fixture".into());
+    bank.outcome = Outcome::Passed;
+    let channels = [
+        "Channel 1A: Practice 1A",
+        "Channel 1B: Practice 1B",
+        "Channel 1C: Practice 1C",
+        "Channel 1D: Practice 1D",
+    ];
+    for channel in channels {
+        bank.show(channel);
+    }
+    bank.note("f0 00 01 0c 03 74 0a 7f f7");
+    check_laptop_result(&bank, &channels);
+}
+
+#[test]
+fn practice_addressed_read_timeout_shows_the_reason_and_repeat_on_the_laptop() {
+    use crate::rig_check::{port::PracticePort, practice::SimRig, run_on};
+
+    let channel = StepId(2, 3);
+    let mut script = Script::run_all();
+    script.repeat_once = Some(channel);
+    let rig = SimRig::shared(Faults::default());
+    let fault = rig.clone();
+    let mut drop_reply = true;
+    script.on_card = Some(Box::new(move |step| {
+        if step == channel && std::mem::take(&mut drop_reply) {
+            fault.borrow_mut().drop_next_stored_tone = true;
+        }
+    }));
+    let (run, _) = run_on(
+        &mut PracticePort::new(rig),
+        &mut script,
+        &mut NoReport,
+        RunData::default(),
+    );
+
+    let failure = run
+        .prior_attempts
+        .iter()
+        .find(|record| record.id == channel)
+        .unwrap();
+    assert_eq!(run.step(channel).attempt, Some(2));
+    assert!(run.step(channel).outcome.passed());
+    check_laptop_result(
+        failure,
+        &[
+            "FAILED",
+            "Lost reply: no 168-byte dump for channel 1A.",
+            "Repeat this step",
+        ],
+    );
+}
+
+fn check_laptop_result(record: &StepRecord, expected: &[&str]) {
+    let id = record.id;
+    // Start on the step's card so the normal Finished event has to move
+    // focus away from the card's Skip default.
+    let card = catalogue::step(id).map_or(StepId(2, 3), |step| step.id);
+    let mut wizard = practice_mockup_at(card, Prompt::Card(card, Mode::Practice, None));
+    let (to_ui, from_runner) = channel();
+    wizard.from_runner = Some(from_runner);
+    let (to_runner, replies) = channel();
+    wizard.to_runner = Some(to_runner);
+    let ctx = egui::Context::default();
+    apply_theme(&ctx);
+    let (width, height) = LAPTOP_MOCKUP_SIZE;
+    let screen = Rect::from_min_size(Pos2::ZERO, vec2(width as f32, height as f32));
+    let mut input = RawInput {
+        screen_rect: Some(screen),
+        ..Default::default()
+    };
+    let _ = ctx.run(input.clone(), |ctx| wizard.show(ctx));
+    to_ui
+        .send(Prompt::Finished(Box::new(record.clone())))
+        .unwrap();
+    let output = ctx.run(input.clone(), |ctx| wizard.show(ctx));
+    let bounds = label_bounds(&output);
+    let catalogue_id = format!("Catalogue ID {id}");
+    for value in [
+        "Result",
+        &catalogue_id,
+        "Continue",
+        "Stop",
+        "Show technical details",
+    ]
+    .into_iter()
+    .chain(expected.iter().copied())
+    {
+        assert!(
+            bounds.iter().any(|(label, rect, clip)| {
+                label == value && screen.intersect(*clip).contains_rect(*rect)
+            }),
+            "Step {id}: {value:?} should fit at {width} × {height}"
+        );
+    }
+    for (label, ..) in &bounds {
+        assert!(
+            !label.contains("0x")
+                && !label
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .windows(3)
+                    .any(|words| {
+                        words.iter().all(|word| {
+                            word.len() == 2 && word.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                    }),
+            "Step {id} exposed protocol bytes: {label:?}"
+        );
+        assert!(
+            !label.split_whitespace().any(|word| {
+                word.len() >= 64 && word.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }),
+            "Step {id} exposed a full hash: {label:?}"
+        );
+    }
+    assert!(matches!(wizard.prompt, Some(Prompt::Finished(_))));
+    assert!(matches!(
+        replies.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    input.events.push(key(Key::Enter));
+    let _ = ctx.run(input, |ctx| wizard.show(ctx));
+    assert!(matches!(replies.try_recv(), Ok(Reply::Continue(true))));
 }
 
 #[test]

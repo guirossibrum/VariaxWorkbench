@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] Review the Rig Check 2.3 lost-reply result. It reports that no 168-byte dump arrived for channel 1A and offers Repeat this step. It also says “Stops the test” and shows no recovery hint, although the second read succeeds in Practice after one dropped reply. [#272](https://github.com/guirossibrum/VariaxWorkbench/issues/272).
+
 - [ ] Rig Check recovery of an accidental Skip within the same run. The [design, generated mockups, and Practice checklist](rig-check/skip-recovery.md) await owner review before implementation. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276#issuecomment-7198373640).
 
 - [ ] Owner verification of Workbench's bounded PODxt Live reads [#306](https://github.com/guirossibrum/VariaxWorkbench/issues/306). The editor's retry, optional marker and unsolicited-event behavior have offline coverage. Native behavior on the supported rig remains unverified.
