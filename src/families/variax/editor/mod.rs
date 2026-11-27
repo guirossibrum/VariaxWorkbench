@@ -761,36 +761,6 @@ impl VariaxEditor {
         }
     }
 
-    fn float_choices(&mut self, ui: &mut egui::Ui, id: u32, label: &str, choices: &[(f32, &str)]) {
-        let Some(value) = self.float(WIRING, id) else {
-            return;
-        };
-        let mut selected = value.to_bits();
-        let text = choices
-            .iter()
-            .find(|(candidate, _)| {
-                // Values read from the guitar have only the high 24 IEEE bits.
-                (candidate.to_bits() & 0xffff_ff00) == (value.to_bits() & 0xffff_ff00)
-            })
-            .map(|(_, text)| (*text).to_owned())
-            .unwrap_or_else(|| format!("{value:.6} (stored)"));
-        ui.vertical(|ui| {
-            ui.label(label);
-            egui::ComboBox::from_id_salt(("electrical", id))
-                .selected_text(text)
-                .width(ui.available_width())
-                .truncate()
-                .show_ui(ui, |ui| {
-                    for &(candidate, text) in choices {
-                        ui.selectable_value(&mut selected, candidate.to_bits(), text);
-                    }
-                });
-        });
-        if selected != value.to_bits() {
-            self.change(|p| p.set_parameter(WIRING, id, 1, selected));
-        }
-    }
-
     fn taper_control(&mut self, ui: &mut egui::Ui) {
         let Some(mut value) = self.integer(WIRING, 0x200001) else {
             return;
