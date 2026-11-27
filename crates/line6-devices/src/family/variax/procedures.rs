@@ -16,7 +16,8 @@ use std::time::Duration;
 
 mod save_identity;
 pub use save_identity::{
-    SaveIdentity, identify_after_save_preflight_reopen, identify_for_save_preflight,
+    SAVE_PREFLIGHT_NO_IDENTITY, SAVE_PREFLIGHT_REOPEN_EXHAUSTED, SaveIdentity,
+    identify_after_save_preflight_reopen, identify_for_save_preflight,
 };
 
 const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);

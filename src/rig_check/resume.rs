@@ -222,6 +222,7 @@ pub struct Plan {
     checkpoint_sha256: String,
     original_path: PathBuf,
     pre_write_recovery: bool,
+    incomplete_live_edit: bool,
     pub target: StepId,
     pub rig: String,
     pub notes: Vec<String>,
@@ -326,6 +327,9 @@ impl Plan {
     }
 
     pub(super) fn restore_ready(&self, state: &RigState) -> Result<(), String> {
+        if self.incomplete_live_edit {
+            return Err("The prior live edit was interrupted or failed. Use Resume to capture the current rig state.".into());
+        }
         if self.restored.podxt_identity.is_none()
             || (state.channel().is_some() && self.restored.start_tone.is_none())
             || state.preset().is_some() != self.restored.variax_identity.is_some()
@@ -383,82 +387,119 @@ impl Plan {
         let note = if self.pre_write_recovery {
             "Continue after the stopped final rig guard? Rig Check first checks the original settings and both backups using read-only operations. It then runs the guided checks and a fresh final guard. The confirmed return may restore the PODxt working buffer. Live edit checks and preset stores are unavailable for this continuation."
         } else {
-            "Continue this saved run? Rig Check will check the connected rig and starting state before reusing results. Each new device action still requires your confirmation."
+            "Continue this saved run? Rig Check will verify the connected devices and use their current settings. Earlier passes stay in the report. Each new device action still requires your confirmation."
         };
         if !op.accept_start(note) {
             return Err("Continuation was declined.".into());
         }
-        let mut recheck = |id, procedure: fn(&mut Ctx<'_>) -> Result<(), String>| {
-            op.progress(Progress::action(format!("Revalidating step {id}")));
-            let mut record = StepRecord::new(id);
-            record.title = format!("{} (continuation revalidation)", record.title);
-            record.started = Some(utc_now());
-            record.attempt = Some(next_attempt(run, id));
-            let mut ctx = Ctx {
-                mode: self.mode,
-                port,
-                op,
-                data: &mut self.restored,
-                rec: &mut record,
-                save_checkpoint: None,
-            };
-            let result = if ctx.stopping() {
-                Err("Continuation stopped before revalidation.".into())
-            } else {
-                procedure(&mut ctx)
-            };
-            record.outcome = match &result {
-                Ok(()) => Outcome::Passed,
-                Err(error) => {
-                    let details = record
-                        .result
-                        .iter()
-                        .cloned()
-                        .chain(
-                            record
-                                .comparisons
-                                .iter()
-                                .filter(|comparison| {
-                                    comparison.severity == super::differences::Severity::Stop
-                                })
-                                .flat_map(|comparison| comparison.details.iter().cloned()),
-                        )
-                        .collect();
-                    run.blocked_resume = Some(BlockedResume {
-                        target: self.target,
-                        check: id,
-                        reason: error.clone(),
-                        details,
-                    });
-                    Outcome::Failed(error.clone())
+        self.restored.evidence_dir = data.evidence_dir.clone();
+        let mut recheck =
+            |id,
+             saved: Option<&mut StepRecord>,
+             procedure: fn(&mut Ctx<'_>) -> Result<(), String>| {
+                op.progress(Progress::action(format!("Revalidating step {id}")));
+                let mut record = StepRecord::new(id);
+                record.title = format!("{} (continuation revalidation)", record.title);
+                record.started = Some(utc_now());
+                record.attempt = Some(
+                    next_attempt(run, id)
+                        .max(saved.as_ref().and_then(|step| step.attempt).unwrap_or(0) + 1),
+                );
+                let mut ctx = Ctx {
+                    mode: self.mode,
+                    port,
+                    op,
+                    data: &mut self.restored,
+                    rec: &mut record,
+                    save_checkpoint: None,
+                };
+                let result = if ctx.stopping() {
+                    Err("Continuation stopped before revalidation.".into())
+                } else {
+                    procedure(&mut ctx)
+                };
+                record.outcome = match &result {
+                    Ok(()) => Outcome::Passed,
+                    Err(error) => {
+                        let details = record
+                            .result
+                            .iter()
+                            .cloned()
+                            .chain(
+                                record
+                                    .comparisons
+                                    .iter()
+                                    .filter(|comparison| {
+                                        comparison.severity == super::differences::Severity::Stop
+                                    })
+                                    .flat_map(|comparison| comparison.details.iter().cloned()),
+                            )
+                            .collect();
+                        run.blocked_resume = Some(BlockedResume {
+                            target: self.target,
+                            check: id,
+                            reason: error.clone(),
+                            details,
+                        });
+                        Outcome::Failed(error.clone())
+                    }
+                };
+                if result.is_ok()
+                    && !record.checksums.is_empty()
+                    && let Some(saved) = saved
+                {
+                    record.reused = true;
+                    let original = std::mem::replace(saved, record);
+                    run.prior_attempts.push(original);
+                } else {
+                    run.prior_attempts.push(record);
                 }
+                result
             };
-            run.prior_attempts.push(record);
-            result
-        };
         let pod = self.reused.iter().any(|step| step.id == POD_ID);
         let guitar = self.reused.iter().any(|step| step.id == GUITAR_ID);
         if pod {
-            recheck(POD_ID, check_pod_identity)?;
-            if self.reused.iter().any(|step| step.id == POD_START) {
-                recheck(POD_START, check_pod_start)?;
+            recheck(POD_ID, None, check_pod_identity)?;
+            if let Some(saved) = self.reused.iter_mut().find(|step| step.id == POD_START) {
+                recheck(
+                    POD_START,
+                    Some(saved),
+                    if self.pre_write_recovery {
+                        check_pod_start
+                    } else {
+                        refresh_pod_start
+                    },
+                )?;
             }
-            if self.reused.iter().any(|step| step.id == POD_BACKUP) {
-                recheck(POD_BACKUP, check_saved_pod_channel)?;
+            if self.pre_write_recovery && self.reused.iter().any(|step| step.id == POD_BACKUP) {
+                recheck(POD_BACKUP, None, check_saved_pod_channel)?;
             }
         }
         if guitar {
-            recheck(GUITAR_ID, check_guitar_identity)?;
-            if self.reused.iter().any(|step| step.id == GUITAR_START) {
-                recheck(GUITAR_START, check_guitar_start)?;
+            recheck(GUITAR_ID, None, check_guitar_identity)?;
+            if let Some(saved) = self.reused.iter_mut().find(|step| step.id == GUITAR_START) {
+                recheck(
+                    GUITAR_START,
+                    Some(saved),
+                    if self.pre_write_recovery {
+                        check_guitar_start
+                    } else {
+                        refresh_guitar_start
+                    },
+                )?;
+            } else if self.target == GUITAR_START
+                && let Some(saved) = self.reused.iter_mut().find(|step| step.id == SETTINGS)
+            {
+                recheck(SETTINGS, Some(saved), super::variax_reads::current_settings)?;
             }
         }
         if !self.skips(POD_BACKUP) && self.skips(StepId(2, 3)) {
             recheck_channel(&self.reused, &mut self.restored)?;
         }
-        let root = data.evidence_dir.take();
         if !self.folders.is_empty() {
-            let root = root
+            let root = self
+                .restored
+                .evidence_dir
                 .as_ref()
                 .ok_or("No folder for the continuation evidence.")?;
             for folder in &self.folders {
@@ -468,7 +509,6 @@ impl Plan {
                 self.restored.podxt_backup_dir = Some(root.join(folder));
             }
         }
-        self.restored.evidence_dir = root;
         self.restored.engine_folder = data.engine_folder.take();
         std::mem::swap(data, &mut self.restored);
         if !self.pre_write_recovery && self.skips(ENGINE) && !self.skips(StepId(4, 3)) {
@@ -483,8 +523,11 @@ impl Plan {
             };
             super::steps::execute(&mut ctx)?;
         }
-        run.continuation
-            .push("Starting state and identities required by the reused steps verified.".into());
+        run.continuation.push(if self.pre_write_recovery {
+            "Starting state and identities required by the reused steps verified.".into()
+        } else {
+            "Device identities verified. The continuation uses fresh starting settings when they differ from the source.".into()
+        });
         Ok(())
     }
 }
@@ -511,6 +554,74 @@ fn check_pod_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ctx.rec
         .show("PODxt Live identity and firmware match the source report.");
     Ok(())
+}
+
+fn refresh_pod_start(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let (tone, channel) = with_podxt(ctx, procedures::PODXT_CHANNEL, |session| {
+        Ok((
+            podxt::read_current(session)?.tone,
+            podxt::playing_channel(session)?,
+        ))
+    })?;
+    ctx.data.touched_podxt = true;
+    if Some(channel) == ctx.data.start_channel && ctx.data.start_tone.as_ref() == Some(&tone) {
+        ctx.rec
+            .show("The PODxt Live tone and channel are unchanged.");
+        return Ok(());
+    }
+    ctx.data.podxt_unsaved = ctx
+        .data
+        .podxt_library
+        .iter()
+        .find(|(slot, _)| *slot == channel)
+        .is_some_and(|(_, saved)| !ctx.data.same_starting_pod_tone(saved, &tone));
+    ctx.rec
+        .show("Using the current PODxt Live tone and channel for this continuation.");
+    super::steps::record_podxt_start(ctx, tone, channel)
+}
+
+fn refresh_guitar_start(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let read = with_variax_progress(ctx, procedures::VARIAX_READ, |session, stop, progress| {
+        procedures::drain(session)?;
+        procedures::variax_full_read(
+            session,
+            stop,
+            progress,
+            "Reading the current Variax program",
+        )
+    })?;
+    ctx.data.touched_variax = true;
+    let earlier_preset = ctx.data.start_preset;
+    let mut slots = ctx
+        .data
+        .variax_library
+        .iter()
+        .filter(|(_, words)| procedures::same_program(words, &read.words));
+    ctx.data.start_preset = match (slots.next(), slots.next()) {
+        (Some((slot, _)), None) => Some(*slot),
+        _ => None,
+    };
+    if ctx.data.start_program.as_ref() == Some(&read.words)
+        && earlier_preset == ctx.data.start_preset
+    {
+        ctx.rec
+            .show("The Variax program and identified preset are unchanged.");
+        return Ok(());
+    }
+    ctx.data.variax_unsaved = false;
+    ctx.data.start_settings = None;
+    ctx.rec
+        .show("Using the current Variax program for this continuation.");
+    ctx.rec.show(ctx.data.start_preset.map_or_else(
+        || "Current Variax preset: not identified from the backup.".into(),
+        |slot| {
+            format!(
+                "Current Variax preset: {}",
+                super::practice::preset_label(slot)
+            )
+        },
+    ));
+    super::steps::record_variax_start(ctx, read)
 }
 
 fn check_pod_start(ctx: &mut Ctx<'_>) -> Result<(), String> {
@@ -716,6 +827,15 @@ fn proven_pre_send(step: &StepRecord, current: Option<StepId>, legacy: bool) -> 
         }
 }
 
+fn incomplete_live_edit(run: &RunRecord, current: Option<StepId>) -> bool {
+    let is_live = |id| catalogue::step(id).is_some_and(|step| step.risk == Risk::Live);
+    current.is_some_and(is_live)
+        || run
+            .steps
+            .iter()
+            .any(|step| is_live(step.id) && step.started.is_some() && !step.outcome.passed())
+}
+
 fn check_prior_actions(
     run: &RunRecord,
     current: Option<StepId>,
@@ -730,7 +850,7 @@ fn check_prior_actions(
     }
     let risk = |id| catalogue::step(id).expect("saved step definition").risk;
     if current.is_some_and(|id| {
-        matches!(risk(id), Risk::Live | Risk::Save)
+        (risk(id) == Risk::Save || legacy && risk(id) == Risk::Live)
             && !proven_pre_send(run.step(id), current, legacy)
     }) {
         return Err("The report was interrupted during a live edit or store. Verify the rig and any affected slots manually.".into());
@@ -746,10 +866,14 @@ fn check_prior_actions(
             || step.duration_ms.is_some()
             || step.message_count() != 0
             || step.save_phase.is_some();
+        let proven_read_only = if final_record {
+            proven_pre_send(step, current, legacy)
+        } else {
+            !legacy && step.can_retry_save_preflight()
+        };
         if risk(step.id) == Risk::Save
             && attempted
-            && ((!step.outcome.passed()
-                && !(final_record && proven_pre_send(step, current, legacy)))
+            && ((!step.outcome.passed() && !proven_read_only)
                 || (step.outcome.passed() && step.save_phase == Some(SavePhase::PreSend)))
         {
             return Err(format!(
@@ -758,11 +882,7 @@ fn check_prior_actions(
             ));
         }
     }
-    if run
-        .steps
-        .iter()
-        .any(|step| risk(step.id) == Risk::Live && step.started.is_some() && !step.outcome.passed())
-    {
+    if legacy && incomplete_live_edit(run, current) {
         return Err("A prior live edit could not be verified. Check the rig state before starting another run.".into());
     }
     if run.prior_attempts.iter().any(|step| {
@@ -906,7 +1026,10 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         return Err("The finished report still records an active step.".into());
     }
     check_prior_actions(&run, current, stopped_before_guard, legacy)?;
-    let pre_send_5_1 = proven_pre_send(run.step(OWN_BYTES_STEP), current, legacy);
+    let retry_save_preflight =
+        !legacy && current.is_none() && run.step(OWN_BYTES_STEP).can_retry_save_preflight();
+    let pre_send_5_1 =
+        proven_pre_send(run.step(OWN_BYTES_STEP), current, legacy) && !retry_save_preflight;
     if saved.pre_write_recovery && current == Some(StepId(7, 3)) {
         return Err("The continuation closed during the footswitch return. Verify the PODxt channel and working tone by hand before starting a new run.".into());
     }
@@ -944,6 +1067,7 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         checkpoint_sha256: sha256_hex(checkpoint.as_bytes()),
         original_path,
         pre_write_recovery: stopped_before_guard || saved.pre_write_recovery,
+        incomplete_live_edit: incomplete_live_edit(&run, current),
         target,
         rig: saved.rig_description,
         notes: Vec::new(),
@@ -967,6 +1091,9 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         plan.notes
             .push(format!("First failed or unfinished check: {target}."));
     }
+    if retry_save_preflight {
+        plan.notes.push("Step 5.1 stopped at the identity check before uploading a program. Rig Check will retry from the preflight after revalidating the rig. A store still requires the usual slot checks and typed confirmation.".into());
+    }
     if pre_send_5_1 {
         plan.notes.push("Step 5.1 ended before uploading a program. The earlier result is retained, and preset stores are unavailable for this continuation.".into());
     }
@@ -986,14 +1113,16 @@ pub fn open(path: &Path) -> Result<Plan, String> {
             .any(|&step| step == id)
     };
 
-    // Recover the prerequisite captures for any step we would reuse.
+    let retain_pass = |id| !legacy || before_target(id);
+
+    // Validate the evidence attached to retained passes.
     for (id, base, label) in [
         (POD_ID, "podxt-identity", "PODxt identity manifest"),
         (POD_START, "podxt-start", "PODxt start manifest"),
         (GUITAR_START, "variax-start", "Variax start manifest"),
     ] {
         let step = run.step(id);
-        if step.outcome.passed() && before_target(id) {
+        if step.outcome.passed() && retain_pass(id) {
             let folder = Folder::read(&root, step, base, label, legacy)?;
             match id {
                 POD_ID => {
@@ -1047,24 +1176,29 @@ pub fn open(path: &Path) -> Result<Plan, String> {
             plan.folders.push(folder);
         }
     }
-    if run.step(GUITAR_ID).outcome.passed() && before_target(GUITAR_ID) {
+    if run.step(GUITAR_ID).outcome.passed() && retain_pass(GUITAR_ID) {
         let identity = identity_from_record(run.step(GUITAR_ID))?;
         variax::check_identity(&identity)?;
         plan.restored.variax_identity = Some(identity);
         plan.restored.variax_verified = Some(true);
     }
 
-    for (id, recover_backup) in [
-        (
-            POD_BACKUP,
-            load_podxt
-                as fn(&Path, &StepRecord, bool, &RigState, &mut RunData) -> Result<Folder, String>,
-        ),
-        (GUITAR_BACKUP, load_variax),
-    ] {
+    for id in [POD_BACKUP, GUITAR_BACKUP] {
         let step = run.step(id);
-        if step.outcome.passed() && before_target(id) {
-            match recover_backup(&root, step, legacy, &state, &mut plan.restored) {
+        if step.outcome.passed() && retain_pass(id) {
+            let backup = if id == POD_BACKUP {
+                load_podxt(&root, step, legacy, &state, &mut plan.restored)
+            } else {
+                load_variax(
+                    &root,
+                    step,
+                    run.step(GUITAR_START),
+                    legacy,
+                    &state,
+                    &mut plan.restored,
+                )
+            };
+            match backup {
                 Ok(folder) => plan.folders.push(folder),
                 Err(error) => {
                     if plan.pre_write_recovery {
@@ -1120,13 +1254,10 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         }
     }
     if target == GUITAR_START && run.step(SETTINGS).outcome.passed() {
-        plan.rebuild.insert(SETTINGS);
         plan.notes.push(
-            "The Variax settings will be read again for the full-program cross-check.".into(),
+            "Rig Check reads the current Variax settings before the full-program cross-check."
+                .into(),
         );
-    }
-    if plan.rebuild.contains(&GUITAR_BACKUP) && run.step(StepId(3, 5)).outcome.passed() {
-        plan.rebuild.insert(StepId(3, 5));
     }
     let mut interrupted = current;
     for mut step in run.steps {
@@ -1170,7 +1301,8 @@ pub fn open(path: &Path) -> Result<Plan, String> {
             && !plan.rebuild.contains(&id)
             && (done_write
                 || no_send_save
-                || (before_target(id) && (step.outcome.passed() || !applicable(&step)))
+                || (step.outcome.passed() && retain_pass(id))
+                || (before_target(id) && !applicable(&step))
                 || (legacy && target == KNOBS && id == PEDAL && step.outcome.passed()));
         if retain {
             step.reused = true;

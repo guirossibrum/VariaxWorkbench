@@ -41,9 +41,14 @@ pub fn identify_for_save_preflight<L: Link>(
     match exchange(session, stopping, Some(retry))? {
         Reply::Identity => Ok(SaveIdentity::Verified),
         Reply::Orphan if first == Reply::Silent => Ok(SaveIdentity::SilenceThenOrphan),
-        _ => Err("No complete Variax identity reply after two requests.".into()),
+        _ => Err(SAVE_PREFLIGHT_NO_IDENTITY.into()),
     }
 }
+
+pub const SAVE_PREFLIGHT_NO_IDENTITY: &str =
+    "No complete Variax identity reply after two requests.";
+pub const SAVE_PREFLIGHT_REOPEN_EXHAUSTED: &str =
+    "Variax save preflight identity recovery exhausted after reopening USB.";
 
 /// Exactly one request after a verified release and reclaim. No resend.
 pub fn identify_after_save_preflight_reopen<L: Link>(
@@ -56,7 +61,7 @@ pub fn identify_after_save_preflight_reopen<L: Link>(
         Some("Retrying the Variax identity request once after verified USB release."),
     )? {
         Reply::Identity => Ok(()),
-        _ => Err("Variax save preflight identity recovery exhausted after reopening USB.".into()),
+        _ => Err(SAVE_PREFLIGHT_REOPEN_EXHAUSTED.into()),
     }
 }
 

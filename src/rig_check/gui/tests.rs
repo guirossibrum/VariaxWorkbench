@@ -665,6 +665,30 @@ fn blocked_resume_mockups_fit_and_focus_open_report_at_both_scales() {
 }
 
 #[test]
+fn try_again_is_shown_only_for_an_active_save_result_before_upload() {
+    use crate::rig_check::record::SavePhase;
+    use line6_devices::family::variax::procedures::SAVE_PREFLIGHT_REOPEN_EXHAUSTED;
+
+    let mut record = StepRecord::new(StepId(5, 1));
+    record.started = Some("practice".into());
+    record.attempt = Some(1);
+    record.duration_ms = Some(10_000);
+    record.outcome = Outcome::Failed(SAVE_PREFLIGHT_REOPEN_EXHAUSTED.into());
+    for (phase, offered) in [(SavePhase::PreSend, true), (SavePhase::SendPossible, false)] {
+        record.save_phase = Some(phase);
+        let ctx = egui::Context::default();
+        let (mut wizard, replies) = wired(Prompt::Finished(Box::new(record.clone())));
+        let text = frame(&ctx, &mut wizard, vec![]);
+        assert_eq!(text.iter().any(|label| label == "Try again"), offered);
+        if offered {
+            frame(&ctx, &mut wizard, vec![key(Key::Tab)]);
+            frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
+            assert!(matches!(replies.try_recv(), Ok(Reply::Repeat)));
+        }
+    }
+}
+
+#[test]
 fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
     let ctx = egui::Context::default();
     let screen = Rect::from_min_size(Pos2::ZERO, vec2(1180.0, 800.0));

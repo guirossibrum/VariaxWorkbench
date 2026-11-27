@@ -341,7 +341,9 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         loop {
             let label = if back.is_some() { "[b] Back   " } else { "" };
             let different = if look { "[d] Different…   " } else { "" };
-            let repeat = if record.can_repeat() {
+            let repeat = if record.can_retry_save_preflight() {
+                "[r] Try again   "
+            } else if record.can_repeat() {
                 "[r] Repeat this step   "
             } else {
                 ""
@@ -355,7 +357,9 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
             match response.to_ascii_lowercase().as_str() {
                 "" | "c" | "continue" => return ResultDecision::Continue,
                 "q" | "stop" => return ResultDecision::Stop,
-                "r" | "repeat" if record.can_repeat() => return ResultDecision::Repeat,
+                "r" | "repeat" | "try again" if record.can_repeat() => {
+                    return ResultDecision::Repeat;
+                }
                 "d" | "different" if look => {
                     self.say("Type exactly what the device shows. Enter alone goes back.");
                     match self.raw_response() {

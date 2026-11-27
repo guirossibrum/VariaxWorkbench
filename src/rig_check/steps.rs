@@ -468,6 +468,14 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let (tone, channel) = with_current_tone(ctx, procedures::PODXT_CHANNEL, |session, tone| {
         Ok((tone, podxt::playing_channel(session)?))
     })?;
+    record_podxt_start(ctx, tone, channel)
+}
+
+pub(super) fn record_podxt_start(
+    ctx: &mut Ctx<'_>,
+    tone: EditBuffer,
+    channel: Location,
+) -> Result<(), String> {
     ctx.data.start_channel = Some(channel);
     ctx.rec.show(format!(
         "Starting channel reported by the PODxt Live: {}",
@@ -682,6 +690,13 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let read = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
         variax_full_read(session, stopping, progress, "Current program")
     })?;
+    record_variax_start(ctx, read)
+}
+
+pub(super) fn record_variax_start(
+    ctx: &mut Ctx<'_>,
+    read: procedures::FullRead,
+) -> Result<(), String> {
     let image = shared_variax::pack(&read.words);
     let checksum = procedures::firmware_checksum(&read.words);
     if read.words[procedures::CHECKSUM_WORD] != checksum {

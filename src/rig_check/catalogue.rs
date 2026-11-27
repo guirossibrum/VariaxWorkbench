@@ -325,7 +325,7 @@ pub static STEPS: &[Step] = &[
         does: "Opens a listening window and watches the pedal (CC 7, or CC 4 in wah mode).",
         you_do: "Rock the pedal from heel to toe and back, then leave it where it was.", see: "Pedal range.", hear: "The volume or wah follows the pedal.",
         evidence: "Lowest and highest value seen.", proof: "#220", verified_only: true),
-    step!((7, 5), "Sweep the six PODxt Live tone knobs", Guided, [(2, 5)], [G3], Read,
+    step!((7, 5), "Sweep the six PODxt Live tone knobs", Guided, [(2, 1)], [G3], Read,
         does: "Listens for decoded values from Drive, Bass, Mid, Treble, Presence and Channel Volume in one session.",
         you_do: "Turn each of the six PODxt Live tone knobs all the way up and down. Choose Continue when you finish.",
         see: "The measured range for each knob and whether it reached 0 and 127.",

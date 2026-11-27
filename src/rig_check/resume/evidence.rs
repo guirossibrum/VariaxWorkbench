@@ -227,6 +227,7 @@ pub(super) fn load_podxt(
 pub(super) fn load_variax(
     root: &Path,
     step: &StepRecord,
+    start_step: &StepRecord,
     legacy: bool,
     state: &RigState,
     data: &mut RunData,
@@ -252,21 +253,38 @@ pub(super) fn load_variax(
             Ok((preset, program(bytes)?))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let preset = state
-        .preset()
-        .ok_or("No starting Variax preset in the checkpoint.")?;
     let start = data
         .start_program
         .as_ref()
         .ok_or("No verified Variax starting program.")?;
-    let saved = &library
+    let refreshed = start_step
+        .evidence
         .iter()
-        .find(|(entry, _)| *entry == preset)
-        .ok_or("No starting preset in the Variax backup.")?
-        .1;
-    check_fact(step, format!("Starting preset: {}", preset_label(preset)))?;
-    data.variax_unsaved = !procedures::same_program(start, saved);
-    data.start_preset = Some(preset);
+        .any(|line| line == "Using the current Variax program for this continuation.");
+    if let Some(preset) = state.preset() {
+        let saved = &library
+            .iter()
+            .find(|(entry, _)| *entry == preset)
+            .ok_or("No starting preset in the Variax backup.")?
+            .1;
+        if refreshed {
+            check_fact(
+                start_step,
+                format!("Current Variax preset: {}", preset_label(preset)),
+            )?;
+        } else {
+            check_fact(step, format!("Starting preset: {}", preset_label(preset)))?;
+        }
+        data.variax_unsaved = !procedures::same_program(start, saved);
+        data.start_preset = Some(preset);
+    } else if refreshed {
+        check_fact(
+            start_step,
+            "Current Variax preset: not identified from the backup.".into(),
+        )?;
+    } else {
+        return Err("No starting Variax preset in the checkpoint.".into());
+    }
     data.variax_library = library;
     data.variax_backup_folder = Some(folder.name.clone());
     Ok(folder)

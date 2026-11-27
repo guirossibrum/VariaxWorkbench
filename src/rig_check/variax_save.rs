@@ -26,6 +26,7 @@ use line6_devices::family::variax::{
 use line6_devices::gate::Operation;
 
 pub(super) const OWN_BYTES_STEP: StepId = StepId(5, 1);
+pub(super) const RETRYABLE_IDENTITY_FAILURE: &str = "No complete Variax identity reply in the initial save check. No program was uploaded or stored.";
 
 pub const VARIAX_SAVE: &[Operation] = &[
     Operation::VariaxIdentity,
@@ -69,7 +70,19 @@ fn store_progress(progress: &dyn Fn(Progress), wait: StoreWait<'_>) {
 fn check_save_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let identity = with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
         shared_variax::identify_for_save_preflight(session, stopping)
-    })?;
+    });
+    let identity = match identity {
+        Err(reason)
+            if reason == shared_variax::SAVE_PREFLIGHT_NO_IDENTITY
+                && ctx.port.direct_usb()
+                && ctx.port.variax_claimed()
+                && !ctx.stopping() =>
+        {
+            release_failed_identity_link(ctx)?;
+            return Err(RETRYABLE_IDENTITY_FAILURE.into());
+        }
+        result => result?,
+    };
     if identity == SaveIdentity::Verified {
         return Ok(());
     }
@@ -86,9 +99,28 @@ fn check_save_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     for line in cleanup {
         ctx.rec.note(line);
     }
-    with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
+    let retry = with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
         shared_variax::identify_after_save_preflight_reopen(session, stopping)
-    })
+    });
+    if retry
+        .as_ref()
+        .is_err_and(|error| error == shared_variax::SAVE_PREFLIGHT_REOPEN_EXHAUSTED)
+    {
+        release_failed_identity_link(ctx)?;
+    }
+    retry
+}
+
+fn release_failed_identity_link(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    for line in ctx.port.release_variax()? {
+        ctx.rec.note(line);
+    }
+    if ctx.port.variax_claimed() || ctx.port.direct_usb_release_failed() {
+        return Err("Variax USB release could not be verified after the identity check.".into());
+    }
+    ctx.rec
+        .show("No program was uploaded or stored. Check the VDI cable before trying again.");
+    Ok(())
 }
 
 pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
