@@ -71,26 +71,51 @@ impl Redactor {
 fn replace_word(text: &str, needle: &str, with: &str) -> String {
     let lower = text.to_lowercase();
     let lower_needle = needle.to_lowercase();
-    if lower.len() != text.len() || lower_needle.is_empty() {
-        return text.replace(needle, with);
+    if lower_needle.is_empty() || !lower.contains(&lower_needle) {
+        return text.to_owned();
     }
+
+    // Lowercasing can expand or shrink UTF-8. Only offsets between complete
+    // original characters can delimit a match. Contextual final sigma has
+    // the same UTF-8 width as the character-level lowercase mapping.
+    let mut boundaries = Vec::new();
+    let mut offset = 0;
+    for (original, character) in text.char_indices() {
+        boundaries.push((offset, original));
+        offset += character.to_lowercase().map(char::len_utf8).sum::<usize>();
+    }
+    boundaries.push((offset, text.len()));
+    let original_offset = |offset| {
+        boundaries
+            .binary_search_by_key(&offset, |&(lowered, _)| lowered)
+            .ok()
+            .map(|index| boundaries[index].1)
+    };
+
     let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
     let mut out = String::with_capacity(text.len());
-    let mut index = 0;
-    while let Some(found) = lower[index..].find(&lower_needle) {
-        let start = index + found;
-        let end = start + lower_needle.len();
+    let mut search_from = 0;
+    let mut copied_until = 0;
+    while let Some(found) = lower[search_from..].find(&lower_needle) {
+        let lower_start = search_from + found;
+        let lower_end = lower_start + lower_needle.len();
+        // A rejected candidate can overlap the next whole-word match.
+        search_from = lower_start + lower[lower_start..].chars().next().unwrap().len_utf8();
+        let (Some(start), Some(end)) = (original_offset(lower_start), original_offset(lower_end))
+        else {
+            continue;
+        };
         let before = text[..start].chars().next_back();
         let after = text[end..].chars().next();
-        out.push_str(&text[index..start]);
         if word(before) || word(after) {
-            out.push_str(&text[start..end]);
-        } else {
-            out.push_str(with);
+            continue;
         }
-        index = end;
+        out.push_str(&text[copied_until..start]);
+        out.push_str(with);
+        copied_until = end;
+        search_from = lower_end;
     }
-    out.push_str(&text[index..]);
+    out.push_str(&text[copied_until..]);
     out
 }
 
@@ -120,5 +145,22 @@ mod tests {
         assert!(out.contains(&Redactor::serial_tag("AB12CD34")));
         assert!(out.contains("malice"), "parts of longer words stay: {out}");
         assert!(out.contains("<user>@<host>"));
+    }
+
+    #[test]
+    fn lowercase_offsets_follow_original_characters() {
+        // The two dotted I expansions offset the Kelvin sign's contraction.
+        let text = "İ (sTuDiO) İK, ſStudio";
+        assert_eq!(text.len(), text.to_lowercase().len());
+        assert_eq!(
+            replace_word(text, "studio", "<host>"),
+            "İ (<host>) İK, ſStudio"
+        );
+        assert_eq!(replace_word("Ai and Aİ", "ai", "<user>"), "<user> and Aİ");
+        assert_eq!(replace_word("k and K", "K", "<host>"), "<host> and <host>");
+        assert_eq!(
+            replace_word("xbox-box-box", "box-box", "<host>"),
+            "xbox-<host>"
+        );
     }
 }
