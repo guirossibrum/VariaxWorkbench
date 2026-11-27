@@ -453,6 +453,119 @@ fn populated_bank_slots_show_names_and_keep_their_controls_at_both_densities() {
 }
 
 #[test]
+fn bank_selection_and_file_actions_share_a_compact_header_at_supported_sizes() {
+    use super::LibraryOrigin;
+    use std::time::UNIX_EPOCH;
+
+    let library = tempfile::tempdir().unwrap();
+    let path = library.path().join("selection.vwb");
+    let (_, mut seed) = app();
+    seed.variax_mut().open_example();
+    seed.variax_mut()
+        .document
+        .as_mut()
+        .unwrap()
+        .save_copy(&path)
+        .unwrap();
+    for size in SIZES.into_iter().chain([egui::vec2(1440.0, 900.0)]) {
+        for density in [1.0, 2.0] {
+            let (ctx, mut app) = app();
+            app.clear_window_controls = true;
+            let editor = app.variax_mut();
+            editor.load(&path);
+            editor.document.as_mut().unwrap().select(0, 1).unwrap();
+            editor.library_origin = Some(LibraryOrigin::Download(UNIX_EPOCH));
+            editor.change(|preset| preset.rename("Edited Spank"));
+            let origin = editor.library_label().unwrap();
+            let frame = |app: &mut Workbench, events| {
+                render(app, &ctx, size, density, events, egui::Modifiers::NONE)
+            };
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let visible = |label: &str| {
+                let (bounds, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| Some((text_bounds(&shape.shape, label)?, shape.clip_rect)))
+                    .unwrap_or_else(|| panic!("{size:?} at {density}x: missing {label:?}"));
+                assert!(
+                    screen.intersect(clip).contains_rect(bounds),
+                    "{label}: {bounds:?}"
+                );
+                bounds
+            };
+            let first_action = visible("Save model as…");
+            for label in [
+                "Replace slot with model file…",
+                "Copy, paste and swap",
+                "Rename bank…",
+                "Export HTML Model List…",
+                &origin,
+            ] {
+                let bounds = visible(label);
+                assert!(
+                    first_action.y_range().contains(bounds.center().y),
+                    "{size:?}: {label}"
+                );
+            }
+            let editor = app.variax();
+            let slot_top = editor.bank_slots[&0].top();
+            assert!(first_action.bottom() - slot_top <= 100.0);
+            assert!(
+                visible("Modified · not stored on guitar").bottom()
+                    <= editor.bank_slots[&4].bottom()
+            );
+            assert!(visible("Unsaved").bottom() <= editor.bank_slots[&4].bottom());
+            for label in ["Model", "Author", "Notes", "Undo", "Redo", "Output trim"] {
+                let bounds = visible(label);
+                assert!(bounds.top() > slot_top && bounds.bottom() < first_action.top());
+            }
+
+            let second_slot = editor.bank_slots[&1];
+            let action = editor.slot_file_buttons["slot-transfers"];
+            let tap = |app: &mut Workbench, key| {
+                frame(app, vec![tuning_key(key, true, egui::Modifiers::NONE)]);
+                frame(app, vec![tuning_key(key, false, egui::Modifiers::NONE)])
+            };
+            let tab_to = |app: &mut Workbench, target| {
+                for _ in 0..100 {
+                    tap(app, egui::Key::Tab);
+                    if ctx
+                        .memory(|memory| memory.focused())
+                        .and_then(|id| ctx.read_response(id))
+                        .is_some_and(|response| response.rect == target)
+                    {
+                        return;
+                    }
+                }
+                panic!("{size:?} at {density}x: cannot tab to {target:?}");
+            };
+            // Change from the selected model and back through the named slot cards.
+            let first_slot = editor.bank_slots[&0];
+            tab_to(&mut app, first_slot);
+            tap(&mut app, egui::Key::Enter);
+            assert_eq!(
+                app.variax().document.as_ref().unwrap().selection(),
+                Some((0, 0))
+            );
+            tab_to(&mut app, second_slot);
+            tap(&mut app, egui::Key::Enter);
+            assert_eq!(
+                app.variax().document.as_ref().unwrap().selection(),
+                Some((0, 1))
+            );
+            tab_to(&mut app, action);
+            tap(&mut app, egui::Key::Enter);
+            let opened = frame(&mut app, vec![]);
+            assert!(text_rect(&opened, "Copy model").is_some());
+            tap(&mut app, egui::Key::Escape);
+            assert!(text_rect(&frame(&mut app, vec![]), "Copy model").is_none());
+        }
+    }
+}
+
+#[test]
 fn bank_storage_notice_distinguishes_local_and_detached_guitar_libraries() {
     use super::LibraryOrigin;
     use std::{fs, time::UNIX_EPOCH};
@@ -1453,7 +1566,9 @@ fn factory_selector_stays_readable_and_preserves_the_current_library_on_laptops(
             assert!(trigger.contains(toggle));
             let mut preceding = text_rect(&output, order).expect("selector order caption");
             assert!(preceding.top() >= trigger.bottom());
-            assert!((preceding.left() - trigger.left()).abs() <= 12.0);
+            // The popup can slide left when its content would cross the window edge.
+            assert!(preceding.left() <= trigger.left() + 12.0);
+            assert!(screen.contains_rect(preceding));
             for position in 1..=5 {
                 let label = format!("{position} · Spank · Spank Single Coil Bridge");
                 let row = output

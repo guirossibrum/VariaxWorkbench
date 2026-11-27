@@ -20,35 +20,51 @@ impl VariaxEditor {
         let Some(document) = &self.document else {
             return;
         };
-        if self.parked_library.is_some() {
-            self.file_mode_actions(ui, available);
-            return;
-        }
-        if document.selection().is_none() {
-            self.html_export_button(ui, services, available);
+        let library = self.library_label();
+        if self.parked_library.is_some() || document.selection().is_none() {
+            // Clear the selector reference when there is no active bank.
+            self.factory_selector_reference(ui);
+            if let Some(library) = library {
+                ui.label(library);
+            }
+            if self.parked_library.is_some() {
+                self.file_mode_actions(ui, available);
+            } else {
+                self.html_export_button(ui, services, available);
+            }
             return;
         }
         let enabled = available && document.selected_slot_model().is_ok();
-        ui.horizontal_wrapped(|ui| {
-            let save = ui.add_enabled(enabled, egui::Button::new("Save model as…").small());
-            let replace = ui.add_enabled(
-                enabled,
-                egui::Button::new("Replace slot with model file…").small(),
-            );
-            #[cfg(test)]
-            {
-                self.slot_file_buttons.insert("save-model", save.rect);
-                self.slot_file_buttons.insert("replace-slot", replace.rect);
-            }
-            if save.clicked() {
-                self.save_slot_model(ui.ctx(), services);
-            }
-            if replace.clicked() {
-                self.choose_slot_replacement(ui.ctx(), services);
-            }
-            self.slot_transfer_menu(ui, enabled);
-            self.rename_bank_button(ui, available);
-            self.html_export_button(ui, services, available);
+        ui.scope(|ui| {
+            let spacing = ui.spacing_mut();
+            spacing.interact_size.y = 22.0;
+            spacing.item_spacing = egui::vec2(5.0, 3.0);
+            spacing.button_padding = egui::vec2(4.0, 2.0);
+            ui.horizontal_wrapped(|ui| {
+                let save = ui.add_enabled(enabled, egui::Button::new("Save model as…").small());
+                let replace = ui.add_enabled(
+                    enabled,
+                    egui::Button::new("Replace slot with model file…").small(),
+                );
+                #[cfg(test)]
+                {
+                    self.slot_file_buttons.insert("save-model", save.rect);
+                    self.slot_file_buttons.insert("replace-slot", replace.rect);
+                }
+                if save.clicked() {
+                    self.save_slot_model(ui.ctx(), services);
+                }
+                if replace.clicked() {
+                    self.choose_slot_replacement(ui.ctx(), services);
+                }
+                self.slot_transfer_menu(ui, enabled);
+                self.rename_bank_button(ui, available);
+                self.html_export_button(ui, services, available);
+                self.factory_selector_reference(ui);
+                if let Some(library) = library {
+                    ui.add(egui::Label::new(egui::RichText::new(library).small()).extend());
+                }
+            });
         });
     }
 

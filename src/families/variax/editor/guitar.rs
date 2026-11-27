@@ -325,19 +325,17 @@ impl VariaxEditor {
 
     pub(super) fn guitar_header(&mut self, ui: &mut egui::Ui, available: bool) -> bool {
         egui::Frame::new()
-            .inner_margin(9)
+            .inner_margin(egui::Margin::symmetric(9, 4))
             .corner_radius(theme::RADIUS_PANEL)
             .fill(Color32::from_rgb(69, 43, 29))
             .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(116, 78, 48)))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 3.0;
-                if let Some(label) = self.library_label() {
-                    ui.label(label);
-                }
                 let import = self.bank_strip(ui, available);
+                ui.spacing_mut().interact_size.y = 22.0;
+                ui.spacing_mut().button_padding.y = 2.0;
                 self.model_details(ui, available);
-                self.factory_selector_reference(ui);
                 import
             })
             .inner
@@ -517,18 +515,23 @@ impl VariaxEditor {
                         });
                     }
                 });
-                // Keep both notices inside the slot row when the selected preset changes.
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.add_visible(
-                        guitar_library && document.slot_is_unsent(bank_index, selected),
-                        egui::Label::new(
-                            egui::RichText::new("Modified · not stored on guitar").small(),
-                        )
-                        .extend(),
-                    );
-                    ui.add_visible(document.is_dirty(), unsaved);
-                });
+                let pending_store = guitar_library && document.slot_is_unsent(bank_index, selected);
+                if document.is_dirty() || pending_store {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        if pending_store {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("Modified · not stored on guitar").small(),
+                                )
+                                .extend(),
+                            );
+                        }
+                        if document.is_dirty() {
+                            ui.add(unsaved);
+                        }
+                    });
+                }
             } else {
                 if let Some(path) = &self.source_path
                     && let Some(filename) = path.file_name()
@@ -541,7 +544,9 @@ impl VariaxEditor {
                 } else {
                     ui.strong("Individual preset");
                 }
-                ui.add_visible(document.is_dirty(), unsaved);
+                if document.is_dirty() {
+                    ui.add(unsaved);
+                }
             }
         });
 
@@ -747,7 +752,7 @@ impl VariaxEditor {
         };
         let widget = match field {
             PresetText::Author => egui::TextEdit::singleline(&mut value),
-            PresetText::Notes => egui::TextEdit::multiline(&mut value).desired_rows(2),
+            PresetText::Notes => egui::TextEdit::multiline(&mut value).desired_rows(1),
         };
         let response = ui.add_enabled(editable, widget.desired_width(width));
         if field == PresetText::Author {
