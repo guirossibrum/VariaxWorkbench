@@ -384,6 +384,10 @@ impl VariaxEditor {
             .document
             .as_ref()
             .expect("guitar header requires a document");
+        let guitar_library = self
+            .library_origin
+            .as_ref()
+            .is_some_and(super::LibraryOrigin::is_guitar_library);
         let example = cfg!(test) && document.source.as_os_str().is_empty();
         let suffix = if example { " (example)" } else { "" };
         let mut next = document.selection();
@@ -517,7 +521,7 @@ impl VariaxEditor {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.add_visible(
-                        document.slot_is_unsent(bank_index, selected),
+                        guitar_library && document.slot_is_unsent(bank_index, selected),
                         egui::Label::new(
                             egui::RichText::new("Modified · not stored on guitar").small(),
                         )
@@ -579,10 +583,6 @@ impl VariaxEditor {
                     ui.memory_mut(|memory| memory.request_focus(egui::Id::new("variax-model-name")))
                 }
                 SlotCommand::Copy | SlotCommand::Paste => {
-                    let guitar_library = self
-                        .library_origin
-                        .as_ref()
-                        .is_some_and(super::LibraryOrigin::is_guitar_library);
                     let document = self.document.as_mut().expect("open library");
                     let (bank, slot) = document.selection().expect("selected model");
                     let result = document.select(position.0, position.1).and_then(|()| {
@@ -621,7 +621,19 @@ impl VariaxEditor {
     }
 
     fn model_details(&mut self, ui: &mut egui::Ui, available: bool) {
+        const OUTPUT_TRIM: u32 = 0x200000;
         const TRIM_WIDTH: f32 = 240.0;
+        const TRIM_RECOVERY_WIDTH: f32 = 300.0;
+        let trim_width = |editor: &Self| {
+            if editor
+                .float(SYSTEM, OUTPUT_TRIM)
+                .is_some_and(|value| !value.is_finite())
+            {
+                TRIM_RECOVERY_WIDTH
+            } else {
+                TRIM_WIDTH
+            }
+        };
         let (model_width, author_width) = if ui.available_width() < 1000.0 {
             (144.0, 100.0)
         } else {
@@ -672,7 +684,7 @@ impl VariaxEditor {
                     ui.label("Notes");
                     // Leave room after Notes for the history buttons and trim.
                     let notes_width =
-                        (ui.available_width() - TRIM_WIDTH - 160.0).clamp(96.0, 240.0);
+                        (ui.available_width() - trim_width(self) - 160.0).clamp(96.0, 240.0);
                     self.metadata_field(ui, editable, PresetText::Notes, notes_width);
                 });
                 if ui
@@ -687,10 +699,10 @@ impl VariaxEditor {
                 {
                     self.redo();
                 }
-                if self.can_edit(SYSTEM, Some(0x200000)) {
-                    // Reserve room for the track, numeric field and caption as one item.
+                if self.can_edit(SYSTEM, Some(OUTPUT_TRIM)) {
+                    // Keep the trim control together, including the wider recovery action.
                     ui.allocate_ui_with_layout(
-                        egui::vec2(TRIM_WIDTH, ui.spacing().interact_size.y),
+                        egui::vec2(trim_width(self), ui.spacing().interact_size.y),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.add_enabled_ui(editable, |ui| {
@@ -698,7 +710,7 @@ impl VariaxEditor {
                                 self.float_control(
                                     ui,
                                     SYSTEM,
-                                    0x200000,
+                                    OUTPUT_TRIM,
                                     "Output trim",
                                     ValueFormat::TRIM,
                                 );
