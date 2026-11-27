@@ -6,6 +6,8 @@
 
 use crate::device_lock::DeviceLock;
 use crate::session::{Link, Path};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 // Compatibility exports for callers of the original USB adapter API (#214).
@@ -108,13 +110,21 @@ impl<Rig> UsbInterfaceLink<Rig> {
         if cfg!(target_os = "macos") || podxt::targets_interface(spec) {
             podxt::verify_descriptor(device, spec)?;
         }
+        Self::open_handle(spec, device, rig)?.prepare_checked(Self::prepare)
+    }
+
+    fn open_handle(
+        spec: InterfaceSpec,
+        device: &rusb::Device<rusb::GlobalContext>,
+        rig: Rig,
+    ) -> Result<Self, String> {
         let handle = device.open().map_err(|error| {
             #[cfg(target_os = "macos")]
             return macos::open_error(error);
             #[cfg(not(target_os = "macos"))]
             format!("Cannot open the USB device: {error}")
         })?;
-        let mut link = Self {
+        Ok(Self {
             spec,
             handle,
             opened: Instant::now(),
@@ -122,22 +132,28 @@ impl<Rig> UsbInterfaceLink<Rig> {
             claimed: false,
             finished: false,
             _rig: rig,
-        };
-        if let Err(error) = link.prepare() {
-            return Err(match link.finish() {
+        })
+    }
+
+    fn prepare_checked(
+        mut self,
+        prepare: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        if let Err(error) = prepare(&mut self) {
+            return Err(match self.finish() {
                 Ok(()) => error,
                 Err(cleanup) => format!("{error} Cleanup: {cleanup}"),
             });
         }
-        Ok(link)
+        Ok(self)
     }
 
     fn prepare(&mut self) -> Result<(), String> {
-        let interface = self.spec.interface;
         #[cfg(target_os = "macos")]
         macos::check_interfaces(|number| self.handle.kernel_driver_active(number))?;
         #[cfg(not(target_os = "macos"))]
         {
+            let interface = self.spec.interface;
             let driver_active = self
                 .handle
                 .kernel_driver_active(interface)
@@ -156,6 +172,11 @@ impl<Rig> UsbInterfaceLink<Rig> {
                 self.detached = true;
             }
         }
+        self.claim_and_select()
+    }
+
+    fn claim_and_select(&mut self) -> Result<(), String> {
+        let interface = self.spec.interface;
         self.handle.claim_interface(interface).map_err(|error| {
             #[cfg(target_os = "macos")]
             return macos::open_error(error);
@@ -279,19 +300,84 @@ pub fn variax_driver_binding(path: &str, address: u8) -> Result<VariaxDriverBind
     crate::family::variax::driver::linux::check(std::path::Path::new("/"), path, address)
 }
 
-/// Restore the binding on the verified attachment. Does not claim the
-/// interface or send device commands. The caller retains the rig lock.
+/// Claim and release a still-unbound Variax interface after explicit consent.
+/// Recovery never detaches a driver or sends device messages. The caller
+/// retains the rig lock through checked release and driver return.
 #[cfg(target_os = "linux")]
-pub fn reattach_variax_driver(rig: &DeviceLock, path: &str, address: u8) -> Result<(), String> {
+pub fn reattach_variax_driver(
+    rig: &DeviceLock,
+    path: &str,
+    address: u8,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     if cfg!(test) {
         return Err("Test builds do not open a USB device.".into());
     }
-    with_attachment(rig, VARIAX_VIA_PODXT_LIVE, path, address, |device| {
-        let handle = device.open().map_err(|error| {
-            format!("Cannot open PODxt Live USB to reattach the guitar interface driver: {error}.")
-        })?;
-        return_variax_driver(&handle, false)
-    })
+    let spec = VARIAX_VIA_PODXT_LIVE;
+    recover_unbound_variax(
+        || variax_driver_binding(path, address),
+        || cancel.load(Ordering::Relaxed),
+        || {
+            with_attachment(rig, spec, path, address, |device| {
+                podxt::verify_descriptor(&device, spec)?;
+                UsbInterfaceLink::open_handle(spec, &device, rig)
+            })
+        },
+        |link| {
+            link.handle
+                .kernel_driver_active(spec.interface)
+                .map_err(|error| format!("Kernel driver check: {error}"))
+        },
+        |link| {
+            // A fresh libusb handle has auto-detach off. If another driver
+            // binds after the activity check, a busy claim fails safely.
+            link.prepare_checked(UsbInterfaceLink::claim_and_select)?
+                .finish()
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn recover_unbound_variax<L>(
+    mut binding: impl FnMut() -> Result<VariaxDriverBinding, String>,
+    cancelled: impl Fn() -> bool,
+    open: impl FnOnce() -> Result<L, String>,
+    driver_active: impl FnOnce(&L) -> Result<bool, String>,
+    claim_and_finish: impl FnOnce(L) -> Result<(), String>,
+) -> Result<(), String> {
+    let check_cancel = || {
+        if cancelled() {
+            Err("Guitar interface recovery cancelled.".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    let mut still_unbound = || match binding()? {
+        VariaxDriverBinding::Unbound => Ok(true),
+        VariaxDriverBinding::Expected => Ok(false),
+        VariaxDriverBinding::Other(driver) => {
+            Err(format!("Unexpected guitar interface driver {driver}."))
+        }
+    };
+    check_cancel()?;
+    if !still_unbound()? {
+        return Ok(());
+    }
+    let link = open()?;
+    check_cancel()?;
+    if !still_unbound()? {
+        return Ok(());
+    }
+    if driver_active(&link)? {
+        return if still_unbound()? {
+            Err("A kernel driver became active on the guitar interface before the claim.".into())
+        } else {
+            check_cancel()
+        };
+    }
+    check_cancel()?;
+    claim_and_finish(link)?;
+    check_cancel()
 }
 
 /// Apply an operation to the single USB device at the verified physical
@@ -449,6 +535,160 @@ fn read_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    mod recovery {
+        use super::*;
+        use VariaxDriverBinding::{Expected, Other, Unbound};
+        use std::cell::{Cell, RefCell};
+
+        #[test]
+        fn still_unbound_runs_one_checked_lifecycle() {
+            let events = RefCell::new(Vec::new());
+            recover_unbound_variax(
+                || {
+                    events.borrow_mut().push("binding");
+                    Ok(Unbound)
+                },
+                || false,
+                || {
+                    events.borrow_mut().push("open exact attachment");
+                    Ok(())
+                },
+                |&()| {
+                    events.borrow_mut().push("kernel ownership");
+                    Ok(false)
+                },
+                |()| {
+                    events
+                        .borrow_mut()
+                        .push("claim, altsetting, checked finish");
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                events.into_inner(),
+                [
+                    "binding",
+                    "open exact attachment",
+                    "binding",
+                    "kernel ownership",
+                    "claim, altsetting, checked finish"
+                ]
+            );
+        }
+
+        #[test]
+        fn driver_restored_before_recovery_skips_open() {
+            recover_unbound_variax::<()>(
+                || Ok(Expected),
+                || false,
+                || panic!("already restored"),
+                |_| panic!("no handle"),
+                |_| panic!("no claim"),
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn driver_restored_while_opening_skips_claim() {
+            let mut bindings = [Ok(Unbound), Ok(Expected)].into_iter();
+            recover_unbound_variax(
+                || bindings.next().unwrap(),
+                || false,
+                || Ok(()),
+                |&()| panic!("binding already verified at the handle boundary"),
+                |()| panic!("no claim"),
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn driver_appearing_at_handle_boundary_never_detaches_or_claims() {
+            for (fresh, succeeds) in [
+                (Ok(Expected), true),
+                (Ok(Other("foreign".into())), false),
+                (Ok(Unbound), false),
+                (Err("attachment changed".into()), false),
+            ] {
+                let mut bindings = [Ok(Unbound), Ok(Unbound), fresh].into_iter();
+                let result = recover_unbound_variax(
+                    || bindings.next().unwrap(),
+                    || false,
+                    || Ok(()),
+                    |&()| Ok(true),
+                    |()| panic!("active driver must see zero detach, claim, or release"),
+                );
+                assert_eq!(result.is_ok(), succeeds);
+                assert!(
+                    bindings.next().is_none(),
+                    "check binding afresh after activity"
+                );
+            }
+        }
+
+        #[test]
+        fn foreign_driver_or_replacement_after_open_stops_before_claim() {
+            for changed in [
+                Ok(Other("foreign".into())),
+                Err("attachment changed".into()),
+            ] {
+                let mut bindings = [Ok(Unbound), changed].into_iter();
+                let result = recover_unbound_variax(
+                    || bindings.next().unwrap(),
+                    || false,
+                    || Ok(()),
+                    |&()| panic!("attachment is no longer eligible"),
+                    |()| panic!("no claim"),
+                );
+                assert!(result.is_err());
+            }
+        }
+
+        #[test]
+        fn cancellation_before_claim_or_during_cleanup_never_admits_identity() {
+            for cancel_at_claim_boundary in [true, false] {
+                let cancel = Cell::new(false);
+                let finished = Cell::new(false);
+                let error = recover_unbound_variax(
+                    || Ok(Unbound),
+                    || cancel.get(),
+                    || Ok(()),
+                    |&()| {
+                        cancel.set(cancel_at_claim_boundary);
+                        Ok(false)
+                    },
+                    |()| {
+                        finished.set(true);
+                        cancel.set(true);
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(finished.get(), !cancel_at_claim_boundary);
+                assert!(error.contains("cancelled"));
+            }
+        }
+
+        #[test]
+        fn busy_claim_or_failed_cleanup_propagates() {
+            for failure in [
+                "Claim interface 1: Busy",
+                "release interface 1: failed",
+                "driver return failed",
+            ] {
+                let result = recover_unbound_variax(
+                    || Ok(Unbound),
+                    || false,
+                    || Ok(()),
+                    |&()| Ok(false),
+                    |()| Err(failure.into()),
+                );
+                assert_eq!(result, Err(failure.into()));
+            }
+        }
+    }
 
     #[test]
     fn selects_verified_port_and_address_even_with_another_podxt_present() {

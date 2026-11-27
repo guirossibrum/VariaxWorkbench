@@ -27,11 +27,14 @@ bind results and USB address changes offline. Physical recovery awaits this run.
    to **No**. Press Enter and verify the app stays on the unavailable status
    with no reattach or identity check.
 3. Choose **Refresh guitar** again and select **Yes, reattach**. Expect a
-   binding check, at most one reattach attempt, and a verified binding before
-   the usual guitar identity check. Expect the existing Variax tab to
-   reattach after a valid reply. If the driver still fails to bind, record the
-   error. Replug the PODxt USB only as a last resort after the operation has
-   stopped.
+   fresh binding check. If the interface is still unbound, the app opens the
+   exact attachment, claims interface 1, selects alternate setting 1 and
+   releases it through the shared checked driver return. That return allows
+   at most one attach attempt. If the expected binding has already returned,
+   the app skips the recovery claim. Expect the usual guitar identity check
+   after binding verification and the existing Variax tab to reattach after
+   a valid reply. If the driver still fails to bind, record the error. Replug
+   the PODxt USB only as a last resort after the operation has stopped.
 4. If the PODxt resets during normal use, note when it happened. Expect the
    previous attachment's cleanup to stop on a changed address and the app
    to check the new attachment normally. Record any recovery prompt that

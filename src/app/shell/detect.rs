@@ -154,7 +154,7 @@ impl Workbench {
         let (title, question, accept) = if repair.is_some() {
             (
                 "Reattach guitar interface driver",
-                "Ask Linux to reattach the PODxt Live’s guitar interface driver? The app sends no guitar commands during reattachment. If it succeeds, the usual guitar identity check runs.",
+                "Open and release the PODxt Live’s guitar interface so Linux can reattach its driver? The app sends no guitar commands during recovery. Once the driver is verified, the usual guitar identity check runs.",
                 "Yes, reattach",
             )
         } else {
