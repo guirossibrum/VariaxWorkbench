@@ -1,7 +1,7 @@
 //! Reconcile cached USB presence and attachment-scoped identity results.
 mod identity;
 mod notice;
-use notice::Notice;
+use notice::{Notice, PodxtProgram};
 
 use super::ProductFamily;
 use identity::{Guitar, Identify, Job, JobKind, Outcome, Worker};
@@ -21,6 +21,8 @@ pub(super) use identity::{
 };
 #[cfg(test)]
 pub(super) use notice::Notice as SimulatedNotice;
+#[cfg(all(test, feature = "usb"))]
+pub(super) use notice::PodxtProgram as SimulatedPodxtProgram;
 
 type UsbId = (u16, u16);
 
@@ -87,6 +89,8 @@ pub(super) struct DetectedDevice {
     pub key: DeviceKey,
     #[cfg(feature = "usb")]
     pub podxt_reply_pending: Arc<AtomicBool>,
+    #[cfg(feature = "usb")]
+    pub podxt_program: Option<PodxtProgram>,
     pub model: &'static str,
     pub support: DeviceSupport,
     pub guitar_status: Option<String>,
@@ -309,6 +313,7 @@ struct Bridge {
     firmware_warning: Option<FirmwareNotice>,
     pod_warning: Option<FirmwareNotice>,
     last_notice: Option<Notice>,
+    podxt_program: Option<PodxtProgram>,
     running_guitar_invalidated: bool,
     suspended: bool,
     driver_unbound: bool,
@@ -332,6 +337,7 @@ impl Bridge {
             firmware_warning: None,
             pod_warning: None,
             last_notice: None,
+            podxt_program: None,
             running_guitar_invalidated: false,
             suspended: false,
             driver_unbound: false,
@@ -515,6 +521,7 @@ impl Bridge {
                 }
             }
             Notice::Connected => {}
+            Notice::PodxtProgram(_) => unreachable!("program changes have their own dispatch"),
         }
     }
 
@@ -857,7 +864,17 @@ impl DetectionService {
             .filter(|bridge| bridge.pod.is_some())
         {
             for notice in notices {
-                bridge.observe_notice(notice);
+                if let Notice::PodxtProgram(program) = notice {
+                    if bridge.pod == Some("3.01")
+                        && bridge
+                            .podxt_program
+                            .is_none_or(|last| last.observed_at <= program.observed_at)
+                    {
+                        bridge.podxt_program = Some(program);
+                    }
+                } else {
+                    bridge.observe_notice(notice);
+                }
             }
         }
     }
@@ -1226,6 +1243,10 @@ impl DetectionService {
                         key,
                         #[cfg(feature = "usb")]
                         podxt_reply_pending: Arc::clone(&attachment.podxt_reply_pending),
+                        #[cfg(feature = "usb")]
+                        podxt_program: (info.id == "podxt" && !mac && attachment.open_candidate)
+                            .then(|| bridge.and_then(|bridge| bridge.podxt_program))
+                            .flatten(),
                         model: info.title,
                         support,
                         guitar_status: status,

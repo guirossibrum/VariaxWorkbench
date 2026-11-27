@@ -652,3 +652,56 @@ fn linux_listener_disregards_results_from_a_stale_generation() {
             && device.support == DeviceSupport::Verified("3.10")
     }));
 }
+
+#[cfg(feature = "usb")]
+#[test]
+fn linux_program_notices_follow_the_verified_attachment_and_do_not_change_guitar_presence() {
+    let (mut service, _, job, now) = in_flight_with_registry(JobKind::RefreshGuitar, None);
+    let profiles = super::super::registry::DEVICE_PROFILES;
+    let bridge = service.bridge_mut(&job.attachment).unwrap();
+    bridge.guitar = Some((42, GuitarIdentity::Verified("3.10")));
+    bridge.last_notice = Some(Notice::Connected);
+
+    let program = PodxtProgram {
+        channel: 127,
+        observed_at: now,
+    };
+    let mut stale = job.attachment.clone();
+    stale.generation += 1;
+    service.apply_linux_notices(&stale, vec![Notice::PodxtProgram(program)]);
+    service.rebuild_devices(Scan::Automatic, profiles);
+    assert!(
+        service
+            .known
+            .values()
+            .all(|device| device.podxt_program.is_none())
+    );
+
+    service.apply_linux_notices(
+        &job.attachment,
+        vec![
+            Notice::PodxtProgram(program),
+            Notice::PodxtProgram(PodxtProgram {
+                channel: 1,
+                observed_at: now - Duration::from_millis(1),
+            }),
+        ],
+    );
+    service.rebuild_devices(Scan::Automatic, profiles);
+    let pod = service
+        .known
+        .values()
+        .find(|item| item.key.family_id == "podxt")
+        .unwrap();
+    assert_eq!(pod.podxt_program, Some(program));
+    let guitar = service
+        .known
+        .values()
+        .find(|item| item.key.linked_generation == Some(42))
+        .unwrap();
+    assert_eq!(guitar.podxt_program, None);
+    assert_eq!(
+        service.bridge_mut(&job.attachment).unwrap().last_notice,
+        Some(Notice::Connected)
+    );
+}

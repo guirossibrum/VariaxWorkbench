@@ -3,7 +3,11 @@ use crate::editor::detection::{PresenceSource, SimulatedGuitar, SimulatedJob, Si
 use crate::editor::tests::recording_frame;
 use line6_devices::family::podxt::{EDIT_BUFFER_LEN, PodxtRequest, StoredTone};
 use line6_devices::session::{Path as MidiPath, Request};
-use std::{cell::Cell, collections::VecDeque, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+};
 use variax_workbench::device_probe::{
     MetadataError, OsMetadataSource, PODXT_LIVE_USB, SoundCard, SyntheticSysfs, UsbDevice,
 };
@@ -17,9 +21,10 @@ fn tone(name: &[u8]) -> EditBuffer {
 }
 
 #[derive(Clone, Default)]
-struct Presence {
+pub(super) struct Presence {
     attached: Rc<Cell<bool>>,
     identified: Rc<Cell<bool>>,
+    pub(super) notices: Rc<RefCell<Vec<detection::SimulatedNotice>>>,
 }
 
 impl OsMetadataSource for Presence {
@@ -45,6 +50,10 @@ impl OsMetadataSource for Presence {
 impl PresenceSource for Presence {
     fn metadata(&self) -> &dyn OsMetadataSource {
         self
+    }
+
+    fn simulated_notices(&self, _: &detection::AttachmentKey) -> Vec<detection::SimulatedNotice> {
+        std::mem::take(&mut *self.notices.borrow_mut())
     }
 
     fn simulated_identity(&self, _: &SimulatedJob) -> Option<SimulatedOutcome> {
@@ -304,7 +313,7 @@ fn notifications_update_the_current_snapshot_and_saved_preview_independently() {
     assert_eq!(snapshot.tap, Some(now + PULSE));
 }
 
-fn render_stage(
+pub(super) fn render_stage(
     ctx: &egui::Context,
     app: &mut Workbench,
     events: Vec<egui::Event>,
@@ -319,7 +328,7 @@ fn render_stage(
     )
 }
 
-fn stage_frame(ctx: &egui::Context, app: &mut Workbench) -> String {
+pub(super) fn stage_frame(ctx: &egui::Context, app: &mut Workbench) -> String {
     fn collect(shape: &egui::epaint::Shape, text: &mut String) {
         match shape {
             egui::epaint::Shape::Text(shape) => {
@@ -343,7 +352,7 @@ fn stage_frame(ctx: &egui::Context, app: &mut Workbench) -> String {
     output
 }
 
-fn valid_dump(name: &str) -> EditBuffer {
+pub(super) fn valid_dump(name: &str) -> EditBuffer {
     let mut tone = pod_preset::PodTone::new_podxt_tone(name).unwrap();
     tone.set_table_model(
         "AMP_MODEL",
@@ -411,7 +420,7 @@ fn startup_app(ctx: &egui::Context, preferences: Option<PathBuf>) -> Workbench {
     app
 }
 
-fn connected_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
+pub(super) fn connected_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
     let mut app = startup_app(ctx, None);
     let presence = Presence::default();
     presence.attached.set(true);
@@ -465,7 +474,8 @@ fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates()
         "Channel 5B",
         "Stage Current",
         "Saved 5B",
-        "Live editing",
+        "Edit",
+        "Live",
         "Tuner",
         "Tone Locker",
     ] {

@@ -203,6 +203,14 @@ impl Stage {
         }
         self.connection = connection;
     }
+
+    #[cfg(feature = "usb")]
+    pub(super) fn reveal_playing_channel(&mut self) {
+        // Tone channels occupy bank index zero. Scrolling and the bank picker
+        // otherwise keep their own position.
+        self.bank = 0;
+        self.library_highlight = None;
+    }
 }
 
 fn ordered_blocks(is_pre: impl Fn(Block) -> bool) -> Vec<Block> {
@@ -329,7 +337,17 @@ impl PodxtEditor {
         self.pod_bank = 0;
         self.pod_selected = (!self.pod_library.is_empty()).then_some(0);
         self.refresh_selected_pod_name();
-        self.show_file_stage();
+        if matches!(
+            document.source,
+            StageSource::Default | StageSource::Backup(None)
+        ) {
+            #[cfg(feature = "usb")]
+            {
+                self.stage.view_current = false;
+            }
+        } else {
+            self.show_file_stage();
+        }
         self.stage.source = document.source;
         self.stage.path = document.path;
         #[cfg(feature = "usb")]
@@ -489,6 +507,8 @@ impl PodxtEditor {
                                         return;
                                     }
                                     if !editor.pod_dirty() {
+                                        #[cfg(feature = "usb")]
+                                        editor.live.enter_edit();
                                         editor.open_fallback_tone();
                                     }
                                 }
@@ -549,13 +569,14 @@ impl PodxtEditor {
         #[cfg(feature = "usb")]
         {
             self.stage.view_current = false;
+            self.live.enter_edit();
         }
     }
 
     pub(super) fn stage_is_current(&self) -> bool {
         #[cfg(feature = "usb")]
         {
-            self.stage.view_current && self.live.connected()
+            self.stage.view_current && (self.live.connected() || self.live.has_staged_edits())
         }
         #[cfg(not(feature = "usb"))]
         false
@@ -595,9 +616,11 @@ impl PodxtEditor {
             let source = if current {
                 #[cfg(feature = "usb")]
                 if self.live.live_editing {
-                    "Live editing · edit buffer"
+                    "Live · edit buffer"
+                } else if self.live.connected() {
+                    "Edit · Send applies staged edits"
                 } else {
-                    "Current tone · Send applies staged edits"
+                    "Edit · staged tone offline"
                 }
                 #[cfg(not(feature = "usb"))]
                 "Current tone"
@@ -786,10 +809,10 @@ impl PodxtEditor {
                     } else if historical {
                         "Open a copy of the previous connection’s tone."
                     } else if on_device && current {
-                        "Enable Live editing to recall a channel, or right-click to open a file copy."
+                        "Select a channel in Live to recall it, or right-click to open a file copy."
                     } else { "" });
                     #[cfg(feature = "usb")]
-                    if playing && self.stage.library_highlight != Some(*slot) {
+                    if playing && on_device && self.live.live_editing && self.stage.library_highlight != Some(*slot) {
                         response.scroll_to_me(Some(egui::Align::Center));
                         self.stage.library_highlight = Some(*slot);
                     }
@@ -830,8 +853,7 @@ impl PodxtEditor {
                     );
                 }
             } else if selected.is_some() {
-                self.pod_message =
-                    "Live editing is off. Right-click a channel to open a file copy.".into();
+                self.pod_message = "Edit mode. Right-click a channel to open a file copy.".into();
             }
         });
     }
