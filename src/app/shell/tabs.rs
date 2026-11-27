@@ -392,10 +392,14 @@ impl Tabs {
                 continue;
             };
             let active = self.active;
+            let had_tabs = !self.entries.is_empty();
             self.open(family, defaults, TabSource::New)?;
             let entry = self.entries.last_mut().expect("the device tab just opened");
             entry.device = Some(DeviceTab::present(device, false));
-            self.active = active.or(self.active);
+            // Keep the current workspace selection when editors are open.
+            if had_tabs {
+                self.active = active;
+            }
         }
         Ok(())
     }

@@ -6,6 +6,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 - [ ] Spider V30 tab [#311](https://github.com/guirossibrum/VariaxWorkbench/issues/311). The [offline audit and integration plan](research/spider-v30-tab-plan.md) document desktop discovery, the first identity exchange, shared preset resources and the feature gaps. The librarian command trace covers read, select and store. Editor field-to-wire mappings, physical endpoint binding and owner verification remain open.
 
+- [ ] Connect the [#310 Home and connection window](design/home-connection-window.md) to existing discovery, transport arbitration and authorized library reads. Validate the finished flow on the owner's rig after integration.
+
 - [ ] Review the Rig Check 2.3 lost-reply result. It reports that no 168-byte dump arrived for channel 1A and offers Repeat this step. It also says “Stops the test” and shows no recovery hint, although the second read succeeds in Practice after one dropped reply. [#272](https://github.com/guirossibrum/VariaxWorkbench/issues/272).
 
 - [ ] Rig Check recovery of an accidental Skip within the same run. The [design, generated mockups, and Practice checklist](rig-check/skip-recovery.md) await owner review before implementation. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276#issuecomment-7198373640).

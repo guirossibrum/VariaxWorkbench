@@ -1,7 +1,7 @@
 //! Application navigation, tab lifecycle, and shared commands.
 use super::variax_panel::VariaxEditor;
 use super::*;
-use variax_workbench::ui::{assets, chrome, theme};
+use variax_workbench::ui::{assets, chrome, connections, theme};
 
 mod detect;
 #[cfg(test)]
@@ -66,6 +66,7 @@ impl Workbench {
             recording_capture_attempts: 0,
             defaults,
             tabs: Tabs::default(),
+            connections: connections::Connections::default(),
             detection: DetectionService::platform(),
             detect_confirmation: None,
             next_detection: Instant::now(),
@@ -568,7 +569,8 @@ impl Workbench {
                                     });
                                 });
                             });
-                        } else if command_button(ui, "Open file…", !self.picker.is_open()).clicked()
+                        } else if self.tabs.active.is_some()
+                            && command_button(ui, "Open file…", !self.picker.is_open()).clicked()
                         {
                             self.request_open_file(ctx);
                         }
@@ -800,7 +802,7 @@ impl Workbench {
                     });
                 });
             } else {
-                self.start_page(ui);
+                self.home_page(ui);
             }
         });
         if self.help {
@@ -842,6 +844,9 @@ impl Workbench {
                     }
                 });
         }
+        // Lane 1 will dispatch the returned retry request through the existing
+        // consent and read path. This visual slice supplies no live events.
+        let _retry_request = self.connection_window(ctx);
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.device_check_window(ctx);
@@ -865,71 +870,123 @@ impl Workbench {
         self.detect_button(ui, start_panel);
     }
 
-    fn start_page(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(theme::SPACE_24);
-        ui.label(
-            egui::RichText::new("Open a file or start an offline tab")
-                .size(theme::TITLE)
-                .strong()
-                .color(theme::TEXT),
-        );
-        ui.add_space(theme::SPACE_16);
-        ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_16);
-        let columns = start_column_count(ui.available_width(), registry::FAMILIES.len());
-        let mut chosen = None;
-        for row in registry::FAMILIES.chunks(columns) {
-            ui.columns(columns, |columns| {
-                for (column, family) in columns.iter_mut().zip(row.iter().copied()) {
-                    if start_card(column, family).clicked() {
-                        chosen = Some(family);
-                    }
+    fn connection_window(&mut self, ctx: &egui::Context) -> Option<connections::Attachment> {
+        let action = connections::show(
+            ctx,
+            &mut self.connections,
+            Instant::now(),
+            |ui, path, rect| {
+                let image = shell_image(ui.ctx(), path);
+                if image.missing {
+                    return false;
                 }
+                assets::paint(ui, &image, rect);
+                true
+            },
+        );
+        match action {
+            Some(connections::Action::EditOffline) => self.tabs.active = None,
+            Some(connections::Action::OpenOfflineEditor(editor)) => {
+                if let Some(family) = registry::FAMILIES
+                    .iter()
+                    .find(|family| family.info().id == editor)
+                {
+                    self.new_tab(*family);
+                }
+            }
+            Some(connections::Action::Retry(attachment)) => return Some(attachment),
+            None => {}
+        }
+        None
+    }
+
+    fn home_page(&mut self, ui: &mut egui::Ui) {
+        let enabled = !self.has_prompt();
+        egui::ScrollArea::vertical()
+            .id_salt("home-page")
+            .show(ui, |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.add_space(theme::SPACE_16);
+                    if command_button(ui, "Open file…", true).clicked() {
+                        self.request_open_file(ui.ctx());
+                    }
+                    ui.add_space(theme::SPACE_16);
+                    ui.label(
+                        egui::RichText::new("Edit offline")
+                            .size(theme::TITLE)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    ui.add_space(theme::SPACE_8);
+                    ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_16);
+                    let columns =
+                        start_column_count(ui.available_width(), registry::FAMILIES.len());
+                    let mut chosen = None;
+                    for row in registry::FAMILIES.chunks(columns) {
+                        ui.columns(columns, |columns| {
+                            for (column, family) in columns.iter_mut().zip(row.iter().copied()) {
+                                if column
+                                    .push_id(family.info().id, |ui| start_card(ui, family))
+                                    .inner
+                                    .clicked()
+                                {
+                                    chosen = Some(family);
+                                }
+                            }
+                        });
+                    }
+                    if let Some(family) = chosen {
+                        self.new_tab(family);
+                    }
+                });
             });
-        }
-        if let Some(family) = chosen {
-            self.new_tab(family);
-        }
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut select = None;
         let mut close = None;
-        egui::ScrollArea::horizontal()
-            .id_salt("editor-tabs")
-            .show(ui, |ui| {
-                ui.add_enabled_ui(!self.has_prompt(), |ui| {
-                    // Top alignment keeps the row at the 40px tab height. Centered
-                    // horizontal layout would stretch to the panel and shrink the page.
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = theme::SPACE_4;
-                        for entry in &self.tabs.entries {
-                            let title = entry.title();
-                            let family_id = entry.family.info().id;
-                            let tab_id = entry.id;
-                            ui.push_id((family_id, tab_id), |ui| {
-                                let output = chrome::DocumentTab {
-                                    title: &title,
-                                    family: chrome_family(family_id),
-                                    active: self.tabs.active == Some(tab_id),
-                                    unsaved: entry.editor.dirty(),
-                                }
-                                .show(ui);
-                                #[cfg(test)]
-                                self.tab_buttons.insert(family_id, output.response.rect);
-                                if output.response.clicked() {
-                                    select = Some(tab_id);
-                                }
-                                if output.close.clicked() {
-                                    close = Some(tab_id);
-                                }
-                            });
-                        }
+        ui.add_enabled_ui(!self.has_prompt(), |ui| {
+            // Home stays in view while the document tabs scroll.
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = theme::SPACE_4;
+                let home = ui.add(
+                    egui::Button::selectable(self.tabs.active.is_none(), "Home")
+                        .min_size(egui::vec2(82.0, 40.0)),
+                );
+                #[cfg(test)]
+                self.tab_buttons.insert("home", home.rect);
+                if home.clicked() {
+                    self.tabs.active = None;
+                }
+                egui::ScrollArea::horizontal()
+                    .id_salt("editor-tabs")
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            for entry in &self.tabs.entries {
+                                let title = entry.title();
+                                let family_id = entry.family.info().id;
+                                let tab_id = entry.id;
+                                ui.push_id((family_id, tab_id), |ui| {
+                                    let output = chrome::DocumentTab {
+                                        title: &title,
+                                        family: chrome_family(family_id),
+                                        active: self.tabs.active == Some(tab_id),
+                                        unsaved: entry.editor.dirty(),
+                                    }
+                                    .show(ui);
+                                    #[cfg(test)]
+                                    self.tab_buttons.insert(family_id, output.response.rect);
+                                    if output.response.clicked() {
+                                        self.tabs.active = Some(tab_id);
+                                    }
+                                    if output.close.clicked() {
+                                        close = Some(tab_id);
+                                    }
+                                });
+                            }
+                        });
                     });
-                });
             });
-        if let Some(id) = select {
-            self.tabs.active = Some(id);
-        }
+        });
         if let Some(id) = close {
             self.close_tab(id, ctx);
         }
@@ -1164,6 +1221,9 @@ fn start_card(ui: &mut egui::Ui, family: &dyn ProductFamily) -> egui::Response {
         blurb,
         theme::MUTED,
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), info.new_label)
+    });
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
