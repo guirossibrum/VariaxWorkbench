@@ -9,6 +9,12 @@ use std::collections::BTreeMap;
 pub use families::variax::file::{bundle, document, edit, preset};
 pub use shared::file::{PathFacts, open_regular_file, path_facts};
 
+/// The common release build number shown by Workbench and Rig Check.
+pub const BUILD_NUMBER: &str = match option_env!("VARIAX_BUILD_NUMBER") {
+    Some(number) => number,
+    None => "dev",
+};
+
 pub mod body;
 pub mod device_probe;
 pub mod dsp;

@@ -65,6 +65,34 @@ fn wired(prompt: Prompt) -> (Wizard, std::sync::mpsc::Receiver<Reply>) {
 }
 
 #[test]
+fn build_number_stays_at_bottom_right_on_the_landing_page_and_step_card() {
+    let caption = format!(
+        "Build {}",
+        option_env!("VARIAX_BUILD_NUMBER").unwrap_or("dev")
+    );
+    let (card, _rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice, None));
+    let screen = Rect::from_min_size(Pos2::ZERO, vec2(960.0, 680.0));
+    for mut wizard in [Wizard::default(), card] {
+        let ctx = egui::Context::default();
+        apply_theme(&ctx);
+        let output = ctx.run(
+            RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| wizard.show(ctx),
+        );
+        let (_, bounds, clip) = label_bounds(&output)
+            .into_iter()
+            .find(|(label, _, _)| label == &caption)
+            .expect("build footer");
+        assert!(screen.contains_rect(bounds) && clip.contains_rect(bounds));
+        assert!(bounds.right() > screen.right() - 20.0);
+        assert!(bounds.bottom() > screen.bottom() - 12.0);
+    }
+}
+
+#[test]
 fn the_step_card_shows_its_sections_and_enter_skips() {
     let ctx = egui::Context::default();
     apply_theme(&ctx);

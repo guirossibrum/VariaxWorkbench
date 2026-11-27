@@ -1,6 +1,8 @@
 #[path = "../src/gui.rs"]
 mod editor;
 
+use variax_workbench::BUILD_NUMBER;
+
 const APP_VERSION: &str = if env!("CARGO_PKG_VERSION_MINOR").len() == 1 {
     concat!(
         env!("CARGO_PKG_VERSION_MAJOR"),
@@ -13,12 +15,6 @@ const APP_VERSION: &str = if env!("CARGO_PKG_VERSION_MINOR").len() == 1 {
         ".",
         env!("CARGO_PKG_VERSION_MINOR")
     )
-};
-
-/// Release workers receive one build number along with the pinned source SHA.
-const BUILD_NUMBER: &str = match option_env!("VARIAX_BUILD_NUMBER") {
-    Some(number) => number,
-    None => "dev",
 };
 
 fn main() -> eframe::Result {

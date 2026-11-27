@@ -432,6 +432,23 @@ impl Wizard {
 
     pub fn show(&mut self, ctx: &egui::Context) {
         self.poll();
+        egui::TopBottomPanel::bottom("rig-check-footer")
+            .resizable(false)
+            .exact_height(24.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(12, 4)),
+            )
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("Build {}", crate::BUILD_NUMBER))
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                });
+            });
         egui::SidePanel::left("rig-check-progress")
             .resizable(false)
             .exact_width(300.0)
