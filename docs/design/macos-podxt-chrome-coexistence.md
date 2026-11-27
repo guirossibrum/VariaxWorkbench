@@ -7,11 +7,47 @@ status from its own registry preflight. It had reached neither
 `USBDeviceOpen` nor the fresh configuration read. A direct Chrome
 `AppleUSBHostDeviceUserClient` was visible on the same service, then absent
 after Chrome quit without a replug. This identifies the old predicate that
-stopped the attempt. The evidence leaves actual OS access and the cause of
-configuration 0 unresolved.
+stopped the attempt. That attempt left actual OS access unresolved. The
+cause of configuration 0 remains unknown.
 [Owner configuration read](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7217524214) ·
 [Activation stop](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7217561238) ·
 [Owner coexistence requirement](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7217625707)
+
+## Owner activation result
+
+On Apple silicon, the standalone probe opened the selected PODxt Live
+with ordinary device access and read configuration 0 on that same handle.
+macOS accepted one activation to configuration 1. The checked device close
+succeeded, then interfaces 0 and 1 appeared on the same attachment
+generation. The same shared Chrome device-user-client registration was
+visible immediately before and after the activation.
+[Owner run](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7218534429)
+
+Active configuration descriptor availability, interface claims, normal
+Workbench operation and guitar identity each need separate evidence.
+The Gatekeeper matched the owner artifact and native build inputs to the
+reviewed source and archived the standalone probe. Offline review passed
+13 standalone Rust tests, three portable C fixture groups and all 14
+integrated fake coexistence tests.
+[Gatekeeper review](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7220765467)
+
+## Later Workbench Build 468 observations
+
+In a separate owner attempt, Build 468 reported a registry scan with no
+iterator, then detected the PODxt Live on a subsequent scan.
+[Build 468 readiness report](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7220707671)
+
+After the owner physically unplugged and reconnected the PODxt Live USB
+cable, Device Check step 1 passed on the reconnected attachment. Step 2
+stopped at the active configuration descriptor lookup with “Entity not
+found,” before opening the interface or sending a Variax identity request.
+The earlier activation verified publication on its own attachment. The
+cause of the post-replug failure, the fresh USB configuration value, and
+any USB client involvement remain unknown.
+[Owner clarification](https://github.com/guirossibrum/VariaxWorkbench/issues/298#issuecomment-7220941889)
+
+The earlier Workbench startup orphan-byte observation is tracked under
+[#201](https://github.com/guirossibrum/VariaxWorkbench/issues/201).
 
 ## Offline boundary
 
@@ -98,7 +134,7 @@ interaction with other live contexts need separate review and native
 evidence. The harness injects the result of active-descriptor revalidation
 and checks that failure stops readiness.
 
-## Evidence needed with Chrome open
+## Interpreting observations with Chrome open
 
 | Observation on the matching attachment | What it establishes |
 | --- | --- |
@@ -108,11 +144,12 @@ and checks that failure stops readiness.
 | Fresh 0, separately approved activation accepts, clean close, both services observed | The host activated and published interfaces on that attempt with Chrome open. Matching active descriptor after refresh, recorded separately, establishes whether the intended reopen path has current metadata. |
 | Activation accepts but publication or descriptor validation fails | The failed phase still blocks ordinary claims. Keep the activation outcome and stop without another configuration call. |
 
-The result needs exact attachment continuity, OS and architecture,
+Record exact attachment continuity, OS and architecture,
 direct-versus-hub topology, whether the client was visible, native phase and
 status, one fresh read result, whether the host call ran, close result and
 the same-service publication and descriptor observations. Retain fine-grained
-evidence privately. This offline checkpoint precedes any native procedure,
-production wiring or change to existing gates.
+evidence privately. Configured Workbench and Rig Check runtime parity, direct
+versus populated-hub coverage, and Intel/Catalina runtime acceptance remain
+open under [#298](https://github.com/guirossibrum/VariaxWorkbench/issues/298).
 
 [Existing recovery design](../podxt-macos-connection-design.md#recovery-when-unconfigured)
