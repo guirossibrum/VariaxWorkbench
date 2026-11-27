@@ -57,8 +57,8 @@ fn load_startup(
 
 mod tests {
     use super::super::{
-        BANKS, Duration, UNIX_EPOCH, fs, synthetic_backup,
-        tests::{defaults, record_unchecked_archive},
+        BANKS, Duration, UNIX_EPOCH, fs, record_unchecked_archive, synthetic_backup,
+        tests::defaults,
     };
     use super::*;
     use line6_devices::family::variax::{

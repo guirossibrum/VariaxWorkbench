@@ -23,8 +23,9 @@ Earlier captures from floating windows using test presets with device discovery 
 - **Variax editor.** Edit models, pickups, wiring, and tuning. Browse banks and
   collections, undo changes, and save files offline. New tabs start with your
   latest complete download, factory presets from a selected firmware archive,
-  or an empty editor. The editor and Rig Check include a
-  [model library](assets/variax-models/SOURCES.md) for rendering programs. The
+  or an empty editor. A verified Variax 3.10 archive also supplies a read-only
+  selector reference for the ten fixed model banks. The editor and Rig Check
+  include a [model library](assets/variax-models/SOURCES.md) for rendering programs. The
   editor also uses it to offer standard pickup positions offline.
 - **PODxt editor.** Verified connections open on the playing tone, with saved
   channels beside the stage. Offline, the editor opens a remembered library
