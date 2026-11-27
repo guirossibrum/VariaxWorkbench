@@ -357,7 +357,7 @@ mod live {
             }
             Ok(VariaxDriverBinding::Unbound) => {
                 if let Err(error) = run_if_unlocked(Gate::IdentityRequest, || {
-                    reattach_variax_driver(rig, path, address)
+                    reattach_variax_driver(rig, path, address, cancel)
                 }) {
                     let error = format!("Could not restore the guitar interface driver: {error}");
                     return if matches!(binding(), Ok(VariaxDriverBinding::Unbound)) {
