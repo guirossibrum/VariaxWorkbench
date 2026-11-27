@@ -23,6 +23,7 @@ struct FakeSnapshot {
     address: Option<u8>,
     registry_id: Option<u64>,
     interfaces_unavailable: bool,
+    readiness_reason: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -59,6 +60,10 @@ impl PresenceSource for FakePresence {
 
     fn usb_open_candidate(&self, _: &str) -> bool {
         !self.0.borrow().interfaces_unavailable
+    }
+
+    fn usb_readiness_reason(&self, _: &str) -> Option<String> {
+        self.0.borrow().readiness_reason.clone()
     }
 
     fn simulated_identity(&self, job: &SimulatedJob) -> Option<SimulatedOutcome> {
@@ -235,6 +240,29 @@ fn passive_pod_inventory_stays_visible_without_interfaces_or_access() {
     tick(&ctx, &mut app);
     assert_eq!(source.0.borrow().completed.len(), 1);
     assert!(entries(&app)[0].2.verified_attachment().is_none());
+}
+
+#[test]
+fn passive_readiness_reason_updates_without_an_identity_job() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    source.0.borrow_mut().registry_id = Some(30);
+    source.0.borrow_mut().interfaces_unavailable = true;
+
+    for reason in [
+        "The physical USB route is unavailable.",
+        "USB inventory did not confirm both MIDI interfaces.",
+    ] {
+        source.0.borrow_mut().readiness_reason = Some(reason.into());
+        tick(&ctx, &mut app);
+        let (_, _, entry) = entries(&app)[0];
+        assert_eq!(entry.device.support, DeviceSupport::UsbOnly);
+        assert_eq!(
+            entry.device.guitar_status.as_deref(),
+            Some(format!("Guitar: {reason}").as_str())
+        );
+    }
+    assert!(source.0.borrow().completed.is_empty());
 }
 
 #[test]

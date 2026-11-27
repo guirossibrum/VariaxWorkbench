@@ -32,7 +32,10 @@ pub use live_read::{
     listen_channel_recall, read_live, read_live_tracking_reply, tuner_window,
 };
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
-pub use procedures::{check_live_identity, identify_podxt_live, read_stored_tone, restore_channel};
+pub use procedures::{
+    check_live_identity, discover_unique_identity, identify_podxt_live, read_stored_tone,
+    restore_channel,
+};
 use procedures::{
     identify_podxt, read_edit_buffer, remaining, request_tone, send_control, wait_tone,
 };

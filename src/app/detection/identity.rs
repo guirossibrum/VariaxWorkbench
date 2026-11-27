@@ -373,14 +373,21 @@ mod live {
 #[cfg(all(feature = "usb", any(test, target_os = "linux", target_os = "macos")))]
 mod pod {
     use super::*;
+    #[cfg(any(test, target_os = "linux"))]
     use line6_devices::family::podxt::PodxtRequest;
     use line6_devices::gate::{GatePolicy, Operation};
+    #[cfg(any(test, target_os = "linux"))]
     use line6_devices::identity::Identity;
+    #[cfg(any(test, target_os = "linux"))]
     use line6_devices::midi::Event;
-    use line6_devices::session::{Link, POLL, Quiet, Session};
+    #[cfg(any(test, target_os = "linux"))]
+    use line6_devices::session::POLL;
+    use line6_devices::session::{Link, Quiet, Session};
+    #[cfg(any(test, target_os = "linux"))]
     use std::time::Duration;
     use variax_workbench::hardware_gates::{Gate, is_locked};
 
+    #[cfg(any(test, target_os = "linux"))]
     const IDENTITY_WINDOW: Duration = Duration::from_secs(3);
 
     struct IdentityOnly;
@@ -391,12 +398,12 @@ mod pod {
         }
     }
 
-    #[cfg(any(test, target_os = "linux"))]
-    pub(super) fn identify(
-        link: impl Link,
-        cancel: &AtomicBool,
-    ) -> Result<Option<FirmwareNotice>, String> {
-        identify_with_policy(link, cancel, &IdentityOnly, false)
+    fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
+        if cancel.load(Ordering::Relaxed) {
+            Err("Identification cancelled.".into())
+        } else {
+            Ok(())
+        }
     }
 
     #[cfg(any(test, target_os = "macos"))]
@@ -404,84 +411,53 @@ mod pod {
         link: impl Link,
         cancel: &AtomicBool,
     ) -> Result<Option<FirmwareNotice>, String> {
-        identify_with_policy(link, cancel, &IdentityOnly, true)
+        let mut quiet = Quiet;
+        let mut session = Session::new(link, &IdentityOnly, &mut quiet);
+        let reply = line6_devices::family::podxt::discover_unique_identity(&mut session, || {
+            check_cancel(cancel)
+        })?;
+        Ok(FirmwareNotice::podxt(&reply))
     }
 
+    #[cfg(any(test, target_os = "linux"))]
+    pub(super) fn identify(
+        link: impl Link,
+        cancel: &AtomicBool,
+    ) -> Result<Option<FirmwareNotice>, String> {
+        identify_with_policy(link, cancel, &IdentityOnly)
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
     fn identify_with_policy(
-        mut link: impl Link,
+        link: impl Link,
         cancel: &AtomicBool,
         policy: &dyn GatePolicy,
-        macos_startup: bool,
     ) -> Result<Option<FirmwareNotice>, String> {
         let mut log = Quiet;
-        let mut session = Session::new(&mut link, policy, &mut log);
+        let mut session = Session::new(link, policy, &mut log);
         session.listen(Duration::from_millis(200))?;
-        let check_cancel = || {
-            if cancel.load(Ordering::Relaxed) {
-                Err("Identification cancelled.".to_owned())
-            } else {
-                Ok(())
-            }
-        };
-        check_cancel()?;
-        let packets_before = session.packets_in;
-        let orphans_before = session.assembler.orphans;
+        check_cancel(cancel)?;
         session.send(PodxtRequest::Identity)?;
-        let mut last_packet = session.link.elapsed();
-        let mut until = last_packet + IDENTITY_WINDOW;
-        let mut can_resend = macos_startup;
+        let until = session.link.elapsed() + IDENTITY_WINDOW;
         let mut identity = None;
-        let mut malformed_identity = 0;
-        let mut other_messages = 0;
         while let Some(remaining) = until
             .checked_sub(session.link.elapsed())
             .filter(|time| !time.is_zero())
         {
-            check_cancel()?;
-            let quiet_for = session.link.elapsed().saturating_sub(last_packet);
-            if can_resend
-                && identity.is_none()
-                && session.orphaned_then_quiet(orphans_before, quiet_for)
-            {
-                session.send(PodxtRequest::Identity)?;
-                can_resend = false;
-                until = session.link.elapsed() + IDENTITY_WINDOW;
-                continue;
-            }
+            check_cancel(cancel)?;
             if let Some(events) = session.poll(remaining.min(POLL))? {
-                last_packet = session.link.elapsed();
                 for event in events {
-                    if let Event::Sysex(frame) = &event {
-                        if let Some(reply) = Identity::parse(frame) {
-                            if identity.replace(reply).is_some() {
-                                return Err("More than one PODxt identity answered.".into());
-                            }
-                            continue;
-                        }
-                        if matches!(frame.as_slice(), [0xf0, 0x7e, _, 0x06, 0x02, ..]) {
-                            malformed_identity += 1;
-                            continue;
-                        }
+                    if let Event::Sysex(frame) = event
+                        && let Some(reply) = Identity::parse(&frame)
+                        && identity.replace(reply).is_some()
+                    {
+                        return Err("More than one PODxt identity answered.".into());
                     }
-                    other_messages += 1;
                 }
             }
         }
-        check_cancel()?;
-        let reply = identity.ok_or_else(|| {
-            if !macos_startup {
-                return "No PODxt identity answered.".to_owned();
-            }
-            let packets = session.packets_in - packets_before;
-            let orphans = session.assembler.orphans - orphans_before;
-            if packets == 0 {
-                return "No PODxt identity answered. No receive chunks in three seconds.".into();
-            }
-            format!(
-                "No PODxt identity answered. Receive chunks: {packets}, orphan bytes: {orphans}, \
-                 malformed identity frames: {malformed_identity}, other messages: {other_messages}."
-            )
-        })?;
+        check_cancel(cancel)?;
+        let reply = identity.ok_or("No PODxt identity answered.")?;
         Ok(FirmwareNotice::podxt(&reply))
     }
 
@@ -560,9 +536,7 @@ mod pod {
                 }
             }
             let mut link = FakeMidi::default();
-            assert!(
-                identify_with_policy(&mut link, &AtomicBool::new(false), &Denied, false).is_err()
-            );
+            assert!(identify_with_policy(&mut link, &AtomicBool::new(false), &Denied).is_err());
             assert!(link.writes.is_empty());
         }
 

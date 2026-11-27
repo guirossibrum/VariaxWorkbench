@@ -311,9 +311,18 @@ impl<'a, L: Link> Session<'a, L> {
     /// Logs everything that arrives for `window`. Sends nothing.
     /// Returns a tally of every controller message seen.
     pub fn listen(&mut self, window: Duration) -> Result<ControllerTally, String> {
+        self.listen_checked(window, || Ok(()))
+    }
+
+    pub(crate) fn listen_checked(
+        &mut self,
+        window: Duration,
+        check: impl Fn() -> Result<(), String>,
+    ) -> Result<ControllerTally, String> {
         let mut tally = ControllerTally::default();
         let end = self.link.elapsed() + window;
         while self.link.elapsed() < end {
+            check()?;
             let left = end.saturating_sub(self.link.elapsed());
             if let Some(events) = self.poll(left.min(POLL))? {
                 for event in events {

@@ -33,11 +33,10 @@ struct FakeLink<'a> {
 }
 
 impl Rig {
-    fn run(&self, kind: JobKind, silence_delay: Option<Duration>) -> Outcome {
+    fn run(&self, kind: JobKind) -> Outcome {
         identify_on(
             kind,
             &self.cancel,
-            silence_delay,
             |side| {
                 self.events.borrow_mut().push(Event::Open(side));
                 if let Some((expected, error)) = self.open_failure
@@ -149,50 +148,37 @@ impl Drop for FakeLink<'_> {
     }
 }
 
-const RIG_CHECK_DELAY: Option<Duration> = Some(Duration::from_secs(2));
-
 fn split_reply(reply: Vec<u8>) -> Vec<Vec<u8>> {
     reply.chunks(16).map(<[u8]>::to_vec).collect()
 }
 
 #[test]
-fn rig_check_policy_retries_first_silence_on_the_same_guitar_link() {
-    for (kind, pod) in [
-        (JobKind::Initial, Some("3.01")),
-        (JobKind::RefreshGuitar, None),
-    ] {
-        let rig = Rig {
-            guitar_replies: vec![vec![], split_reply(guitar_reply())],
-            ..Default::default()
-        };
-        assert!(matches!(
-            rig.run(kind, RIG_CHECK_DELAY),
-            Outcome::Finished { pod_firmware, guitar: Guitar::Verified("3.10") } if pod_firmware == pod
-        ));
-        assert_eq!(
-            rig.guitar_requests(),
-            [Duration::ZERO, Duration::from_secs(5)]
-        );
-        let mut expected = vec![
+fn startup_matches_the_successful_rig_check_request_sequence() {
+    let rig = Rig {
+        guitar_replies: vec![vec![], split_reply(guitar_reply())],
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::Initial),
+        Outcome::Finished {
+            pod_firmware: Some("3.01"),
+            guitar: Guitar::Verified("3.10"),
+        }
+    ));
+    assert_eq!(
+        *rig.events.borrow(),
+        [
+            Event::Open(Interface::Podxt),
+            Event::Identity(Interface::Podxt, Duration::from_millis(200)),
+            Event::Finish(Interface::Podxt),
+            Event::Drop(Interface::Podxt),
             Event::Open(Interface::Variax),
             Event::Identity(Interface::Variax, Duration::ZERO),
             Event::Identity(Interface::Variax, Duration::from_secs(5)),
             Event::Finish(Interface::Variax),
             Event::Drop(Interface::Variax),
-        ];
-        if kind == JobKind::Initial {
-            expected.splice(
-                0..0,
-                [
-                    Event::Open(Interface::Podxt),
-                    Event::Identity(Interface::Podxt, Duration::from_millis(200)),
-                    Event::Finish(Interface::Podxt),
-                    Event::Drop(Interface::Podxt),
-                ],
-            );
-        }
-        assert_eq!(*rig.events.borrow(), expected);
-    }
+        ]
+    );
 }
 
 #[test]
@@ -221,7 +207,7 @@ fn pod_startup_distinguishes_silent_and_unaccepted_receive_data() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+            rig.run(JobKind::Initial),
             Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
                 if reason.strip_prefix("No PODxt identity answered. ") == Some(expected_detail)
         ));
@@ -237,7 +223,7 @@ fn pod_startup_retries_orphan_tail_on_the_open_link_then_verifies_split_reply() 
         ..Default::default()
     };
     assert!(matches!(
-        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        rig.run(JobKind::Initial),
         Outcome::Finished {
             pod_firmware: Some("3.01"),
             guitar: Guitar::Verified("3.10")
@@ -270,7 +256,7 @@ fn pod_startup_stops_after_one_retry() {
         ..Default::default()
     };
     assert!(matches!(
-        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        rig.run(JobKind::Initial),
         Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
             if reason == "No PODxt identity answered. Receive chunks: 2, orphan bytes: 2, malformed identity frames: 0, other messages: 0."
     ));
@@ -286,7 +272,7 @@ fn pod_startup_cancellation_at_retry_boundary_or_during_retry_releases_link() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+            rig.run(JobKind::Initial),
             Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
                 if reason == "Identification cancelled."
         ));
@@ -302,11 +288,25 @@ fn pod_startup_does_not_retry_a_pre_drain_orphan() {
         ..Default::default()
     };
     assert!(matches!(
-        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        rig.run(JobKind::Initial),
         Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
             if reason == "No PODxt identity answered. No receive chunks in three seconds."
     ));
     rig.assert_pod_only(&[200]);
+}
+
+#[test]
+fn pod_startup_cancellation_during_passive_drain_sends_nothing() {
+    let rig = Rig {
+        cancel_pod_at: Some(Duration::from_millis(100)),
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::Initial),
+        Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
+            if reason == "Identification cancelled."
+    ));
+    rig.assert_pod_only(&[]);
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn pod_startup_rejects_duplicate_replies_after_retry() {
         ..Default::default()
     };
     assert!(matches!(
-        rig.run(JobKind::Initial, DISCOVERY_SILENCE_DELAY),
+        rig.run(JobKind::Initial),
         Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
             if reason == "More than one PODxt identity answered."
     ));
@@ -327,16 +327,29 @@ fn pod_startup_rejects_duplicate_replies_after_retry() {
 
 #[test]
 fn no_answer_is_bounded_by_the_selected_silence_policy() {
-    for (policy, count) in [(DISCOVERY_SILENCE_DELAY, 1), (RIG_CHECK_DELAY, 2)] {
-        let rig = Rig::default();
+    for (kind, expected) in [
+        (
+            JobKind::Initial,
+            vec![Duration::ZERO, Duration::from_secs(5)],
+        ),
+        (JobKind::RefreshGuitar, vec![Duration::ZERO]),
+    ] {
+        let rig = Rig {
+            guitar_replies: vec![vec![], vec![], split_reply(guitar_reply())],
+            ..Default::default()
+        };
         assert!(matches!(
-            rig.run(JobKind::RefreshGuitar, policy),
+            rig.run(kind),
             Outcome::Finished {
                 guitar: Guitar::Silent,
                 ..
             }
         ));
-        assert_eq!(rig.guitar_requests().len(), count);
+        assert_eq!(rig.guitar_requests(), expected);
+        assert!(rig.events.borrow().ends_with(&[
+            Event::Finish(Interface::Variax),
+            Event::Drop(Interface::Variax),
+        ]));
     }
 }
 
@@ -347,7 +360,7 @@ fn existing_orphan_tail_resend_is_still_available() {
         ..Default::default()
     };
     assert!(matches!(
-        rig.run(JobKind::RefreshGuitar, None),
+        rig.run(JobKind::RefreshGuitar),
         Outcome::Finished {
             guitar: Guitar::Verified("3.10"),
             ..
@@ -367,7 +380,7 @@ fn malformed_or_incomplete_reply_does_not_trigger_a_silence_resend() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
+            rig.run(JobKind::Initial),
             Outcome::Finished {
                 guitar: Guitar::Unavailable(reason),
                 ..
@@ -387,7 +400,7 @@ fn unverified_identity_is_reported_without_a_resend() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
+            rig.run(JobKind::RefreshGuitar),
             Outcome::Finished { guitar: Guitar::Unverified(reply), .. } if reply.is_variax == is_variax
         ));
         assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
@@ -398,7 +411,7 @@ fn unverified_identity_is_reported_without_a_resend() {
 fn cancellation_before_open_reads_nothing() {
     let rig = Rig::default();
     rig.cancel.store(true, Ordering::Relaxed);
-    assert!(matches!(rig.run(JobKind::Initial, None), Outcome::Deferred));
+    assert!(matches!(rig.run(JobKind::Initial), Outcome::Deferred));
     assert!(rig.events.borrow().is_empty());
 }
 
@@ -410,7 +423,7 @@ fn cancellation_during_wait_or_backoff_releases_without_resending() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
+            rig.run(JobKind::Initial),
             Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
                 if reason == "Identification cancelled."
         ));
@@ -430,7 +443,7 @@ fn stale_attachment_is_rejected_before_sending_on_interface_one() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(kind, RIG_CHECK_DELAY),
+            rig.run(kind),
             Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
                 if reason.contains("attachment changed")
         ));
@@ -452,7 +465,7 @@ fn guitar_open_refusals_name_the_stage_without_sending_identity() {
                 open_failure: Some((Interface::Variax, error)),
                 ..Default::default()
             };
-            let outcome = rig.run(kind, DISCOVERY_SILENCE_DELAY);
+            let outcome = rig.run(kind);
             assert!(matches!(
                 outcome,
                 Outcome::Finished { pod_firmware: actual, guitar: Guitar::Unavailable(reason) }
@@ -478,7 +491,7 @@ fn failed_release_prevents_the_next_open_or_a_verified_result() {
             ..Default::default()
         };
         assert!(matches!(
-            rig.run(JobKind::Initial, None),
+            rig.run(JobKind::Initial),
             Outcome::Finished {
                 guitar: Guitar::CleanupFailed,
                 ..

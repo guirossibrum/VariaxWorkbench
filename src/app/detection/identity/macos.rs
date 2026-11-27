@@ -13,9 +13,8 @@ enum Interface {
     Variax,
 }
 
-// Rig Check 3.1 has its own approval for a silence resend.
-// Workbench discovery retains the existing orphan-tail resend.
-const DISCOVERY_SILENCE_DELAY: Option<Duration> = None;
+// Automatic connection follows the silent first attempt in Rig Check 3.1.
+const STARTUP_SILENCE_DELAY: Duration = Duration::from_secs(2);
 
 struct GuitarIdentityOnly;
 impl GatePolicy for GuitarIdentityOnly {
@@ -28,7 +27,7 @@ impl GatePolicy for GuitarIdentityOnly {
 pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
     use line6_devices::{
         device_lock::{DeviceLock, LockError},
-        transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE, macos, macos_inventory},
+        transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE, macos},
     };
     use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
@@ -54,14 +53,22 @@ pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
                 Ok(identify_on(
                     job.kind,
                     cancel,
-                    DISCOVERY_SILENCE_DELAY,
                     |side| {
                         let spec = match side {
                             Interface::Podxt => macos::PODXT_MIDI,
                             Interface::Variax => VARIAX_VIA_PODXT_LIVE,
                         };
-                        macos_inventory::verify_candidate(&rig, registry_id, &attachment)?;
-                        UsbInterfaceLink::open_attachment_borrowed(spec, path, address, &rig)
+                        macos::with_ready_attachment(&rig, registry_id, &attachment, |matched| {
+                            if cancel.load(Ordering::Relaxed) {
+                                return Err("Identification cancelled.".into());
+                            }
+                            UsbInterfaceLink::open_attachment_borrowed(
+                                spec,
+                                &matched.path,
+                                matched.address,
+                                &rig,
+                            )
+                        })
                     },
                     UsbInterfaceLink::finish,
                 ))
@@ -74,7 +81,6 @@ pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
 fn identify_on<L: Link>(
     kind: JobKind,
     cancel: &AtomicBool,
-    silence_delay: Option<Duration>,
     mut open: impl FnMut(Interface) -> Result<L, String>,
     finish: impl Fn(&mut L) -> Result<(), String>,
 ) -> Outcome {
@@ -119,6 +125,7 @@ fn identify_on<L: Link>(
             .map_err(|error| format!("Variax USB interface 1 open failed: {error}"))?;
         let mut quiet = Quiet;
         let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
+        let silence_delay = (kind == JobKind::Initial).then_some(STARTUP_SILENCE_DELAY);
         let reply = variax::identify_if_present_cancellable(&mut session, silence_delay, &stopping);
         if let Err(error) = finish(&mut link) {
             eprintln!("PODxt Live interface 1 cleanup: {error}");

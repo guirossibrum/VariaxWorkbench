@@ -104,6 +104,10 @@ pub(super) trait PresenceSource {
         true
     }
 
+    fn usb_readiness_reason(&self, _path: &str) -> Option<String> {
+        None
+    }
+
     #[cfg(test)]
     fn simulated_identity(&self, _job: &Job) -> Option<Outcome> {
         None
@@ -130,11 +134,20 @@ impl PresenceSource for CachedUsbPresence {
 }
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
-use line6_devices::transport::usb::macos_inventory::{ObservedPodxt, inventory};
+use line6_devices::transport::usb::{
+    macos::{Attachment as MacUsbAttachment, ready_attachment},
+    macos_inventory::{ObservedPodxt, inventory},
+};
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 #[derive(Default)]
-struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, (ObservedPodxt, bool)>>);
+struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, MacUsbObservation>>);
+
+#[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+struct MacUsbObservation {
+    record: ObservedPodxt,
+    readiness: Result<MacUsbAttachment, String>,
+}
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 impl PresenceSource for MacUsbPresence {
@@ -164,7 +177,10 @@ impl PresenceSource for MacUsbPresence {
                     );
                 snapshot.insert(
                     path.clone(),
-                    (record.clone(), record.attachment(&records).is_some()),
+                    MacUsbObservation {
+                        record: record.clone(),
+                        readiness: ready_attachment(record, &records),
+                    },
                 );
                 UsbDevice {
                     sysfs_name: path,
@@ -179,18 +195,22 @@ impl PresenceSource for MacUsbPresence {
     }
 
     fn usb_address(&self, path: &str) -> Option<u8> {
-        self.0.borrow().get(path)?.0.address
+        self.0.borrow().get(path)?.record.address
     }
 
     fn usb_registry_id(&self, path: &str) -> Option<u64> {
-        Some(self.0.borrow().get(path)?.0.registry_id)
+        Some(self.0.borrow().get(path)?.record.registry_id)
     }
 
     fn usb_open_candidate(&self, path: &str) -> bool {
         self.0
             .borrow()
             .get(path)
-            .is_some_and(|(_, eligible)| *eligible)
+            .is_some_and(|observation| observation.readiness.is_ok())
+    }
+
+    fn usb_readiness_reason(&self, path: &str) -> Option<String> {
+        self.0.borrow().get(path)?.readiness.as_ref().err().cloned()
     }
 }
 
@@ -498,6 +518,11 @@ impl DetectionService {
             };
             let registry_id = self.source.usb_registry_id(&path);
             let open_candidate = self.source.usb_open_candidate(&path);
+            let not_ready = || {
+                self.source
+                    .usb_readiness_reason(&path)
+                    .unwrap_or_else(|| "PODxt Live USB interfaces unavailable".into())
+            };
             let make_bridge = |identity_started: bool| {
                 automatic.then(|| {
                     let mut bridge = Bridge::new(
@@ -506,7 +531,7 @@ impl DetectionService {
                             && (self.identify.is_some() || cfg!(test)),
                     );
                     if !open_candidate {
-                        bridge.status = "PODxt Live USB interfaces unavailable".into();
+                        bridge.status = not_ready();
                     } else if identity_started {
                         bridge.status = "PODxt Live USB identity unverified".into();
                     }
@@ -520,7 +545,12 @@ impl DetectionService {
                         && existing.key.registry_id == registry_id =>
                 {
                     let bridge = if existing.open_candidate == open_candidate {
-                        existing.bridge
+                        existing.bridge.map(|mut bridge| {
+                            if !open_candidate {
+                                bridge.status = not_ready();
+                            }
+                            bridge
+                        })
                     } else {
                         make_bridge(existing.identity_started)
                     };

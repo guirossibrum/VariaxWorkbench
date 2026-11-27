@@ -1,6 +1,11 @@
 //! Driverless macOS attachment discovery and non-seizing interface claims.
 
-use super::{InterfaceSpec, VARIAX_VIA_PODXT_LIVE, attachment_path, podxt::SPEC};
+use super::{
+    InterfaceSpec, VARIAX_VIA_PODXT_LIVE, attachment_path,
+    macos_inventory::{ObservedPodxt, inventory},
+    podxt::SPEC,
+};
+use crate::device_lock::DeviceLock;
 
 pub const PODXT_MIDI: InterfaceSpec = SPEC;
 
@@ -32,6 +37,75 @@ pub fn attachments() -> Result<Vec<Attachment>, String> {
             })
         })
         .collect()
+}
+
+/// Select the single PODxt Live the Mac connection flow can verify.
+pub fn single_podxt(devices: &[ObservedPodxt]) -> Result<&ObservedPodxt, String> {
+    single_attachment(devices)
+}
+
+/// Evaluate passive readiness. A candidate still needs the exact USB opener
+/// to verify its active descriptor and claim access.
+pub fn ready_attachment(
+    observed: &ObservedPodxt,
+    devices: &[ObservedPodxt],
+) -> Result<Attachment, String> {
+    let current = single_podxt(devices)?;
+    if !observed.matches_generation(current) {
+        return Err("The PODxt Live USB attachment changed.".into());
+    }
+    if current.route().is_none() {
+        return Err("PODxt Live detected, but its physical USB route is unavailable.".into());
+    }
+    if current.address.is_none() {
+        return Err("PODxt Live detected, but its USB address is unavailable.".into());
+    }
+    current.attachment(devices).ok_or_else(|| {
+        "PODxt Live detected, but the macOS USB inventory did not confirm both MIDI interfaces."
+            .into()
+    })
+}
+
+/// Reconcile the ready registry candidate with the exact native USB route.
+pub fn verify_usb_route(candidate: &Attachment) -> Result<(), String> {
+    check_exact_route(candidate, &attachments()?)
+}
+
+/// Recheck readiness and the generation under the rig lock at each open.
+pub fn with_ready_attachment<T>(
+    _rig: &DeviceLock,
+    registry_id: u64,
+    expected: &Attachment,
+    open: impl FnOnce(&Attachment) -> Result<T, String>,
+) -> Result<T, String> {
+    let devices = inventory()?;
+    let current = single_podxt(&devices)?;
+    if current.registry_id != registry_id
+        || current.route() != Some(expected.path.as_str())
+        || current.address != Some(expected.address)
+    {
+        return Err("The PODxt Live USB attachment changed.".into());
+    }
+    let candidate = ready_attachment(current, &devices)?;
+    verify_usb_route(&candidate)?;
+    open(&candidate)
+}
+
+fn single_attachment<T>(attachments: &[T]) -> Result<&T, String> {
+    let [attachment] = attachments else {
+        return Err(format!(
+            "Expected one PODxt Live on USB, found {}.",
+            attachments.len()
+        ));
+    };
+    Ok(attachment)
+}
+
+fn check_exact_route(expected: &Attachment, attachments: &[Attachment]) -> Result<(), String> {
+    if single_attachment(attachments)? != expected {
+        return Err("The PODxt Live USB attachment changed.".into());
+    }
+    Ok(())
 }
 
 fn check_available() -> Result<(), String> {
@@ -94,6 +168,41 @@ mod tests {
                 .unwrap_err()
                 .contains("Test builds")
         );
+    }
+
+    #[test]
+    fn exact_native_route_refuses_absence_ambiguity_and_changed_coordinates() {
+        let original = Attachment {
+            path: "4-2".into(),
+            address: 17,
+        };
+        let new_path = Attachment {
+            path: "4-3".into(),
+            ..original.clone()
+        };
+        let new_address = Attachment {
+            address: 18,
+            ..original.clone()
+        };
+
+        assert!(check_exact_route(&original, std::slice::from_ref(&original)).is_ok());
+        assert!(
+            check_exact_route(&original, &[])
+                .unwrap_err()
+                .contains("found 0")
+        );
+        assert!(
+            check_exact_route(&original, &[original.clone(), new_path.clone()])
+                .unwrap_err()
+                .contains("found 2")
+        );
+        for changed in [new_path, new_address] {
+            assert!(
+                check_exact_route(&original, &[changed])
+                    .unwrap_err()
+                    .contains("attachment changed")
+            );
+        }
     }
 
     #[test]
