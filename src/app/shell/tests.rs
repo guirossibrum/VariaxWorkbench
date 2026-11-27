@@ -642,31 +642,6 @@ fn painted_text(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
     found
 }
 
-struct RawGlyph {
-    text: String,
-    raw: egui::Rect,
-    clip: egui::Rect,
-}
-
-fn raw_glyphs(output: &egui::FullOutput) -> Vec<RawGlyph> {
-    fn walk(shape: &egui::Shape, clip: egui::Rect, found: &mut Vec<RawGlyph>) {
-        match shape {
-            egui::Shape::Text(text) => found.push(RawGlyph {
-                text: text.galley.text().to_owned(),
-                raw: glyph_rect(text),
-                clip,
-            }),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, clip, found)),
-            _ => {}
-        }
-    }
-    let mut found = Vec::new();
-    for clipped in &output.shapes {
-        walk(&clipped.shape, clipped.clip_rect, &mut found);
-    }
-    found
-}
-
 fn text_overlaps(left: egui::Rect, right: egui::Rect) -> bool {
     let shared = left.intersect(right);
     shared.width() > 1.0 && shared.height() > 1.0
@@ -949,7 +924,7 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
 
 #[test]
 fn clipped_tuning_scale_does_not_count_as_a_footer_overlap() {
-    let (ctx, output) = shell_at(true, false, false, 1120.0, 760.0, 1.0);
+    let (ctx, mut output) = shell_at(true, false, false, 1120.0, 760.0, 1.0);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1120.0, 760.0));
     let footer = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status"))
         .expect("footer")
@@ -963,40 +938,30 @@ fn clipped_tuning_scale_does_not_count_as_a_footer_overlap() {
         .find(|(text, _)| text == &caption)
         .expect("build caption")
         .1;
-    let overlapping: Vec<_> = raw_glyphs(&output)
-        .into_iter()
-        .filter(|glyph| {
-            glyph.text != caption
-                && text_overlaps(build, glyph.raw)
-                && footer.contains(glyph.raw.center())
-        })
-        .collect();
-    assert!(
-        overlapping.iter().any(|glyph| glyph.text == "+12"),
-        "unclipped scale label did not reach the build caption: {:?}",
-        overlapping
-            .iter()
-            .map(|glyph| glyph.text.as_str())
-            .collect::<Vec<_>>()
-    );
-    for glyph in &overlapping {
-        let visible_part = glyph.raw.intersect(glyph.clip);
-        let still_visible = visible_part.width() > 0.5
-            && visible_part.height() > 0.5
-            && text_overlaps(build, visible_part);
-        assert!(
-            !still_visible,
-            "{} remains painted over the build caption: raw {:?} clip {:?} visible {:?}",
-            glyph.text, glyph.raw, glyph.clip, visible_part
-        );
-    }
+    let galley = ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            "+12".into(),
+            egui::FontId::proportional(12.0),
+            egui::Color32::WHITE,
+        )
+    });
+    let mut scale = egui::epaint::TextShape::new(egui::Pos2::ZERO, galley, egui::Color32::WHITE);
+    scale.pos = build.center() - glyph_rect(&scale).center().to_vec2();
+    assert!(text_overlaps(build, glyph_rect(&scale)));
+    output.shapes.push(egui::epaint::ClippedShape {
+        clip_rect: egui::Rect::from_min_max(screen.min, egui::pos2(screen.right(), footer.top())),
+        shape: egui::Shape::Text(scale),
+    });
+    let clipped = painted_text(&output);
+    assert_build_number("clipped +12", screen, footer, &clipped);
+    assert_eq!(footer_overlap(&caption, build, footer, &clipped), None);
 
-    let mut canary = visible;
-    let collision = egui::Rect::from_center_size(build.center(), egui::vec2(12.0, 8.0));
-    canary.push(("CANARY".to_owned(), collision));
+    // The identical glyph must count as a collision when its clip is removed.
+    output.shapes.last_mut().unwrap().clip_rect = screen;
+    let unclipped = painted_text(&output);
     assert_eq!(
-        footer_overlap(&caption, build, footer, &canary),
-        Some("CANARY")
+        footer_overlap(&caption, build, footer, &unclipped),
+        Some("+12")
     );
 }
 
