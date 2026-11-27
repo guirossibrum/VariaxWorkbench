@@ -178,7 +178,7 @@ fn require_identity<L: Link>(
     session: &mut Session<L>,
     silence_delay: Option<Duration>,
 ) -> Result<Identified, String> {
-    identify_exchange(session, silence_delay, false)?
+    identify_exchange(session, silence_delay, false, None)?
         .ok_or_else(|| "No reply to the identity request: nothing arrived from the guitar.".into())
 }
 
@@ -187,7 +187,7 @@ pub fn identify_if_present_retrying_silence<L: Link>(
     session: &mut Session<L>,
     delay: Duration,
 ) -> Result<Option<Identified>, String> {
-    identify_exchange(session, Some(delay), true)
+    identify_exchange(session, Some(delay), true, None)
 }
 
 /// The same bounded identity exchange as [`identify`]. A timeout without
@@ -196,18 +196,39 @@ pub fn identify_if_present_retrying_silence<L: Link>(
 pub fn identify_if_present<L: Link>(
     session: &mut Session<L>,
 ) -> Result<Option<Identified>, String> {
-    identify_exchange(session, None, false)
+    identify_exchange(session, None, false, None)
+}
+
+/// Use the Rig Check identity exchange with cancellation. A caller may opt
+/// into the silence resend only when its own workflow allows it.
+pub fn identify_if_present_cancellable<L: Link>(
+    session: &mut Session<L>,
+    silence_delay: Option<Duration>,
+    stopping: &dyn Fn() -> bool,
+) -> Result<Option<Identified>, String> {
+    session.require_expected_sysex();
+    identify_exchange(session, silence_delay, true, Some(stopping))
 }
 
 fn identify_exchange<L: Link>(
     session: &mut Session<L>,
     silence_delay: Option<Duration>,
     distinguish_silence: bool,
+    stopping: Option<&dyn Fn() -> bool>,
 ) -> Result<Option<Identified>, String> {
+    let check = || {
+        if stopping.is_some_and(|stopping| stopping()) {
+            Err("Identification cancelled.".into())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
     let orphans_before = session.assembler.orphans;
     let packets_before = session.packets_in;
     session.send(VariaxRequest::Identity)?;
-    let (reply, requests) = match session.wait_for(WINDOW, is_identity_reply, true)? {
+    let first_wait = session.wait_for_checked(WINDOW, is_identity_reply, true, check)?;
+    let (reply, requests) = match first_wait {
         Wait::Found(reply) => (reply, 1),
         _ => {
             let lost = session.assembler.orphans - orphans_before;
@@ -215,24 +236,34 @@ fn identify_exchange<L: Link>(
             if lost != 0 {
                 session.note(format!(
                     "reply tail without its start ({lost} orphan bytes): first packet lost. \
-                     Sending the identity request once more."
+                 Sending the identity request once more."
                 ));
             } else if let Some(delay) = silence_delay
-                && session.packets_in == packets_before
+                && first_silent
             {
                 session.note(format!(
                     "No Variax identity traffic. Waiting {} ms before one more request.",
                     delay.as_millis(),
                 ));
-                session.link.pause(delay);
+                if stopping.is_some() {
+                    let end = session.link.elapsed() + delay;
+                    while session.link.elapsed() < end {
+                        check()?;
+                        let left = end.saturating_sub(session.link.elapsed());
+                        session.link.pause(left.min(crate::session::POLL));
+                    }
+                } else {
+                    session.link.pause(delay);
+                }
             } else if distinguish_silence && !first_silent {
                 return Err("The guitar sent data without a valid Variax identity reply.".into());
             } else {
                 return Ok(None);
             }
+            check()?;
             let retry_packets = session.packets_in;
             session.send(VariaxRequest::Identity)?;
-            match session.wait_for(WINDOW, is_identity_reply, false)? {
+            match session.wait_for_checked(WINDOW, is_identity_reply, false, check)? {
                 Wait::Found(reply) => (reply, 2),
                 _ if distinguish_silence && first_silent && session.packets_in == retry_packets => {
                     return Ok(None);
