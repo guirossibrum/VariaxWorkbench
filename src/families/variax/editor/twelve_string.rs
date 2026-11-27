@@ -107,6 +107,12 @@ impl VariaxEditor {
             )
             .inner
             .on_hover_text("Reset all 12-string detune amounts to zero");
+        if reset.gained_focus() && !ui.clip_rect().contains_rect(reset.rect) {
+            reset.scroll_to_me_animation(
+                Some(egui::Align::Center),
+                egui::style::ScrollAnimation::none(),
+            );
+        }
         #[cfg(test)]
         self.tuning_widgets.insert("Zero detune", reset.rect);
         if reset.clicked() {
@@ -180,6 +186,12 @@ impl VariaxEditor {
                 STRINGS[(id - base) as usize].0,
                 control.label()
             ));
+        if response.gained_focus() && !ui.clip_rect().contains_rect(response.rect) {
+            response.scroll_to_me_animation(
+                Some(egui::Align::Center),
+                egui::style::ScrollAnimation::none(),
+            );
+        }
         if !editing {
             let center = cell.left_center() + egui::vec2(11.0, 0.0);
             let painter = ui.painter();
