@@ -405,7 +405,9 @@ fn same_root_interrupted_store_blocks_resume_before_revalidation() {
     );
     assert!(run.rig_state.contains("pending rig recovery"));
     assert_eq!(person.notices.len(), 2);
-    assert!(person.notices[1].contains(&*interrupted.path.to_string_lossy()));
+    // Continuation discovers pending reports in canonicalized directories.
+    let interrupted_report = interrupted.path.canonicalize().unwrap();
+    assert!(person.notices[1].contains(&*interrupted_report.to_string_lossy()));
     assert!(person.notices[1].contains("verify the affected slot"));
     assert!(person.cards.is_empty());
     assert!(rig.borrow().written.is_empty());
