@@ -222,6 +222,7 @@ pub struct Plan {
     checkpoint_sha256: String,
     original_path: PathBuf,
     pre_write_recovery: bool,
+    incomplete_live_edit: bool,
     pub target: StepId,
     pub rig: String,
     pub notes: Vec<String>,
@@ -326,6 +327,9 @@ impl Plan {
     }
 
     pub(super) fn restore_ready(&self, state: &RigState) -> Result<(), String> {
+        if self.incomplete_live_edit {
+            return Err("The prior live edit was interrupted or failed. Use Resume to capture the current rig state.".into());
+        }
         if self.restored.podxt_identity.is_none()
             || (state.channel().is_some() && self.restored.start_tone.is_none())
             || state.preset().is_some() != self.restored.variax_identity.is_some()
@@ -716,6 +720,15 @@ fn proven_pre_send(step: &StepRecord, current: Option<StepId>, legacy: bool) -> 
         }
 }
 
+fn incomplete_live_edit(run: &RunRecord, current: Option<StepId>) -> bool {
+    let is_live = |id| catalogue::step(id).is_some_and(|step| step.risk == Risk::Live);
+    current.is_some_and(is_live)
+        || run
+            .steps
+            .iter()
+            .any(|step| is_live(step.id) && step.started.is_some() && !step.outcome.passed())
+}
+
 fn check_prior_actions(
     run: &RunRecord,
     current: Option<StepId>,
@@ -730,7 +743,7 @@ fn check_prior_actions(
     }
     let risk = |id| catalogue::step(id).expect("saved step definition").risk;
     if current.is_some_and(|id| {
-        matches!(risk(id), Risk::Live | Risk::Save)
+        (risk(id) == Risk::Save || legacy && risk(id) == Risk::Live)
             && !proven_pre_send(run.step(id), current, legacy)
     }) {
         return Err("The report was interrupted during a live edit or store. Verify the rig and any affected slots manually.".into());
@@ -762,11 +775,7 @@ fn check_prior_actions(
             ));
         }
     }
-    if run
-        .steps
-        .iter()
-        .any(|step| risk(step.id) == Risk::Live && step.started.is_some() && !step.outcome.passed())
-    {
+    if legacy && incomplete_live_edit(run, current) {
         return Err("A prior live edit could not be verified. Check the rig state before starting another run.".into());
     }
     if run.prior_attempts.iter().any(|step| {
@@ -951,6 +960,7 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         checkpoint_sha256: sha256_hex(checkpoint.as_bytes()),
         original_path,
         pre_write_recovery: stopped_before_guard || saved.pre_write_recovery,
+        incomplete_live_edit: incomplete_live_edit(&run, current),
         target,
         rig: saved.rig_description,
         notes: Vec::new(),

@@ -1097,3 +1097,31 @@ fn start_new_checks_an_older_interrupted_store_before_offering_the_newer_restore
         newer.sink.last
     );
 }
+
+#[test]
+fn ordinary_resume_offers_a_failed_or_interrupted_live_step_without_auto_restore() {
+    let live_edit = StepId(4, 2);
+    for interrupted in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.stop_after(live_edit, false);
+        fixture.run.finished = !interrupted;
+        let outcome = if interrupted {
+            fixture.run.current = Some(live_edit);
+            Outcome::NotReached
+        } else {
+            Outcome::Failed("The simulated live readback differed.".into())
+        };
+        fixture.run.step_mut(live_edit).outcome = outcome;
+        fixture.save(false);
+        let plan = open(&fixture.sink.path).unwrap();
+        assert_eq!(plan.target, live_edit);
+        assert!(plan.skips(GUITAR_START));
+        let state_path = fixture.sink.path.with_extension("state");
+        let state = RigState::parse(&std::fs::read_to_string(state_path).unwrap()).unwrap();
+        assert!(
+            plan.restore_ready(&state)
+                .unwrap_err()
+                .contains("prior live edit")
+        );
+    }
+}
