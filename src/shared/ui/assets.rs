@@ -1,8 +1,10 @@
-//! Load committed UI art from `assets/ui`. A missing file draws a placeholder.
+//! Load committed UI art from `assets/ui`, with embedded artwork for the shell.
 
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use eframe::egui::{self, Color32, ColorImage, Rect, TextureHandle, TextureOptions, Vec2, vec2};
+use image::{ImageError, ImageFormat};
 
 use super::theme::{COMPACT, DIM, LINE, RADIUS_CONTROL, RAISED};
 
@@ -72,12 +74,21 @@ fn macos_bundle_artwork(exe: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Load `relative` from `root`. `..` and absolute paths are treated as missing.
+/// Load `relative` from `root`, falling back to embedded shell art for missing files.
+/// `..` and absolute paths are treated as missing.
 pub fn load(ctx: &egui::Context, root: &Path, relative: &str) -> UiImage {
     let Some(path) = contained(root, relative) else {
         return UiImage::missing(relative);
     };
-    let Ok(image) = image::open(&path) else {
+    let image = match image::open(&path) {
+        Ok(image) => Some(image),
+        Err(ImageError::IoError(error)) if error.kind() == ErrorKind::NotFound => {
+            embedded_shell_png(relative)
+                .and_then(|png| image::load_from_memory_with_format(png, ImageFormat::Png).ok())
+        }
+        Err(_) => None,
+    };
+    let Some(image) = image else {
         return UiImage::missing(relative);
     };
     let rgba = image.to_rgba8();
@@ -92,6 +103,17 @@ pub fn load(ctx: &egui::Context, root: &Path, relative: &str) -> UiImage {
         pixels,
         texture: Some(texture),
         missing: false,
+    }
+}
+
+fn embedded_shell_png(relative: &str) -> Option<&'static [u8]> {
+    match relative {
+        "shell/workbench-mark.png" => Some(include_bytes!(
+            "../../../assets/ui/shell/workbench-mark.png"
+        )),
+        "shell/variax.png" => Some(include_bytes!("../../../assets/ui/shell/variax.png")),
+        "shell/podxt-live.png" => Some(include_bytes!("../../../assets/ui/shell/podxt-live.png")),
+        _ => None,
     }
 }
 
@@ -164,6 +186,63 @@ pub fn fitted_size(pixels: [usize; 2], bounds: Vec2) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn loads_exact_approved_shell_art_without_a_source_or_asset_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+        let source = scratch.path().join("absent-source");
+        let root = source.join("assets/ui");
+        assert!(!source.exists());
+        let ctx = egui::Context::default();
+        // SHA-256 values from assets/ui/SOURCES.md.
+        for (name, size, digest) in [
+            (
+                "shell/workbench-mark.png",
+                [128, 128],
+                "c6605b76df17861cbff74eae4b446612218d7d2aed4ad18b7ef12f0120ee30c2",
+            ),
+            (
+                "shell/variax.png",
+                [64, 64],
+                "e282971a7c40ca0ed8b0ed5e62d6cdaf8b36c49825cac59dba7f390b2fbe779e",
+            ),
+            (
+                "shell/podxt-live.png",
+                [64, 64],
+                "223f8d8a9b02c42aaa1542e06283f63a646bf3e126537dcfd0e0bb35bf32ef48",
+            ),
+        ] {
+            let artwork = load(&ctx, &root, name);
+            assert_eq!(artwork.name, name);
+            assert!(!artwork.missing, "{name}");
+            assert_eq!(artwork.pixels, size, "{name}");
+            assert!(artwork.texture.is_some(), "{name}");
+            let png = embedded_shell_png(name).unwrap();
+            assert_eq!(format!("{:x}", Sha256::digest(png)), digest, "{name}");
+        }
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn unavailable_editor_art_and_invalid_shell_paths_stay_missing() {
+        let scratch = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        for name in [
+            "pod-farm/sine-chorus.png",
+            "bodies/wireframe/strat.png",
+            "shell/unlisted.png",
+            "elsewhere/variax.png",
+            "../shell/variax.png",
+            "shell/../shell/variax.png",
+            "/shell/variax.png",
+            "",
+        ] {
+            let artwork = load(&ctx, scratch.path(), name);
+            assert!(artwork.missing, "{name}");
+            assert!(artwork.texture.is_none(), "{name}");
+        }
+    }
 
     #[test]
     fn loads_home_artwork_next_to_a_relocated_linux_executable() {
@@ -173,10 +252,15 @@ mod tests {
         let artwork = scratch.path().join("assets/ui");
         std::fs::create_dir_all(artwork.join("shell")).unwrap();
         let photo = "shell/variax.png";
-        std::fs::copy(source_artwork().join(photo), artwork.join(photo)).unwrap();
+        image::RgbaImage::new(2, 3)
+            .save(artwork.join(photo))
+            .unwrap();
 
         assert_eq!(linux_package_artwork(&exe), Some(artwork.clone()));
-        assert!(!load(&egui::Context::default(), &artwork, photo).missing);
+        let ctx = egui::Context::default();
+        assert_eq!(load(&ctx, &artwork, photo).pixels, [2, 3]);
+        std::fs::write(artwork.join(photo), b"invalid PNG").unwrap();
+        assert!(load(&ctx, &artwork, photo).missing);
     }
 
     #[test]
@@ -188,30 +272,26 @@ mod tests {
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::write(&exe, []).unwrap();
         std::fs::create_dir_all(resources.join("shell")).unwrap();
+        let root = macos_bundle_artwork(&exe).unwrap();
+        assert_eq!(root, resources);
+        let ctx = egui::Context::default();
         for name in [
             "shell/workbench-mark.png",
             "shell/variax.png",
             "shell/podxt-live.png",
         ] {
-            std::fs::copy(source_artwork().join(name), resources.join(name)).unwrap();
-        }
-
-        let root = macos_bundle_artwork(&exe).unwrap();
-        assert_eq!(root, resources);
-        let ctx = egui::Context::default();
-        for (name, size) in [
-            ("shell/workbench-mark.png", [128, 128]),
-            ("shell/variax.png", [64, 64]),
-            ("shell/podxt-live.png", [64, 64]),
-        ] {
+            image::RgbaImage::new(3, 2).save(root.join(name)).unwrap();
             let artwork = load(&ctx, &root, name);
             assert!(!artwork.missing, "{name}");
-            assert_eq!(artwork.pixels, size, "{name}");
+            assert_eq!(artwork.pixels, [3, 2], "{name}");
             assert!(artwork.texture.is_some(), "{name}");
         }
         std::fs::remove_file(resources.join("shell/workbench-mark.png")).unwrap();
         assert_eq!(macos_bundle_artwork(&exe).unwrap(), resources);
-        assert!(load(&ctx, &root, "shell/workbench-mark.png").missing);
+        assert_eq!(
+            load(&ctx, &root, "shell/workbench-mark.png").pixels,
+            [128, 128]
+        );
     }
 
     #[test]
