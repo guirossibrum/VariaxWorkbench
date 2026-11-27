@@ -196,7 +196,7 @@ impl RigPort for Port {
             route: Some("1-2"),
             location_id: Some(0x01200000),
             address: Some(5),
-            midi_interfaces_present: true,
+            readiness: "PODxt Live detected. USB interfaces 0 and 1 are published. Identity unverified.",
         });
         Ok(mac_usb_view(attached))
     }

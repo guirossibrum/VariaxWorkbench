@@ -138,8 +138,8 @@ impl PresenceSource for CachedUsbPresence {
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 use line6_devices::transport::usb::{
-    macos::{Attachment as MacUsbAttachment, ready_attachment},
-    macos_inventory::{ObservedPodxt, inventory},
+    macos::{passive_readiness_message, single_podxt},
+    macos_inventory::{ObservedPodxt, assess_candidate, inventory},
 };
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
@@ -152,7 +152,7 @@ struct MacUsbObservation {
     // Keep the reconciliation key in an incomplete scan. Readiness and the
     // exact opener still use freshly observed coordinates.
     retained_address: Option<u8>,
-    readiness: Result<MacUsbAttachment, String>,
+    readiness: Result<(), String>,
 }
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
@@ -169,7 +169,8 @@ impl PresenceSource for MacUsbPresence {
             .collect();
         Ok(records
             .iter()
-            .map(|record| {
+            .enumerate()
+            .map(|(index, record)| {
                 let prior = by_registry_id.get(&record.registry_id);
                 let route = record.route().filter(|route| {
                     records
@@ -196,7 +197,9 @@ impl PresenceSource for MacUsbPresence {
                         retained_address: record
                             .address
                             .or_else(|| prior.and_then(|(_, old)| old.retained_address)),
-                        readiness: ready_attachment(record, &records),
+                        readiness: assess_candidate(&records, index)
+                            .map_err(|reason| passive_readiness_message(Some(reason)).into())
+                            .and_then(|_| single_podxt(&records).map(|_| ())),
                     },
                 );
                 UsbDevice {
@@ -227,7 +230,14 @@ impl PresenceSource for MacUsbPresence {
     }
 
     fn usb_readiness_reason(&self, path: &str) -> Option<String> {
-        self.0.borrow().get(path)?.readiness.as_ref().err().cloned()
+        Some(
+            self.0
+                .borrow()
+                .get(path)?
+                .readiness
+                .as_ref()
+                .map_or_else(String::clone, |()| passive_readiness_message(None).into()),
+        )
     }
 }
 
@@ -573,10 +583,8 @@ impl DetectionService {
             };
             let registry_id = self.source.usb_registry_id(&path);
             let open_candidate = self.source.usb_open_candidate(&path);
-            let readiness_reason = (!open_candidate).then(|| {
-                self.source
-                    .usb_readiness_reason(&path)
-                    .unwrap_or_else(|| "PODxt Live USB interfaces unavailable".into())
+            let readiness_reason = self.source.usb_readiness_reason(&path).or_else(|| {
+                (!open_candidate).then(|| "Guitar: PODxt Live USB interfaces unavailable".into())
             });
             let can_identify = self.identify.is_some() || cfg!(test);
             let attachment = match previous.remove(&path) {
@@ -952,10 +960,10 @@ impl DetectionService {
                             None if bridge.pending() => DeviceSupport::IdentityPending,
                             None => DeviceSupport::UsbOnly,
                         };
-                        if let Some(reason) = &attachment.readiness_reason {
+                        if !attachment.open_candidate {
                             (
                                 DeviceSupport::UsbOnly,
-                                Some(format!("Guitar: {reason}")),
+                                attachment.readiness_reason.clone(),
                                 None,
                                 None,
                                 false,
@@ -963,7 +971,14 @@ impl DetectionService {
                         } else {
                             (
                                 support,
-                                Some(bridge.label()),
+                                Some(
+                                    attachment
+                                        .readiness_reason
+                                        .as_ref()
+                                        .filter(|_| !attachment.identity_started)
+                                        .cloned()
+                                        .unwrap_or_else(|| bridge.label()),
+                                ),
                                 bridge.firmware_warning,
                                 bridge.pod_warning,
                                 bridge.can_refresh(),

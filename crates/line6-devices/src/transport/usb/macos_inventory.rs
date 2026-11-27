@@ -5,15 +5,63 @@ use super::macos::Attachment;
 #[cfg(any(target_os = "macos", test))]
 use super::{attachment_path, macos::PODXT_MIDI};
 use crate::device_lock::DeviceLock;
+use macos_usb_inventory::PublishedInterfaces;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservedPodxt {
     pub registry_id: u64,
     pub location_id: Option<u32>,
     pub address: Option<u8>,
-    /// Published services only. An open or claim can still be refused.
-    pub midi_interfaces_present: bool,
+    interfaces: PublishedInterfaces,
     route: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PassiveReadinessBlock {
+    MissingCoordinates { address: bool, route: bool },
+    Ambiguous { matches: usize },
+    UnreadableChildren { seen: [bool; 2] },
+    UnreadableInterfaceNumber { seen: [bool; 2] },
+    MissingInterfaces { seen: [bool; 2] },
+}
+
+/// Assess a row from the raw scan, before assigning display keys.
+pub fn assess_candidate(
+    inventory: &[ObservedPodxt],
+    index: usize,
+) -> Result<Attachment, PassiveReadinessBlock> {
+    let current = &inventory[index];
+    let (Some(path), Some(address)) = (current.route.as_ref(), current.address) else {
+        return Err(PassiveReadinessBlock::MissingCoordinates {
+            address: current.address.is_none(),
+            route: current.route.is_none(),
+        });
+    };
+    let matches = current.coordinate_matches(inventory).count();
+    if matches != 1 {
+        return Err(PassiveReadinessBlock::Ambiguous { matches });
+    }
+    match current.interfaces {
+        // Preserve positive eligibility even if other children were unreadable.
+        PublishedInterfaces::Read {
+            seen: [true, true], ..
+        }
+        | PublishedInterfaces::IncompleteChildren { seen: [true, true] } => Ok(Attachment {
+            path: path.clone(),
+            address,
+        }),
+        PublishedInterfaces::IncompleteChildren { seen } => {
+            Err(PassiveReadinessBlock::UnreadableChildren { seen })
+        }
+        PublishedInterfaces::Read {
+            seen,
+            unknown_number: true,
+        } => Err(PassiveReadinessBlock::UnreadableInterfaceNumber { seen }),
+        PublishedInterfaces::Read {
+            seen,
+            unknown_number: false,
+        } => Err(PassiveReadinessBlock::MissingInterfaces { seen }),
+    }
 }
 
 impl ObservedPodxt {
@@ -39,21 +87,22 @@ impl ObservedPodxt {
     /// A candidate for the existing exact libusb opener. This is not
     /// confirmation that its active descriptor or ownership checks will pass.
     pub fn attachment(&self, inventory: &[Self]) -> Option<Attachment> {
-        let path = self.route.as_ref()?;
-        let address = self.address?;
-        let mut matching = inventory.iter().filter(|record| {
-            record.location_id == self.location_id || record.route.as_ref() == Some(path)
-        });
-        let current = matching.next()?;
-        if !current.matches_generation(self)
-            || !current.midi_interfaces_present
-            || matching.next().is_some()
-        {
+        let (index, current) = self.coordinate_matches(inventory).next()?;
+        if !current.matches_generation(self) {
             return None;
         }
-        Some(Attachment {
-            path: path.clone(),
-            address,
+        assess_candidate(inventory, index).ok()
+    }
+
+    fn coordinate_matches<'a>(
+        &self,
+        inventory: &'a [Self],
+    ) -> impl Iterator<Item = (usize, &'a Self)> {
+        inventory.iter().enumerate().filter(|(_, record)| {
+            record.location_id == self.location_id
+                || self
+                    .route()
+                    .is_some_and(|route| record.route() == Some(route))
         })
     }
 }
@@ -66,7 +115,7 @@ struct Record {
     location_id: Option<u32>,
     address: Option<u8>,
     ports: Vec<u8>,
-    midi_interfaces_present: bool,
+    interfaces: PublishedInterfaces,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -83,7 +132,7 @@ impl Record {
             registry_id: self.registry_id,
             location_id: self.location_id,
             address: self.address,
-            midi_interfaces_present: self.midi_interfaces_present,
+            interfaces: self.interfaces,
             route,
         })
     }
@@ -103,7 +152,7 @@ pub fn inventory() -> Result<Vec<ObservedPodxt>, String> {
                         location_id: record.location_id,
                         address: record.address,
                         ports: record.ports,
-                        midi_interfaces_present: record.midi_interfaces_present,
+                        interfaces: record.interfaces,
                     }
                     .podxt()
                 })
@@ -170,8 +219,124 @@ mod tests {
             location_id: Some(location),
             address: Some(address),
             ports: ports.to_vec(),
-            midi_interfaces_present: published,
+            interfaces: PublishedInterfaces::Read {
+                seen: [published; 2],
+                unknown_number: false,
+            },
         }
+    }
+
+    #[test]
+    fn coordinate_gaps_take_precedence_over_ambiguity_and_publication() {
+        let ready = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        for (address, route) in [(true, false), (false, true), (true, true)] {
+            let mut probe = ready.clone();
+            if address {
+                probe.address = None;
+            }
+            if route {
+                probe.route = None;
+            }
+            probe.interfaces = PublishedInterfaces::IncompleteChildren { seen: [false; 2] };
+            let scan = [probe, ready.clone()];
+            assert_eq!(
+                assess_candidate(&scan, 0),
+                Err(PassiveReadinessBlock::MissingCoordinates { address, route }),
+            );
+            assert_eq!(
+                assess_candidate(&scan, 1),
+                Err(PassiveReadinessBlock::Ambiguous { matches: 2 }),
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguity_counts_a_location_or_route_match_once_and_ignores_unrelated_rows() {
+        let ready = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        let same_location = record(12, 0x01430000, 4, &[4, 5], false).podxt().unwrap();
+        let same_route = record(13, 0x01431000, 5, &[4, 3], false).podxt().unwrap();
+        assert_eq!(
+            assess_candidate(
+                &[ready.clone(), same_location, same_route, ready.clone()],
+                0
+            ),
+            Err(PassiveReadinessBlock::Ambiguous { matches: 4 }),
+        );
+
+        let unrelated = record(14, 0x01460000, 6, &[4, 6], true).podxt().unwrap();
+        let distinct = [ready, unrelated];
+        assert!(assess_candidate(&distinct, 0).is_ok());
+        assert!(assess_candidate(&distinct, 1).is_ok());
+        assert_eq!(
+            super::super::macos::ready_attachment(&distinct[0], &distinct).unwrap_err(),
+            "Expected one PODxt Live on USB, found 2.",
+        );
+    }
+
+    #[test]
+    fn interface_reasons_require_complete_readable_evidence_for_absence() {
+        use super::super::macos::passive_readiness_message;
+
+        let mut observed = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        for (seen, absent) in [
+            ([false, false], "USB interfaces 0 and 1 were absent"),
+            ([true, false], "USB interface 1 was absent"),
+            ([false, true], "USB interface 0 was absent"),
+        ] {
+            for (interfaces, block, text) in [
+                (
+                    PublishedInterfaces::IncompleteChildren { seen },
+                    PassiveReadinessBlock::UnreadableChildren { seen },
+                    "macOS USB interface list could not be read",
+                ),
+                (
+                    PublishedInterfaces::Read {
+                        seen,
+                        unknown_number: true,
+                    },
+                    PassiveReadinessBlock::UnreadableInterfaceNumber { seen },
+                    "macOS USB interface publication could not be determined",
+                ),
+                (
+                    PublishedInterfaces::Read {
+                        seen,
+                        unknown_number: false,
+                    },
+                    PassiveReadinessBlock::MissingInterfaces { seen },
+                    absent,
+                ),
+            ] {
+                observed.interfaces = interfaces;
+                let scan = std::slice::from_ref(&observed);
+                assert_eq!(assess_candidate(scan, 0), Err(block));
+                assert!(observed.attachment(scan).is_none());
+                assert!(passive_readiness_message(Some(block)).contains(text));
+            }
+        }
+
+        for interfaces in [
+            PublishedInterfaces::Read {
+                seen: [true; 2],
+                unknown_number: true,
+            },
+            PublishedInterfaces::IncompleteChildren { seen: [true; 2] },
+        ] {
+            observed.interfaces = interfaces;
+            let scan = std::slice::from_ref(&observed);
+            assert_eq!(assess_candidate(scan, 0).ok(), observed.attachment(scan));
+            assert!(assess_candidate(scan, 0).is_ok());
+        }
+        assert!(passive_readiness_message(None).ends_with("Identity unverified."));
+    }
+
+    #[test]
+    fn route_recheck_and_full_generation_recheck_keep_their_distinct_rules() {
+        let saved = record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap();
+        let current = record(11, 0x01431000, 3, &[4, 3], true).podxt().unwrap();
+        let expected = saved.attachment(std::slice::from_ref(&saved)).unwrap();
+        let scan = [current];
+        assert!(candidate_matches(&scan, saved.registry_id, &expected));
+        assert!(saved.attachment(&scan).is_none());
     }
 
     #[test]
@@ -264,7 +429,11 @@ mod tests {
     fn manual_identity_opens_the_same_generation_once_after_interfaces_publish() {
         let observed = record(11, 0x01430000, 3, &[4, 3], false).podxt().unwrap();
         assert_eq!(observed.route(), Some("1-4.3"));
-        assert!(!observed.midi_interfaces_present);
+        assert!(
+            observed
+                .attachment(std::slice::from_ref(&observed))
+                .is_none()
+        );
         let current = [
             record(11, 0x01430000, 3, &[4, 3], true).podxt().unwrap(),
             record(12, 0x01450000, 4, &[4, 5], true).podxt().unwrap(),

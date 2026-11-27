@@ -2,7 +2,7 @@
 
 use super::{
     InterfaceSpec, VARIAX_VIA_PODXT_LIVE, attachment_path,
-    macos_inventory::{ObservedPodxt, inventory},
+    macos_inventory::{ObservedPodxt, PassiveReadinessBlock, assess_candidate, inventory},
     podxt::SPEC,
 };
 use crate::device_lock::DeviceLock;
@@ -54,16 +54,44 @@ pub fn ready_attachment(
     if !observed.matches_generation(current) {
         return Err("The PODxt Live USB attachment changed.".into());
     }
-    if current.route().is_none() {
-        return Err("PODxt Live detected, but its physical USB route is unavailable.".into());
+    assess_candidate(devices, 0).map_err(|reason| passive_readiness_message(Some(reason)).into())
+}
+
+pub fn passive_readiness_message(reason: Option<PassiveReadinessBlock>) -> &'static str {
+    use PassiveReadinessBlock::*;
+
+    match reason {
+        None => "PODxt Live detected. USB interfaces 0 and 1 are published. Identity unverified.",
+        Some(MissingCoordinates {
+            address: true,
+            route: true,
+        }) => "PODxt Live detected. USB address and route unavailable in this scan.",
+        Some(MissingCoordinates {
+            address: true,
+            route: false,
+        }) => "PODxt Live detected. USB address unavailable in this scan.",
+        Some(MissingCoordinates { address: false, .. }) => {
+            "PODxt Live detected. USB route unavailable in this scan."
+        }
+        Some(Ambiguous { .. }) => {
+            "PODxt Live detected. Multiple USB records match this location or route."
+        }
+        Some(UnreadableChildren { .. }) => {
+            "PODxt Live detected. macOS USB interface list could not be read."
+        }
+        Some(UnreadableInterfaceNumber { .. }) => {
+            "PODxt Live detected. macOS USB interface publication could not be determined."
+        }
+        Some(MissingInterfaces {
+            seen: [false, true],
+        }) => "PODxt Live detected. USB interface 0 was absent from this scan.",
+        Some(MissingInterfaces {
+            seen: [true, false],
+        }) => "PODxt Live detected. USB interface 1 was absent from this scan.",
+        Some(MissingInterfaces { .. }) => {
+            "PODxt Live detected. USB interfaces 0 and 1 were absent from this scan."
+        }
     }
-    if current.address.is_none() {
-        return Err("PODxt Live detected, but its USB address is unavailable.".into());
-    }
-    current.attachment(devices).ok_or_else(|| {
-        "PODxt Live detected, but the macOS USB inventory did not confirm both MIDI interfaces."
-            .into()
-    })
 }
 
 /// Reconcile the ready registry candidate with the exact native USB route.

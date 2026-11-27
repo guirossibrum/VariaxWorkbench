@@ -371,7 +371,7 @@ pub(in crate::rig_check) struct MacUsbAttachment<'a> {
     pub route: Option<&'a str>,
     pub location_id: Option<u32>,
     pub address: Option<u8>,
-    pub midi_interfaces_present: bool,
+    pub readiness: &'static str,
 }
 
 #[cfg(any(test, all(target_os = "macos", feature = "usb")))]
@@ -395,15 +395,13 @@ pub(in crate::rig_check) fn mac_usb_view<'a>(
         view.lines.push(line(
             "PODxt Live USB",
             format!(
-                "{vendor:04x}:{product:04x}, location ID {}, port {}, address {}, MIDI interface services {}",
+                "{vendor:04x}:{product:04x}, location ID {}, port {}, address {}. {}",
                 location.as_deref().unwrap_or(NOT_AVAILABLE),
                 attachment.route.unwrap_or(NOT_AVAILABLE),
-                attachment.address.map_or_else(|| NOT_AVAILABLE.into(), |id| id.to_string()),
-                if attachment.midi_interfaces_present {
-                    "published"
-                } else {
-                    "not both published"
-                },
+                attachment
+                    .address
+                    .map_or_else(|| NOT_AVAILABLE.into(), |id| id.to_string()),
+                attachment.readiness,
             ),
         ));
         view.devices.push(UsbDevice {
@@ -766,30 +764,30 @@ mod tests {
                 route: Some("1-4.3"),
                 location_id: Some(0x01430000),
                 address: Some(15),
-                midi_interfaces_present: true,
+                readiness: "PODxt Live detected. USB interfaces 0 and 1 are published. Identity unverified.",
             },
             MacUsbAttachment {
                 route: None,
                 location_id: Some(0x01200000),
                 address: None,
-                midi_interfaces_present: false,
+                readiness: "PODxt Live detected. USB address and route unavailable in this scan.",
             },
             MacUsbAttachment {
                 route: None,
                 location_id: None,
                 address: Some(12),
-                midi_interfaces_present: false,
+                readiness: "PODxt Live detected. USB route unavailable in this scan.",
             },
         ]);
         let rows = value(&view.lines, "PODxt Live USB");
         assert_eq!(rows.len(), 3);
         assert_eq!(
             rows[0],
-            "0e41:4650, location ID 0x01430000, port 1-4.3, address 15, MIDI interface services published"
+            "0e41:4650, location ID 0x01430000, port 1-4.3, address 15. PODxt Live detected. USB interfaces 0 and 1 are published. Identity unverified."
         );
         assert!(rows[1].contains("location ID 0x01200000, port not available on this OS"));
         assert!(rows[1].ends_with(
-            "address not available on this OS, MIDI interface services not both published"
+            "address not available on this OS. PODxt Live detected. USB address and route unavailable in this scan."
         ));
         assert!(rows[2].contains("location ID not available on this OS"));
         assert_eq!(view.podxt_lives().len(), 3);
