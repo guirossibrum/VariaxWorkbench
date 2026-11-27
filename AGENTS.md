@@ -1,5 +1,13 @@
 # Project instructions
 
+## Herdr lane handoffs (owner decision 2026-11-27)
+
+The Herdr Dispatcher is stopped and disabled. Send assignments and reports
+directly in the project's named Herdr tabs. Use the GitHub issue and the
+Gatekeeper handoff to track the assigned lane, evidence, review, and release.
+Keep the archived Dispatcher ledger available for historical reconciliation.
+Use Owner Inbox for decisions, tests, and important updates that need the owner.
+
 ## Mandatory Gatekeeper merge and handoff checklist (#303)
 
 The Gatekeeper must complete this checklist in the same coordination cycle
@@ -7,7 +15,7 @@ as each reviewed and verified lane merge. Record the outcome in the
 Gatekeeper handoff.
 
 1. Verify the lane's departure and that its worktree-local jobs have stopped
-   before merging. Record departure in the Herdr Dispatcher. Review the
+   before merging. Record departure in the Gatekeeper handoff. Review the
    exact delivered head, run the required offline merge checks, and verify
    the integrated commit on `origin/master`.
 2. Preserve durable evidence and owner-requested outputs under the main
@@ -15,16 +23,15 @@ Gatekeeper handoff.
    remove the completed disposable worktree without force. Confirm the
    removal and keep the branch. Follow the
    [worktree cleanup procedure](docs/parallel-work.md#worktree-cleanup-after-merge).
-3. Record the verified merge commit and release of the exact assignment in
-   the Herdr Dispatcher. Release follows confirmed cleanup.
+3. Record the verified merge commit and lane release in the issue and
+   Gatekeeper handoff. Release follows confirmed cleanup.
 4. Follow the [free-lane rule](docs/parallel-work.md#free-lanes) to select the
-   next eligible canonical GitHub issue. Verify the exact lane and have the
-   installed Herdr Dispatcher deliver the assignment in a fresh chat with
-   `/new`. Verify receipt in that chat and record the new assignment ID,
-   issue, lane, and receipt evidence in the handoff. An idle badge,
-   reservation, or send attempt alone does not establish receipt.
+   next eligible canonical GitHub issue. Verify the named lane in Herdr.
+   Send `/new` separately, confirm the fresh chat, then send the assignment.
+   Record its issue, lane, and receipt evidence in the handoff. Verify
+   receipt in that chat before counting the assignment as delivered.
 
-If review, cleanup, issue eligibility, or Dispatcher binding or delivery
+If review, cleanup, issue eligibility, or direct delivery
 blocks the next step, record the concrete blocker and next action in the
 Gatekeeper handoff and report them before ending the cycle. Incomplete or
 unmerged work remains assigned unless parked through the existing explicit
@@ -291,7 +298,7 @@ checks when touched), and pushes that tested result to `origin/master`. It also
 updates the issues and the ledgers and completes the
 [mandatory merge and handoff checklist](#mandatory-gatekeeper-merge-and-handoff-checklist-303).
 A Herdr idle or completion badge asks the Gatekeeper to verify the delivery.
-Use the installed Herdr Dispatcher for lane assignments.
+Use direct Herdr messages for lane assignments and reports.
 
 After committing and checking the worktree, the lane agent leaves it. Its final
 report must give the absolute worktree path and explicitly confirm the agent has

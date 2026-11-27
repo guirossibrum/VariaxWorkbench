@@ -1,5 +1,11 @@
 # Herdr completion handoff
 
+**Historical reference.** The owner stopped and disabled the Herdr
+Dispatcher on November 27, 2026. Use
+[direct Herdr handoffs](parallel-work.md#herdr-handoffs-for-gatekeepers).
+Keep the service disabled and use its saved records only to reconcile old
+deliveries. The deployment procedures below describe the former setup.
+
 The watcher observes fresh completions in all Git repositories visible in one
 Herdr session. It keeps a local record of the repository, workspace, pane,
 agent session, and completion number. Reports are sent only to explicitly
