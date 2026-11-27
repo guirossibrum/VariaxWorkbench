@@ -95,6 +95,9 @@ def smoke(extracted, scratch, env):
     if not begin or not end:
         raise ValueError("Missing Rig Check JSON report")
     record = json.loads(data)
+    revision = env["RIG_CHECK_GIT_COMMIT"]
+    if record.get("git_commit") != revision:
+        raise ValueError(f"Rig Check report does not identify source {revision}")
     if not record["finished"]:
         raise ValueError("Windows computer smoke check did not finish")
     steps = {step["id"]: step for step in record["steps"]}
@@ -123,6 +126,7 @@ def smoke(extracted, scratch, env):
         f"{version}\nRig Check catalogue loaded.\n"
         "Practice report includes simulated USB recognition.\n"
         "Computer report includes step 0.1 and the offline engine comparison.\n"
+        f"Rig Check report revision: {revision}\n"
         f"{system_evidence}"
         "Device steps report the Windows notice. Zero device messages recorded.\n"
         "OS USB and audio inventories were skipped.\n"
