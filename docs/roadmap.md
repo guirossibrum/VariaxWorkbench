@@ -4,7 +4,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
-- [ ] Spider V30 tab [#311](https://github.com/guirossibrum/VariaxWorkbench/issues/311). The [offline audit and integration plan](research/spider-v30-tab-plan.md) document desktop discovery, the first identity exchange, shared preset resources and the feature gaps. The librarian command trace covers read, select and store. Editor field-to-wire mappings, physical endpoint binding and owner verification remain open.
+- [ ] Spider V30 tab [#311](https://github.com/guirossibrum/VariaxWorkbench/issues/311). The [offline audit and integration plan](research/spider-v30-tab-plan.md) document desktop discovery, the first identity exchange, shared preset resources and the feature gaps. The librarian command trace covers read, select and store. The [preset format checkpoint](research/spider-v30-preset-format.md) traces the desktop binary and JSON formats. Authentic V30 current and numbered payloads, saved-file parity, full editor field-to-wire mappings, physical endpoint binding and owner verification remain open.
 
 - [ ] Connect the [#310 Home and connection window](design/home-connection-window.md) to existing discovery, transport arbitration and authorized library reads. Validate the finished flow on the owner's rig after integration.
 
