@@ -440,20 +440,17 @@ fn same_root_interrupted_store_blocks_resume_before_revalidation() {
 }
 
 #[test]
-fn linked_model_byte_blocks_resume_at_22_until_the_saved_state_matches() {
+fn interrupted_33_resumes_with_current_podxt_tone_and_variax_settings() {
     const LINKED_MODEL_PAYLOAD_OFFSET: usize = 159 - 7;
     let initial_rig = SimRig::shared(Faults::default());
-    {
-        let mut sim = initial_rig.borrow_mut();
-        let slot = usize::from(sim.podxt.channel.unwrap());
-        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 20;
-        sim.podxt.stored[slot][LINKED_MODEL_PAYLOAD_OFFSET] = 20;
-    }
+    initial_rig.borrow_mut().podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 0x23;
     let mut source = Fixture::from_rig(&initial_rig);
-    source.stop_after(GUITAR_START, true);
-    source.run.step_mut(GUITAR_START).outcome =
-        Outcome::Failed("Synthetic comparison failure".into());
-    source.save(true);
+    source.stop_after(GUITAR_START, false);
+    source.run.finished = false;
+    source.run.current = Some(GUITAR_START);
+    *source.run.step_mut(GUITAR_START) = StepRecord::new(GUITAR_START);
+    *source.run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    source.save(false);
     let source_files = [
         source.sink.path.clone(),
         source.sink.path.with_extension("state"),
@@ -467,64 +464,53 @@ fn linked_model_byte_blocks_resume_at_22_until_the_saved_state_matches() {
     let original = source_files
         .each_ref()
         .map(|path| std::fs::read(path).unwrap());
-    let initial_tone = &original[2];
-    assert_eq!(initial_tone.len(), 168);
-    assert_eq!(initial_tone[159], 20);
 
     let plan = open(&source.sink.path).unwrap();
     assert_eq!(plan.target, GUITAR_START);
+    assert!(plan.skips(SETTINGS));
     assert!(plan.skips(POD_BACKUP));
     let rig = SimRig::shared(Faults::default());
+    let new_preset =
+        super::super::variax_reads::other_preset(rig.borrow().variax.selected.unwrap());
+    let expected_channel = podxt::Location::new(podxt::BankKind::Tones, 3).unwrap();
     {
         let mut sim = rig.borrow_mut();
-        let slot = usize::from(sim.podxt.channel.unwrap());
-        sim.podxt.stored[slot][LINKED_MODEL_PAYLOAD_OFFSET] = 20;
-        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 21;
+        sim.podxt.channel = Some(3);
+        sim.podxt.playing = sim.podxt.stored[3];
+        sim.variax.selected = Some(new_preset);
+        sim.variax.active = sim.variax.stored[super::super::practice::flash_index(new_preset)];
+        sim.podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 0x3f;
+        sim.podxt.playing[32 + 13] ^= 1;
     }
-    let mut transcript = Vec::new();
-    let mut terminal = super::super::cli::Terminal::new(&b"accept\naccept\n"[..], &mut transcript);
-    let (run, sink) = continue_with_port(
-        source.dir.path(),
-        None,
-        plan,
-        &mut direct_usb::Port::with_rig(rig.clone()),
-        &mut terminal,
+    let mut person = Script::run_all();
+    person.overrides.push((GUITAR_BACKUP, Decision::Stop));
+    let (run, sink) = source.continue_run(plan, &rig, &mut person);
+
+    assert!(run.blocked_resume.is_none(), "{}", run.rig_state);
+    assert!(!run.continuation_pending);
+    assert_eq!(person.cards.first(), Some(&GUITAR_START));
+    assert!(run.step(POD_START).reused);
+    assert!(run.step(SETTINGS).reused);
+    assert!(run.step(POD_BACKUP).reused);
+    assert!(run.step(GUITAR_START).outcome.passed(), "{}", run.rig_state);
+    assert!(run.step(RIG_GUARD).outcome.passed(), "{}", run.rig_state);
+
+    let state =
+        RigState::parse(&std::fs::read_to_string(sink.path.with_extension("state")).unwrap())
+            .unwrap();
+    assert_eq!(state.channel(), Some(expected_channel));
+    let refreshed = open(&sink.path).unwrap();
+    assert_eq!(refreshed.target, GUITAR_BACKUP);
+    assert_eq!(
+        refreshed.restored.start_tone.as_ref().unwrap().raw[159],
+        0x3f
     );
-    let transcript = String::from_utf8(transcript).unwrap();
-    let blocked = run.blocked_resume.as_ref().unwrap();
-    assert_eq!((blocked.target, blocked.check), (GUITAR_START, POD_START));
-    assert_eq!(blocked.details.len(), 2);
-    for evidence in [
-        BlockedResume::TITLE,
-        "Selected target 3.3",
-        "Blocking check 2.2",
-        "expected 5B · observed 5B",
-        "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15",
-    ] {
-        assert!(sink.last.contains(evidence), "{evidence}");
-        assert!(transcript.contains(evidence), "{transcript}");
-    }
-    let json: serde_json::Value =
-        serde_json::from_str(super::super::report::json_block(&sink.last).unwrap()).unwrap();
-    assert_eq!(json["blocked_resume"]["target"], "3.3");
-    assert_eq!(json["blocked_resume"]["check"], "2.2");
-    assert_eq!(json["resume_cleanup"]["status"], "released");
-    assert!(matches!(run.resume_cleanup, Some(ResumeCleanup::Released)));
-    assert!(recover::pending(source.dir.path()).is_empty());
-    assert!(run.continuation_pending);
-    assert!(run.steps.iter().all(|step| step.started.is_none()));
-    assert_eq!(run.step(GUITAR_START).outcome, Outcome::NotReached);
-    assert!(matches!(
-        run.step(RIG_GUARD).outcome,
-        Outcome::NotAvailable(_)
-    ));
-    let rechecks = &run.prior_attempts[run.prior_attempts.len() - 2..];
-    assert_eq!([rechecks[0].id, rechecks[1].id], [POD_ID, POD_START]);
-    assert!(rechecks[0].outcome.passed());
-    assert!(matches!(rechecks[1].outcome, Outcome::Failed(_)));
-    assert_eq!(rechecks[1].comparisons.len(), 1);
-    assert!(!source.sink.path.with_extension("continuation").exists());
-    assert!(error(&sink.path).contains("Open its source report"));
+    assert_ne!(refreshed.restored.start_program, source.data.start_program);
+    assert!(
+        run.prior_attempts
+            .iter()
+            .any(|step| step.id == POD_START && step.attempt == Some(1))
+    );
     assert_eq!(
         source_files
             .each_ref()
@@ -532,28 +518,92 @@ fn linked_model_byte_blocks_resume_at_22_until_the_saved_state_matches() {
         original
     );
     only_reads(&rig);
+}
 
-    // The same source remains usable after the working tone is back in sync.
+#[test]
+fn continuation_preserves_passed_libraries_while_the_current_devices_change() {
+    let mut source = Fixture::new();
+    source.stop_after(StepId(7, 1), false);
+    source.run.step_mut(StepId(7, 1)).outcome = Outcome::Failed("Synthetic missed selector".into());
+    source.save(false);
     let plan = open(&source.sink.path).unwrap();
-    rig.borrow_mut().podxt.playing[LINKED_MODEL_PAYLOAD_OFFSET] = 20;
+    assert_eq!(plan.target, StepId(7, 1));
+
+    let rig = SimRig::shared(Faults::default());
+    let new_preset =
+        super::super::variax_reads::other_preset(rig.borrow().variax.selected.unwrap());
+    {
+        let mut sim = rig.borrow_mut();
+        sim.variax.selected = Some(new_preset);
+        sim.variax.active = sim.variax.stored[super::super::practice::flash_index(new_preset)];
+        sim.podxt.playing[32 + 13] ^= 1;
+    }
     let mut person = Script::run_all();
-    person.overrides.push((GUITAR_BACKUP, Decision::Stop));
-    let (run, _) = source.continue_run(plan, &rig, &mut person);
+    person.overrides.push((StepId(7, 2), Decision::Stop));
+    let (run, sink) = source.continue_run(plan, &rig, &mut person);
     assert!(run.blocked_resume.is_none(), "{}", run.rig_state);
-    assert!(!run.continuation_pending);
-    assert!(run.step(POD_BACKUP).reused);
-    assert!(run.step(GUITAR_START).outcome.passed(), "{}", run.rig_state);
-    assert_eq!(run.step(GUITAR_START).attempt, Some(2));
-    assert_eq!(
-        person.cards.first_chunk::<2>(),
-        Some(&[SETTINGS, GUITAR_START])
-    );
-    assert_eq!(
-        source_files
-            .each_ref()
-            .map(|path| std::fs::read(path).unwrap()),
-        original
-    );
+    assert_eq!(person.cards.first(), Some(&StepId(7, 1)));
+    for id in [POD_BACKUP, GUITAR_BACKUP, GUITAR_START, POD_START] {
+        assert!(run.step(id).reused && run.step(id).outcome.passed());
+    }
+    assert!(run.step(StepId(7, 1)).outcome.passed());
+    assert!(run.step(RIG_GUARD).outcome.passed());
+    let plan = open(&sink.path).unwrap();
+    assert_eq!(plan.restored.start_preset, Some(new_preset));
+    assert!(plan.restored.podxt_unsaved);
+    assert_eq!(plan.target, StepId(7, 2));
+    only_reads(&rig);
+}
+
+#[test]
+fn unrecognized_working_program_can_be_auditioned_but_cannot_target_a_store() {
+    const SEND: StepId = StepId(4, 2);
+    let current = super::super::practice::synthetic_program("Unsaved continuation sound", 7800);
+    for (target, stop) in [(SEND, StepId(4, 3)), (FIRST_SAVE, NEXT_SAVE)] {
+        let mut source = Fixture::new();
+        source.stop_after(target, false);
+        *source.run.step_mut(target) = StepRecord::new(target);
+        source.save(false);
+        let plan = open(&source.sink.path).unwrap();
+        assert_eq!(plan.target, target);
+
+        let rig = SimRig::shared(Faults::default());
+        rig.borrow_mut().variax.active = current;
+        let mut person = Script::run_all();
+        person.overrides.push((stop, Decision::Stop));
+        let (run, sink) = source.continue_run(plan, &rig, &mut person);
+
+        assert!(run.blocked_resume.is_none(), "{}", run.rig_state);
+        assert_eq!(person.cards.first(), Some(&target));
+        assert!(run.step(RIG_GUARD).outcome.passed(), "{}", run.rig_state);
+        let state =
+            RigState::parse(&std::fs::read_to_string(sink.path.with_extension("state")).unwrap())
+                .unwrap();
+        assert_eq!(state.preset(), None);
+        assert_eq!(state.variax_match_sha256, recover::match_hash(&current));
+        let sim = rig.borrow();
+        assert_eq!(sim.variax.active, current);
+        assert_eq!(sim.variax.stores, 0);
+        assert!(person.saves.is_empty());
+        if target == SEND {
+            assert!(run.step(SEND).outcome.passed());
+            assert_eq!(sim.variax.working_uploads, 1);
+        } else {
+            assert!(
+                run.step(FIRST_SAVE)
+                    .outcome
+                    .reason()
+                    .unwrap()
+                    .contains("starting preset is unknown")
+            );
+            assert_eq!(sim.variax.working_uploads, 0);
+        }
+        assert!(
+            !sim.written
+                .iter()
+                .any(|(_, bytes)| bytes.first() == Some(&0xc0))
+        );
+    }
 }
 
 #[test]
@@ -589,7 +639,7 @@ fn failed_usb_release_preserves_manual_recovery_before_any_follow_up_device_acce
     );
     assert!(run.finished);
     assert!(run.continuation_pending);
-    assert_eq!(run.blocked_resume.as_ref().unwrap().check, POD_START);
+    assert_eq!(run.blocked_resume.as_ref().unwrap().check, GUITAR_ID);
     assert_eq!(run.step(GUITAR_START).outcome, Outcome::NotReached);
     let cleanup_error = "PODxt Live interface 0 release failed: simulated USB release error";
     assert_eq!(run.resume_cleanup_error(), Some(cleanup_error));
@@ -643,23 +693,17 @@ fn failed_usb_release_preserves_manual_recovery_before_any_follow_up_device_acce
 }
 
 #[test]
-fn mismatched_tone_or_firmware_only_reads_and_preserves_the_source() {
-    for (fault, reason) in [(false, "tone differs"), (true, "firmware")] {
-        let fixture = Fixture::legacy_failure();
-        let plan = open(&fixture.sink.path).unwrap();
-        let rig = SimRig::shared(Faults::default());
-        if fault {
-            rig.borrow_mut().podxt.firmware = [0, 3, 0, 2];
-        } else {
-            rig.borrow_mut().podxt.playing[32 + 13] ^= 1;
-        }
-        let mut person = Script::run_all();
-        let (run, _) = fixture.continue_run(plan, &rig, &mut person);
-        assert!(run.rig_state.contains(reason), "{}", run.rig_state);
-        assert!(person.cards.is_empty());
-        assert!(open(&fixture.sink.path).is_ok());
-        only_reads(&rig);
-    }
+fn incompatible_firmware_only_reads_and_preserves_the_source() {
+    let fixture = Fixture::legacy_failure();
+    let plan = open(&fixture.sink.path).unwrap();
+    let rig = SimRig::shared(Faults::default());
+    rig.borrow_mut().podxt.firmware = [0, 3, 0, 2];
+    let mut person = Script::run_all();
+    let (run, _) = fixture.continue_run(plan, &rig, &mut person);
+    assert!(run.rig_state.contains("firmware"), "{}", run.rig_state);
+    assert!(person.cards.is_empty());
+    assert!(open(&fixture.sink.path).is_ok());
+    only_reads(&rig);
 }
 
 #[test]

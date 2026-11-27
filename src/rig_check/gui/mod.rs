@@ -1518,7 +1518,7 @@ impl Launch {
                 if !reusable.is_empty() {
                     ui.label(format!("Passed checks eligible for reuse: {reusable}"));
                 }
-                ui.label("Rig Check will revalidate the prerequisites before continuing.");
+                ui.label("Rig Check will verify firmware and read the current device settings before continuing.");
                 if button(ui, "Resume…", true).clicked() {
                     self.selected = self.preview.take();
                     return self.selected.as_ref().map(|plan| plan.mode);

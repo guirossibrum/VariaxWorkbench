@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Ordinary Rig Check Resume retains completed results and reads the current working state of the supported devices. Changed PODxt channel, tone, or Variax program becomes the continuation baseline, with the source snapshots preserved. A Variax buffer that does not identify a unique slot can still run working-buffer checks. Store checks still require a verified slot and the usual confirmation. Fake-device tests cover interrupted 3.3, guided model change after a new preset selection, another resume from the updated evidence and slot-dependent refusal. [#297](https://github.com/guirossibrum/VariaxWorkbench/issues/297).
+
 - [x] Rig Check #248 adds four synthetic blocked-continuation screenshots for the #297 path. The 2.2 recheck blocks target 3.3 and shows the CC 120 mismatch. Headless checks at laptop 1× and Retina 2× verified text fit and Open report focus, with separate source and attempt destinations and Start fresh available only after verified release. Two offline renders produced 38 byte-identical PNGs, including all 34 prior images. [Owner review checklist](design/rig-check-wizard-review.md#checklist).
 
 - [x] Rig Check #248 adds headless Practice cards and results for 0.2, 1.2 and 6.2 at laptop 1× and Retina 2×. Two software draws produced 34 byte-identical PNGs. Keyboard checks confirmed Skip on the new cards and Continue on their results at both scales. The central panels fit, and the 6.2 sidebar row requires scrolling. [Owner review checklist](design/rig-check-wizard-review.md).
