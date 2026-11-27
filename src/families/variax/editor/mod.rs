@@ -1117,12 +1117,16 @@ impl VariaxEditor {
             ui.label("Editing supports legacy electric Variax presets.");
         }
 
-        use variax_workbench::ui::editor_layout::editor_regions;
+        use variax_workbench::ui::editor_layout::bottom_band_regions;
 
         // The bank and model header can grow its UI past the viewport.
         let workspace = ui.available_rect_before_wrap().intersect(viewport);
-        let regions = editor_regions(
+        if !workspace.is_positive() {
+            return;
+        }
+        let regions = bottom_band_regions(
             workspace,
+            ui.ctx().viewport_rect().height(),
             self.body_placement().art,
             self.has_twelve_string(),
         );
@@ -1131,6 +1135,7 @@ impl VariaxEditor {
                 .id_salt("guitar-body")
                 .max_rect(regions.body),
         );
+        body.set_clip_rect(viewport.intersect(regions.body));
         self.guitar(&mut body, regions.body.height(), can_edit);
 
         let mut inspector = ui.new_child(
@@ -1138,7 +1143,7 @@ impl VariaxEditor {
                 .id_salt("guitar-inspector")
                 .max_rect(regions.inspector),
         );
-        inspector.set_clip_rect(ui.clip_rect().intersect(regions.inspector));
+        inspector.set_clip_rect(viewport.intersect(regions.inspector));
         egui::Frame::new()
             .inner_margin(10)
             .corner_radius(theme::RADIUS_PANEL)
@@ -1154,7 +1159,7 @@ impl VariaxEditor {
                 .id_salt("guitar-tuning")
                 .max_rect(regions.tuning),
         );
-        tuning.set_clip_rect(ui.clip_rect().intersect(regions.tuning));
+        tuning.set_clip_rect(viewport.intersect(regions.tuning));
         // The scroll limit must use the visible band even when it is shorter
         // than egui's default minimum viewport.
         egui::ScrollArea::vertical()

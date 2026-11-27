@@ -3,13 +3,35 @@ use crate::editor::{EditorDefaults, Workbench, registry, tests::app};
 use variax_workbench::preset::{PresetText, legacy_text_issue};
 use variax_workbench::ui::{
     body_canvas::{PICKUP_SLOT_PX, POSITION_MAX, POSITION_MIN},
-    editor_layout::{
-        NECK_MAX, SIDE_MIN_SCALE, TUNING_CHROME_WIDTH, TUNING_TABLE_WIDTH, TWELVE_STRING_COLUMN,
-    },
+    editor_layout::{COLUMN_GAP, TUNING_CHROME_WIDTH, TUNING_TABLE_WIDTH, TWELVE_STRING_COLUMN},
+    tuning_panel::scale_x,
 };
 
 const SIZES: [egui::Vec2; 2] = [egui::vec2(1120.0, 760.0), egui::vec2(960.0, 680.0)];
 const OUTLINE_TEST_SIZE: egui::Vec2 = egui::vec2(1120.0, 900.0);
+
+fn bottom_band_sizes() -> impl Iterator<Item = egui::Vec2> {
+    SIZES.into_iter().chain([egui::vec2(1440.0, 900.0)])
+}
+
+fn density_and_route() -> impl Iterator<Item = (f32, bool)> {
+    [1.0, 2.0].into_iter().flat_map(|density| {
+        [false, true]
+            .into_iter()
+            .filter(|&connected| !connected || cfg!(feature = "usb"))
+            .map(move |connected| (density, connected))
+    })
+}
+
+fn set_verified_route(app: &mut Workbench, connected: bool) {
+    #[cfg(feature = "usb")]
+    if connected {
+        let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+        app.tabs.entries[index].device = Some(super::refresh::tests::verified_tab());
+    }
+    #[cfg(not(feature = "usb"))]
+    let _ = (app, connected);
+}
 
 fn render(
     app: &mut Workbench,
@@ -80,7 +102,7 @@ fn verified_toolbar_keeps_actions_and_compacts_the_status_row_at_both_densities(
 
     for (size, header_limit) in SIZES.into_iter().zip([165.0, 237.0]) {
         for density in [1.0, 2.0] {
-            let (ctx, mut app) = chime_editor();
+            let (ctx, mut app) = chime_editor(true);
             let none = egui::Modifiers::NONE;
             let frame =
                 |app: &mut Workbench, events| render(app, &ctx, size, density, events, none);
@@ -220,8 +242,7 @@ fn inspector_exposes_initial_and_final_controls_at_both_densities() {
                 frame(app, vec![])
             };
 
-            // Gaining workspace height can move tuning beside the body. In that
-            // layout the inspector starts shorter, with the same scroll access.
+            // Reveal controls that start below the inspector's visible rows.
             let reveal = |app: &mut Workbench, mut output: egui::FullOutput, label: &str| {
                 for _ in 0..40 {
                     if visible_bounds(&output, label).is_some() {
@@ -868,6 +889,47 @@ fn assert_footer(output: &egui::FullOutput, size: egui::Vec2, tuning: egui::Rect
     assert!(footer.bottom() <= size.y);
 }
 
+fn assert_bottom_band(
+    app: &Workbench,
+    ctx: &egui::Context,
+    output: &egui::FullOutput,
+    size: egui::Vec2,
+) {
+    let editor = app.variax();
+    let (body, inspector) = editor.workspace_cards.unwrap();
+    let tuning = editor.workspace_tuning.unwrap();
+    let margin = egui::Frame::central_panel(&ctx.style()).total_margin();
+    let footer = egui::containers::panel::PanelState::load(ctx, egui::Id::new("status"))
+        .unwrap()
+        .rect;
+    let screen = ctx.content_rect();
+    assert_eq!(body.left(), tuning.left());
+    assert_eq!(body.top(), inspector.top());
+    assert!(body.right() <= inspector.left());
+    assert!(body.bottom() <= inspector.bottom() + 0.01);
+    assert_eq!(inspector.right(), tuning.right());
+    assert!((tuning.top() - inspector.bottom() - COLUMN_GAP).abs() < 0.01);
+    assert!((tuning.left() - screen.left() - margin.left).abs() < 0.5);
+    assert!((screen.right() - tuning.right() - margin.right).abs() < 0.5);
+    assert!((footer.top() - tuning.bottom() - margin.bottom).abs() < 0.5);
+    let expected = (size.y * 0.225).min((tuning.bottom() - body.top() - COLUMN_GAP) / 2.0);
+    assert!(
+        (tuning.height() - expected).abs() < 0.01,
+        "{size:?}: {tuning:?}"
+    );
+    assert_footer(output, size, tuning);
+}
+
+fn assert_neck_uses_remaining_width(tuning: egui::Rect, neck: egui::Rect, twelve_width: f32) {
+    let expected_left = tuning.left() + twelve_width + TUNING_TABLE_WIDTH + TUNING_CHROME_WIDTH;
+    assert!((neck.left() - expected_left).abs() < 12.0, "{neck:?}");
+    // The right inset includes the panel margin and room for a scrollbar.
+    assert!(
+        (0.0..TUNING_CHROME_WIDTH).contains(&(tuning.right() - neck.right())),
+        "neck {neck:?} in tuning band {tuning:?}"
+    );
+}
+
 fn body_tab_app(artwork: &std::path::Path) -> (egui::Context, Workbench) {
     let ctx = egui::Context::default();
     let mut app = Workbench::with_context(&ctx, None, artwork.to_owned(), None);
@@ -1193,10 +1255,11 @@ fn scrolled_tuning_labels_cannot_paint_in_the_footer() {
 
 #[test]
 fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo() {
-    for size in SIZES {
-        for pixels_per_point in [1.0, 2.0] {
+    for size in bottom_band_sizes() {
+        for (pixels_per_point, connected) in density_and_route() {
             let (ctx, mut app) = app();
             app.clear_window_controls = true;
+            set_verified_route(&mut app, connected);
             app.variax_mut().open_example();
             app.variax_mut()
                 .change(|preset| preset.select_model(BODY, 0x0310_0003));
@@ -1208,8 +1271,10 @@ fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo(
             frame(vec![], egui::Modifiers::NONE);
             let output = frame(vec![], egui::Modifiers::NONE);
             assert!((output.pixels_per_point - pixels_per_point).abs() < 0.01);
+            assert_bottom_band(&app, &ctx, &output, size);
 
             let editor = app.variax();
+            assert_eq!(editor.connection_status.is_some(), connected);
             let (well, inspector) = editor.workspace_cards.unwrap();
             let tuning = editor.workspace_tuning.unwrap();
             let art = editor.body_art_rect.unwrap();
@@ -1221,19 +1286,13 @@ fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo(
             let scale = placement.screen_scale(art);
             assert!((art.size() - placement.art * scale).length() < 1.0);
             assert!((well.size() - art.size()).length() < 1.0);
-            assert!(well.right() <= inspector.left());
-            assert!(
-                scale >= if size.x == 1120.0 { 1.0 } else { 0.8 },
-                "{size:?}: art {art:?}, tuning {tuning:?}"
-            );
+            assert!((art.height() - inspector.height()).abs() < 1.0);
             let neck = editor.tuning_widgets["Neck"];
-            assert!(neck.width() <= NECK_MAX + 1.0 && neck.right() <= tuning.right() + 1.0);
-            assert!(neck.left() - tuning.left() < TUNING_TABLE_WIDTH + TUNING_CHROME_WIDTH + 12.0);
+            assert_neck_uses_remaining_width(tuning, neck, 0.0);
             assert!(text_rect(&output, "No 12-String available").is_none());
             assert!(!editor.tuning_widgets.contains_key("Low E mix"));
             assert!(!editor.tuning_widgets.contains_key("Low E detune"));
             assert!(text_rect(&output, "Pickups").is_some());
-            assert_footer(&output, size, tuning);
 
             let pos = editor.float(PICKUP1, 0x200000).unwrap();
             let center = placement.screen_point(art, pos);
@@ -1287,9 +1346,9 @@ fn normal_editor_fits_body_and_tuning_and_retains_pickup_drag_and_keyboard_undo(
 
 #[test]
 fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
-    for size in SIZES {
-        for pixels_per_point in [1.0, 2.0] {
-            let (ctx, mut app) = chime_editor();
+    for size in bottom_band_sizes() {
+        for (pixels_per_point, connected) in density_and_route() {
+            let (ctx, mut app) = chime_editor(connected);
             app.variax_mut().set_tuning([2, 0, 0, 0, 0, 0], true);
             let frame = |app: &mut Workbench, events| {
                 render(
@@ -1303,7 +1362,10 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
             };
             frame(&mut app, vec![]);
             let output = frame(&mut app, vec![]);
+            assert_eq!(output.pixels_per_point, pixels_per_point);
+            assert_bottom_band(&app, &ctx, &output, size);
             let editor = app.variax();
+            assert_eq!(editor.connection_status.is_some(), connected);
             let tuning = editor.workspace_tuning.unwrap();
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             assert!(screen.contains_rect(tuning), "{size:?}: {tuning:?}");
@@ -1311,17 +1373,8 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
             let art = editor.body_art_rect.unwrap();
             let scale = placement.screen_scale(art);
             assert!((art.size() - placement.art * scale).length() < 1.0);
-            if !cfg!(feature = "usb") && size.x == 1120.0 {
-                assert!(scale >= SIDE_MIN_SCALE, "{size:?}: {art:?}");
-            }
             let neck = editor.tuning_widgets["Neck"];
-            assert!(neck.left() - tuning.left() >= TWELVE_STRING_COLUMN + TUNING_TABLE_WIDTH);
-            assert!(neck.width() <= NECK_MAX + 1.0 && neck.right() <= tuning.right() + 1.0);
-            if size.x == 1120.0 || !cfg!(feature = "usb") {
-                assert!(text_rect(&output, "Mix").is_some());
-                assert!(text_rect(&output, "Detune").is_some());
-            }
-            assert_footer(&output, size, tuning);
+            assert_neck_uses_remaining_width(tuning, neck, TWELVE_STRING_COLUMN);
 
             let regions = app.variax().workspace_cards;
             let scroll = |app: &mut Workbench, delta| {
@@ -1342,6 +1395,18 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
                 frame(app, vec![egui::Event::PointerGone])
             };
 
+            let headings = if text_rect(&output, "Mix").is_some() {
+                output
+            } else {
+                scroll(&mut app, -36.0)
+            };
+            for label in ["Mix", "Detune"] {
+                assert!(
+                    text_rect(&headings, label).is_some_and(|rect| tuning.contains_rect(rect)),
+                    "{size:?} at {pixels_per_point}x, connected={connected}: {label} is clipped"
+                );
+            }
+
             let low_mix = app.variax().tuning_widgets["Low E mix"];
             scroll(&mut app, tuning.center().y - low_mix.center().y);
             for label in ["Low E shift", "Low E mix", "Low E detune"] {
@@ -1350,6 +1415,23 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
                     "{size:?} at {pixels_per_point}x: {label} outside {tuning:?}"
                 );
             }
+
+            let original = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+            let widgets = &app.variax().tuning_widgets;
+            let semitone = egui::pos2(
+                scale_x(widgets["Neck"], 7),
+                widgets["Low E shift"].center().y,
+            );
+            assert!(tuning.contains(semitone));
+            frame(&mut app, vec![egui::Event::PointerMoved(semitone)]);
+            frame(&mut app, vec![pointer(semitone, true)]);
+            frame(&mut app, vec![pointer(semitone, false)]);
+            assert_eq!(
+                app.variax().integer(TUNING, super::tuning_presets::PITCH),
+                Some(7)
+            );
+            app.variax_mut().undo();
+            assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), original);
 
             let output = scroll(&mut app, -700.0);
             assert_eq!(app.variax().workspace_cards, regions);
@@ -1369,7 +1451,6 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
                 );
             }
 
-            let original = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
             for action in ["Lock", "Reset", "Zero detune"] {
                 let center = app.variax().tuning_widgets[action].center();
                 assert!(tuning.contains(center));
@@ -1413,7 +1494,7 @@ fn twelve_string_mix_and_detune_stay_in_the_tuning_band_at_both_densities() {
     }
 }
 
-fn chime_editor() -> (egui::Context, Workbench) {
+fn chime_editor(connected: bool) -> (egui::Context, Workbench) {
     let (ctx, mut app) = app();
     ctx.style_mut(|style| style.animation_time = 0.0);
     app.clear_window_controls = true;
@@ -1421,11 +1502,7 @@ fn chime_editor() -> (egui::Context, Workbench) {
     editor.open_example();
     editor.document.as_mut().unwrap().select(0, 4).unwrap();
     editor.change(|preset| preset.set_parameter(TUNING, DETUNE, 1, 12.0_f32.to_bits()));
-    #[cfg(feature = "usb")]
-    {
-        let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
-        app.tabs.entries[index].device = Some(super::refresh::tests::verified_tab());
-    }
+    set_verified_route(&mut app, connected);
     (ctx, app)
 }
 
@@ -1442,9 +1519,9 @@ fn tuning_key(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui
 #[test]
 fn tab_reveals_family_owned_twelve_string_controls() {
     let none = egui::Modifiers::NONE;
-    for size in SIZES {
-        for density in [1.0, 2.0] {
-            let (ctx, mut app) = chime_editor();
+    for size in bottom_band_sizes() {
+        for (density, connected) in density_and_route() {
+            let (ctx, mut app) = chime_editor(connected);
             let frame = |app: &mut Workbench, events, modifiers| {
                 render(app, &ctx, size, density, events, modifiers)
             };
