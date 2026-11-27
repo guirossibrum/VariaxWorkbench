@@ -1,11 +1,30 @@
 use super::{EditorServices, VariaxEditor, egui};
-use crate::editor::tabs::{Connection, DeviceTab};
+use crate::editor::{
+    detection::{DeviceDiscovery, DeviceSupport},
+    registry::DEVICE_PROFILES,
+    tabs::{Connection, DeviceTab},
+};
+use variax_workbench::device_probe::PODXT_LIVE_USB;
 use variax_workbench::ui::theme;
 
 pub(super) fn status(device: &DeviceTab) -> String {
     if device.connection == Connection::Present
         && let Some(status) = &device.device.guitar_status
     {
+        // Detection can retain the last verified identity while reporting
+        // a diagnostic, for example after a cancelled check.
+        if let DeviceSupport::Verified(firmware) = device.device.support
+            && status.strip_prefix("Guitar: Variax 600 ") == Some(firmware)
+            && DEVICE_PROFILES.iter().any(|profile| {
+                profile.family.info().id == device.device.key.family_id
+                    && matches!(
+                        profile.discovery,
+                        DeviceDiscovery::ViaBridge(PODXT_LIVE_USB)
+                    )
+            })
+        {
+            return format!("{status} via PODxt Live");
+        }
         return status.clone();
     }
     format!("Guitar: {}", device.status())
@@ -28,7 +47,9 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         has_download: bool,
     ) -> Option<egui::Response> {
-        ui.weak(self.guitar_connection_status());
+        ui.add(
+            egui::Label::new(egui::RichText::new(self.guitar_connection_status()).weak()).extend(),
+        );
         #[cfg(feature = "usb")]
         if self.follow.active() {
             ui.weak("Following the guitar");
@@ -50,7 +71,7 @@ impl VariaxEditor {
 #[cfg(all(test, feature = "usb"))]
 mod tests {
     use super::*;
-    use crate::editor::{CloseResult, FakeDialogs, Picker, detection::DeviceSupport, tests::app};
+    use crate::editor::{CloseResult, FakeDialogs, Picker, tests::app};
     use std::collections::HashMap;
 
     fn frame(
@@ -102,19 +123,33 @@ mod tests {
         frame(ctx, editor, Some(request), vec![button(false)]);
     }
 
-    fn count_labels(output: &egui::FullOutput, label: &str) -> usize {
-        fn count(shape: &egui::Shape, label: &str) -> usize {
+    fn count_text(output: &egui::FullOutput, matches: impl Fn(&str) -> bool) -> usize {
+        fn count(shape: &egui::Shape, matches: &impl Fn(&str) -> bool) -> usize {
             match shape {
-                egui::Shape::Text(text) => usize::from(text.galley.text() == label),
-                egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, label)).sum(),
+                egui::Shape::Text(text) => usize::from(matches(text.galley.text())),
+                egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, matches)).sum(),
                 _ => 0,
             }
         }
         output
             .shapes
             .iter()
-            .map(|shape| count(&shape.shape, label))
+            .map(|shape| count(&shape.shape, &matches))
             .sum()
+    }
+
+    fn count_labels(output: &egui::FullOutput, label: &str) -> usize {
+        count_text(output, |text| text == label)
+    }
+
+    fn assert_connection_label(output: &egui::FullOutput, expected: &str) {
+        assert_eq!(count_labels(output, expected), 1, "{expected}");
+        assert_eq!(
+            count_text(output, |text| text.starts_with("Guitar: ")
+                || text == "Guitar offline"),
+            1,
+            "{expected}"
+        );
     }
 
     #[test]
@@ -126,7 +161,7 @@ mod tests {
             ctx.run(egui::RawInput::default(), |ctx| app.render(ctx))
         };
         let connected = render(&mut app);
-        assert_eq!(count_labels(&connected, "Guitar: Variax 600 3.10"), 1);
+        assert_connection_label(&connected, "Guitar: Variax 600 3.10 via PODxt Live");
         assert_eq!(count_labels(&connected, "Download from guitar…"), 1);
         assert_eq!(count_labels(&connected, "Refresh guitar"), 0);
         assert_eq!(
@@ -138,9 +173,62 @@ mod tests {
         tab.device.support = DeviceSupport::Refreshing("3.10");
         tab.device.guitar_status = Some("Guitar: checking…".into());
         let checking = render(&mut app);
-        assert_eq!(count_labels(&checking, "Guitar: checking…"), 1);
+        assert_connection_label(&checking, "Guitar: checking…");
         assert_eq!(count_labels(&checking, "Download from guitar…"), 0);
         assert_eq!(count_labels(&checking, "Refresh guitar"), 1);
+    }
+
+    #[test]
+    fn toolbar_keeps_nonverified_and_offline_connection_labels() {
+        let (ctx, mut app) = app();
+        let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+        let assert_label = |app: &mut crate::editor::Workbench, expected: &str| {
+            let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
+            assert_connection_label(&output, expected);
+        };
+
+        assert!(app.variax().source_path.is_some());
+        assert_label(&mut app, "Guitar offline");
+
+        let mut reply = variax_workbench::identity_stage::guitar_reply();
+        reply[12..16].copy_from_slice(b"0309");
+        let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
+        let notice = variax_workbench::firmware_notice::FirmwareNotice::variax(&identity).unwrap();
+        for (connection, support, status, expected) in [
+            (
+                Connection::Present,
+                DeviceSupport::UnverifiedGuitarFirmware(notice),
+                Some("Guitar: identity unverified"),
+                "Guitar: identity unverified",
+            ),
+            (
+                Connection::Present,
+                DeviceSupport::Verified("3.10"),
+                Some("Guitar: Identification cancelled."),
+                "Guitar: Identification cancelled.",
+            ),
+            (
+                Connection::Uncertain,
+                DeviceSupport::Verified("3.10"),
+                None,
+                "Guitar: USB presence could not be verified",
+            ),
+            (
+                Connection::Disconnected,
+                DeviceSupport::Verified("3.10"),
+                None,
+                "Guitar: Disconnected · offline editing",
+            ),
+        ] {
+            let mut tab = super::super::refresh::tests::verified_tab();
+            tab.connection = connection;
+            tab.device.support = support;
+            if let Some(status) = status {
+                tab.device.guitar_status = Some(status.into());
+            }
+            app.tabs.entries[index].device = Some(tab);
+            assert_label(&mut app, expected);
+        }
     }
 
     #[test]
@@ -342,7 +430,10 @@ mod tests {
 
         let mut tab = super::super::refresh::tests::verified_tab();
         editor.observe_device(Some(&tab));
-        assert_eq!(editor.guitar_connection_status(), "Guitar: Variax 600 3.10");
+        assert_eq!(
+            editor.guitar_connection_status(),
+            "Guitar: Variax 600 3.10 via PODxt Live"
+        );
         let mut requested = false;
         let available = frame(&ctx, editor, Some(&mut requested), vec![]).unwrap();
         assert!(available.enabled());
