@@ -16,7 +16,27 @@ use std::{
     thread::JoinHandle,
     time::{Duration, SystemTime},
 };
-use variax_workbench::bundle::BundleFile;
+use variax_workbench::{
+    bundle::BundleFile,
+    hardware_gates::{Gate, is_locked},
+};
+
+const REFRESH_PREREQUISITES: [Gate; 4] = [
+    Gate::OsDiscovery,
+    Gate::IdentityRequest,
+    Gate::CurrentSettingsRead,
+    // Retain the existing allowance for the bank-name read (0x6D).
+    Gate::StoreRestore,
+];
+
+mod native;
+
+#[derive(Clone, Copy)]
+struct DownloadRoute {
+    download_on_connect: bool,
+}
+
+type RouteCapability = Result<DownloadRoute, &'static str>;
 
 struct Capture {
     bundle: BundleFile,
@@ -100,6 +120,8 @@ struct Worker {
 #[derive(Default)]
 pub(super) struct Refresh {
     attachment: Option<Attachment>,
+    #[cfg(test)]
+    capability_source: Option<fn(&Attachment) -> RouteCapability>,
     attempted: Option<DeviceKey>,
     active: Option<Attempt>,
     next_attempt: u64,
@@ -107,7 +129,7 @@ pub(super) struct Refresh {
     explicit_download_required: bool,
     #[cfg(test)]
     auto_source: Option<ReadLibrary>,
-    confirming: bool,
+    confirmation: Option<ReadLibrary>,
     worker: Option<Worker>,
 }
 
@@ -120,7 +142,7 @@ impl Refresh {
         if self.attachment != attachment {
             self.cancel();
             self.active = None;
-            self.confirming = false;
+            self.confirmation = None;
             self.attachment = attachment;
         }
     }
@@ -147,7 +169,7 @@ impl Refresh {
     }
 
     pub(super) fn confirming(&self) -> bool {
-        self.confirming
+        self.confirmation.is_some()
     }
 
     pub(super) fn cancel(&self) {
@@ -212,28 +234,60 @@ impl VariaxEditor {
     }
 
     pub(super) fn download_button(&mut self, ui: &mut egui::Ui) {
+        self.draw_download_button(ui, read_library);
+    }
+
+    fn draw_download_button(&mut self, ui: &mut egui::Ui, read: ReadLibrary) -> egui::Response {
+        let capability = self.download_capability();
         let button = ui.add_enabled(
-            cfg!(target_os = "linux") && self.download_target_ready() && !self.refresh.busy(),
+            capability.is_ok() && self.can_request_download(),
             egui::Button::new("Download from guitar…")
                 .min_size(egui::vec2(0.0, super::theme::TARGET)),
         );
-        if button.clicked() {
-            self.request_refresh(read_library);
+        if self.refresh.attachment.is_some()
+            && let Err(reason) = capability
+        {
+            ui.weak(reason);
         }
+        if button.clicked() {
+            self.request_refresh(read);
+        }
+        button
+    }
+
+    fn download_capability(&self) -> RouteCapability {
+        let attachment = self
+            .refresh
+            .attachment
+            .as_ref()
+            .ok_or("Verify the guitar connection before downloading.")?;
+        #[cfg(test)]
+        let capability = self.refresh.capability_source.unwrap_or(native::capability);
+        #[cfg(not(test))]
+        let capability = native::capability;
+        let route = capability(attachment)?;
+        if is_locked(Gate::FullBackupRead) || REFRESH_PREREQUISITES.into_iter().any(is_locked) {
+            return Err(
+                "Guitar download is disabled in this build. Open a saved library for offline editing.",
+            );
+        }
+        Ok(route)
+    }
+
+    fn can_request_download(&self) -> bool {
+        self.download_target_ready()
+            && !self.is_reading()
+            && !self.opening_file
+            && !self.live_edit.busy()
+            && !self.blocking_prompt()
     }
 
     fn request_refresh(&mut self, read: ReadLibrary) {
-        if self.is_reading()
-            || self.opening_file
-            || self.live_edit.busy()
-            || self.follow.disconnected()
-            || self.blocking_prompt()
-            || !self.download_target_ready()
-        {
+        if !self.can_request_download() || self.download_capability().is_err() {
             return;
         }
         if FamilyTab::dirty(self) {
-            self.refresh.confirming = true;
+            self.refresh.confirmation = Some(read);
         } else {
             self.start_refresh(read, self.untouched_startup_view());
         }
@@ -269,7 +323,7 @@ impl VariaxEditor {
     }
 
     pub(super) fn refresh_confirmation(&mut self, ctx: &egui::Context) {
-        if !self.refresh.confirming {
+        if !self.refresh.confirming() {
             return;
         }
         let dialog = egui::Modal::new(egui::Id::new("variax-refresh-confirmation")).show(ctx, |ui| {
@@ -283,17 +337,22 @@ impl VariaxEditor {
             }).inner
         });
         let (cancel, download, replace) = dialog.inner;
-        if download {
-            self.refresh.confirming = false;
-            self.start_refresh(read_library, false);
-        } else if cancel || replace || dialog.should_close() {
-            self.confirm_refresh(replace, read_library);
+        if cancel || download || replace || dialog.should_close() {
+            self.confirm_refresh(if download || replace {
+                Some(replace)
+            } else {
+                None
+            });
         }
     }
 
-    fn confirm_refresh(&mut self, replace: bool, read: ReadLibrary) {
-        if std::mem::take(&mut self.refresh.confirming) && replace {
-            self.start_refresh(read, true);
+    fn confirm_refresh(&mut self, replace: Option<bool>) {
+        if let Some(read) = self.refresh.confirmation.take()
+            && let Some(replace) = replace
+            && self.can_request_download()
+            && self.download_capability().is_ok()
+        {
+            self.start_refresh(read, replace);
         }
     }
 
@@ -304,7 +363,9 @@ impl VariaxEditor {
         };
         #[cfg(not(test))]
         let read = read_library;
-        if !cfg!(target_os = "linux")
+        if !self
+            .download_capability()
+            .is_ok_and(|route| route.download_on_connect)
             || self.refresh.explicit_download_required
             || !self.download_target_ready()
             || self.is_reading()
@@ -368,12 +429,6 @@ impl VariaxEditor {
         if self.follow.disconnected() {
             return;
         }
-        if cancelled {
-            self.status = "Guitar refresh stopped. The open document was kept.".into();
-            self.error = result.err();
-            return;
-        }
-
         let result = result.and_then(|capture| {
             let Restore::Switched { to, verified: true } = capture.restore else {
                 return Err(with_release_error(
@@ -384,8 +439,17 @@ impl VariaxEditor {
             if let Some(error) = capture.release_error {
                 return Err(error);
             }
+            Ok((capture.bundle, to))
+        });
+        if cancelled {
+            self.status = "Guitar refresh stopped. The open document was kept.".into();
+            self.error = result.err();
+            return;
+        }
+
+        let result = result.and_then(|(bundle, to)| {
             let download = DownloadedLibrary {
-                bundle: capture.bundle,
+                bundle,
                 position: (usize::from(to.bank()), usize::from(to.slot())),
                 captured_at: SystemTime::now(),
                 attachment: attempt.attachment,
@@ -499,7 +563,7 @@ fn with_release_error(message: String, release_error: Option<String>) -> String 
     }
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(test)))]
 fn read_library(
     attachment: &Attachment,
     stop: &AtomicBool,
@@ -511,7 +575,7 @@ fn read_library(
         gate::{GatePolicy, Operation},
         session::{Quiet, Session},
     };
-    use variax_workbench::hardware_gates::{Gate, is_locked, run_if_unlocked};
+    use variax_workbench::hardware_gates::run_if_unlocked;
 
     struct Policy;
     impl GatePolicy for Policy {
@@ -530,12 +594,7 @@ fn read_library(
     }
 
     let cancelled = || stop.load(Ordering::Relaxed);
-    for gate in [
-        Gate::OsDiscovery,
-        Gate::IdentityRequest,
-        Gate::CurrentSettingsRead,
-        Gate::StoreRestore,
-    ] {
+    for gate in REFRESH_PREREQUISITES {
         run_if_unlocked(gate, || Ok(()))?;
     }
     run_if_unlocked(Gate::FullBackupRead, || {
@@ -546,10 +605,7 @@ fn read_library(
         if cancelled() {
             return Err("Guitar refresh cancelled before opening the attachment.".into());
         }
-        let link = variax_workbench::usb::open_variax_bridge_borrowed(
-            &rig,
-            (&attachment.path, attachment.address),
-        )?;
+        let link = native::open(&rig, attachment)?;
         let mut log = Quiet;
         let mut session = Session::new(link, &Policy, &mut log);
         session.log_packets = false;
@@ -566,12 +622,6 @@ fn read_library(
         let bundle =
             BundleFile::from_refreshed_variax(refreshed.library, &refreshed.identified.reply)
                 .map_err(|error| with_release_error(error, release_error.clone()))?;
-        if cancelled() {
-            return Err(with_release_error(
-                restore_notice(&refreshed.restore),
-                release_error,
-            ));
-        }
         Ok(Capture {
             bundle,
             restore: refreshed.restore,
@@ -580,7 +630,7 @@ fn read_library(
     })
 }
 
-#[cfg(any(not(target_os = "linux"), test))]
+#[cfg(any(not(any(target_os = "linux", target_os = "macos")), test))]
 fn read_library(_: &Attachment, _: &AtomicBool, _: &AtomicUsize) -> Result<Capture, String> {
     Err("This build cannot open a USB device for Variax Refresh.".into())
 }
@@ -591,15 +641,22 @@ pub(super) mod tests {
     use crate::editor::{Scan, detection, tests::app};
     use variax_workbench::device_probe::{OsMetadataSource, PODXT_LIVE_USB, SyntheticSysfs};
 
-    struct VerifiedRig(SyntheticSysfs);
+    struct VerifiedRig {
+        metadata: SyntheticSysfs,
+        registry_id: Option<u64>,
+    }
 
     impl detection::PresenceSource for VerifiedRig {
         fn metadata(&self) -> &dyn OsMetadataSource {
-            &self.0
+            &self.metadata
         }
 
         fn usb_address(&self, _: &str) -> Option<u8> {
             Some(10)
+        }
+
+        fn usb_registry_id(&self, _: &str) -> Option<u64> {
+            self.registry_id
         }
 
         fn simulated_identity(
@@ -614,6 +671,10 @@ pub(super) mod tests {
     }
 
     pub(crate) fn verified_rig() -> detection::DetectionService {
+        verified_rig_with_registry_id(None)
+    }
+
+    fn verified_rig_with_registry_id(registry_id: Option<u64>) -> detection::DetectionService {
         let mut metadata = SyntheticSysfs::new();
         metadata.add_device(
             "8-2.1",
@@ -622,7 +683,10 @@ pub(super) mod tests {
             "PODxt Live",
             &[],
         );
-        detection::DetectionService::new(Box::new(VerifiedRig(metadata)))
+        detection::DetectionService::new(Box::new(VerifiedRig {
+            metadata,
+            registry_id,
+        }))
     }
 
     pub(crate) fn verified_tab() -> DeviceTab {
@@ -708,7 +772,7 @@ pub(super) mod tests {
 
     pub(crate) fn download(editor: &mut VariaxEditor, ctx: &egui::Context) {
         editor.request_refresh(complete_capture);
-        editor.confirm_refresh(true, complete_capture);
+        editor.confirm_refresh(Some(true));
         wait_for_completion(editor, ctx);
         if !editor.has_current_guitar_library() {
             editor.open_download();
@@ -725,6 +789,198 @@ pub(super) mod tests {
         wait_for_worker(editor);
         editor.poll(ctx);
         assert!(!editor.refresh.busy());
+    }
+
+    fn attach_macos(editor: &mut VariaxEditor, registry_id: u64) -> DeviceTab {
+        editor.refresh.capability_source = Some(native::macos_capability);
+        let tab = verified_tab_for(&mut verified_rig_with_registry_id(Some(registry_id)));
+        editor.observe_device(Some(&tab));
+        tab
+    }
+
+    fn download_frame(
+        editor: &mut VariaxEditor,
+        ctx: &egui::Context,
+        read: ReadLibrary,
+        events: Vec<egui::Event>,
+    ) -> egui::Response {
+        let mut button = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    button = Some(editor.draw_download_button(ui, read));
+                });
+            },
+        );
+        button.unwrap()
+    }
+
+    #[test]
+    fn macos_explicit_download_button_uses_verified_route_and_shared_result() {
+        let (_, mut app) = app();
+        let ctx = egui::Context::default();
+        let editor = app.variax_mut();
+        editor.document = None;
+        editor.source_path = None;
+        let verified = attach_macos(editor, 984);
+        editor.refresh.auto_source = Some(complete_capture);
+
+        editor.poll(&ctx);
+        assert!(!editor.refresh.busy());
+        assert!(editor.document.is_none());
+        let read: ReadLibrary = |attachment, stop, progress| {
+            assert_eq!(attachment.key.attachment.usb_registry_id(), Some(984));
+            complete_capture(attachment, stop, progress)
+        };
+        let button = download_frame(editor, &ctx, read, vec![]);
+        assert!(button.enabled());
+        let pos = button.rect.center();
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        download_frame(editor, &ctx, read, vec![egui::Event::PointerMoved(pos)]);
+        download_frame(editor, &ctx, read, vec![pointer(true)]);
+        assert!(download_frame(editor, &ctx, read, vec![pointer(false)]).clicked());
+        assert!(editor.refresh.busy());
+        assert!(!download_frame(editor, &ctx, read, vec![]).enabled());
+        wait_for_completion(editor, &ctx);
+
+        assert!(editor.has_current_guitar_library());
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().attachment,
+            verified.device.key
+        );
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.banks().unwrap().len(), 12);
+        assert_eq!(document.selection(), Some((3, 2)));
+    }
+
+    #[test]
+    fn download_capability_explains_missing_macos_attachment_and_missing_adapter() {
+        let (_, mut app) = app();
+        let ctx = egui::Context::default();
+        let editor = app.variax_mut();
+        attach(editor);
+        editor.refresh.capability_source = Some(native::macos_capability);
+        assert!(editor.connected_library_attachment().is_some());
+        assert!(
+            matches!(editor.download_capability(), Err(reason) if reason.contains("Reconnect the PODxt Live"))
+        );
+        assert!(!download_frame(editor, &ctx, complete_capture, vec![]).enabled());
+        editor.request_refresh(complete_capture);
+        assert!(!editor.refresh.busy());
+
+        attach_macos(editor, 984);
+        editor.refresh.capability_source = Some(native::unsupported_capability);
+        assert!(editor.connected_library_attachment().is_some());
+        assert!(
+            matches!(editor.download_capability(), Err(reason) if reason.contains("Open a saved library"))
+        );
+        assert!(!download_frame(editor, &ctx, complete_capture, vec![]).enabled());
+        editor.request_refresh(complete_capture);
+        assert!(!editor.refresh.busy());
+    }
+
+    #[test]
+    fn macos_replacement_invalidates_a_prompt_and_completed_read_on_the_same_route() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let first = attach_macos(editor, 984);
+        editor.request_refresh(complete_capture);
+        wait_for_completion(editor, &ctx);
+        let previous = editor.refresh.latest_download.as_ref().unwrap().captured_at;
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let bytes = editor.document.as_ref().unwrap().as_bytes().to_vec();
+
+        editor.request_refresh(complete_capture);
+        assert!(editor.refresh.confirming());
+        let second = attach_macos(editor, 985);
+        assert_eq!(first.verified_attachment(), second.verified_attachment(),);
+        assert_ne!(first.device.key, second.device.key);
+        editor.confirm_refresh(Some(true));
+        assert!(!editor.refresh.busy());
+
+        editor.request_refresh(complete_capture);
+        editor.confirm_refresh(Some(true));
+        wait_for_worker(editor);
+        attach_macos(editor, 986);
+        wait_for_completion(editor, &ctx);
+        let retained = editor.refresh.latest_download.as_ref().unwrap();
+        assert_eq!(retained.captured_at, previous);
+        assert_eq!(retained.attachment, first.device.key);
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.as_bytes(), bytes);
+        assert!(document.is_dirty() && document.can_undo());
+    }
+
+    #[test]
+    fn macos_busy_return_release_and_cancel_keep_dirty_document_and_last_download() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        attach_macos(editor, 984);
+        editor.request_refresh(complete_capture);
+        wait_for_completion(editor, &ctx);
+        let previous = editor.refresh.latest_download.as_ref().unwrap().captured_at;
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let bytes = editor.document.as_ref().unwrap().as_bytes().to_vec();
+
+        let busy: ReadLibrary = |_, _, _| Err("PODxt Live is busy with another operation.".into());
+        let failed_cleanup: ReadLibrary = |attachment, stop, progress| {
+            let mut capture = complete_capture(attachment, stop, progress)?;
+            capture.restore = Restore::Switched {
+                to: variax::Preset::new(3, 2).unwrap(),
+                verified: false,
+            };
+            capture.release_error = Some("Could not release USB interface 1.".into());
+            Ok(capture)
+        };
+        let cleanup_errors = [
+            "read-back did not verify",
+            "Could not release USB interface 1.",
+        ];
+        for (read, cancel, expected_errors) in [
+            (busy, false, &["PODxt Live is busy"][..]),
+            (failed_cleanup, false, &cleanup_errors),
+            (failed_cleanup, true, &cleanup_errors),
+            (complete_capture as ReadLibrary, true, &[]),
+        ] {
+            editor.request_refresh(read);
+            editor.confirm_refresh(Some(true));
+            wait_for_worker(editor);
+            if cancel {
+                editor.cancel_operation();
+            }
+            wait_for_completion(editor, &ctx);
+            assert_eq!(editor.error.is_none(), expected_errors.is_empty());
+            for expected in expected_errors {
+                assert!(editor.error.as_deref().unwrap().contains(expected));
+            }
+            if cancel {
+                assert!(editor.status.starts_with("Guitar refresh stopped."));
+            }
+            let document = editor.document.as_ref().unwrap();
+            assert_eq!(document.as_bytes(), bytes);
+            assert!(document.is_dirty() && document.can_undo());
+            assert_eq!(
+                editor.refresh.latest_download.as_ref().unwrap().captured_at,
+                previous
+            );
+        }
+
+        editor.request_refresh(complete_capture);
+        editor.confirm_refresh(Some(false));
+        wait_for_completion(editor, &ctx);
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.as_bytes(), bytes);
+        assert!(document.is_dirty() && document.can_undo());
+        assert!(editor.status.contains("ready to open"));
     }
 
     #[test]
@@ -933,11 +1189,11 @@ pub(super) mod tests {
         attach(editor);
         editor.request_refresh(complete_capture);
         assert!(editor.blocking_prompt() && !editor.refresh.busy());
-        editor.confirm_refresh(false, complete_capture);
+        editor.confirm_refresh(None);
         assert_eq!(editor.document.as_ref().unwrap().as_bytes(), old);
 
         editor.request_refresh(complete_capture);
-        editor.confirm_refresh(true, complete_capture);
+        editor.confirm_refresh(Some(true));
         assert_eq!(editor.document.as_ref().unwrap().as_bytes(), old);
         wait_for_completion(editor, &ctx);
 
@@ -1075,7 +1331,7 @@ pub(super) mod tests {
         for late_edit in [true, false] {
             editor.change(|preset| preset.rename("Confirmed edit"));
             editor.request_refresh(complete_capture);
-            editor.confirm_refresh(true, complete_capture);
+            editor.confirm_refresh(Some(true));
             if late_edit {
                 // Synthetic editor update between authorization and result delivery.
                 editor
@@ -1131,7 +1387,7 @@ pub(super) mod tests {
             Ok(capture)
         };
         editor.request_refresh(next_capture);
-        editor.confirm_refresh(true, next_capture);
+        editor.confirm_refresh(Some(true));
         wait_for_worker(editor);
         editor.follow.queue_disconnect(&ctx);
         assert!(!editor.follow.disconnected());
@@ -1288,7 +1544,7 @@ pub(super) mod tests {
             Err("Missing preset reply after 19 slots.".into())
         };
         editor.request_refresh(partial);
-        editor.confirm_refresh(true, partial);
+        editor.confirm_refresh(Some(true));
         wait_for_completion(editor, &ctx);
         assert_eq!(
             editor.error.as_deref(),
@@ -1304,7 +1560,7 @@ pub(super) mod tests {
         };
         for disconnect in [false, true] {
             editor.request_refresh(finishes_after_stop);
-            editor.confirm_refresh(true, finishes_after_stop);
+            editor.confirm_refresh(Some(true));
             if disconnect {
                 editor.observe_device(None);
             } else {
