@@ -442,20 +442,188 @@ fn populated_bank_slots_show_names_and_keep_their_controls_at_both_densities() {
                 }),
                 "the clicked slot must be highlighted"
             );
-            let modified = text_rect(&output, "Modified · not stored on guitar")
-                .expect("selected dirty slot's status");
-            assert!(
-                previous.right() <= modified.left()
-                    && previous.y_range().contains(modified.center().y)
-                    && screen.contains_rect(modified),
-                "{size:?} at {pixels_per_point}: Modified notice {modified:?} after {previous:?}"
-            );
             let editor = app.variax();
             println!(
                 "{size:?} at {pixels_per_point} px/point: dropdown {:?}, slots 1–5 {:?}",
                 editor.bank_dropdown.unwrap(),
                 editor.bank_slots[&0].union(editor.bank_slots[&4])
             );
+        }
+    }
+}
+
+#[test]
+fn bank_storage_notice_distinguishes_local_and_detached_guitar_libraries() {
+    use super::LibraryOrigin;
+    use std::{fs, time::UNIX_EPOCH};
+
+    const STORAGE_NOTICE: &str = "Modified · not stored on guitar";
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("local.vwb");
+    let (_, mut seed) = app();
+    seed.variax_mut().open_example();
+    let original = seed.variax().document.as_ref().unwrap().as_bytes().to_vec();
+    fs::write(&path, &original).unwrap();
+
+    for size in SIZES {
+        for density in [1.0, 2.0] {
+            for guitar_library in [false, true] {
+                let (ctx, mut app) = app();
+                app.clear_window_controls = true;
+                let editor = app.variax_mut();
+                editor.load(&path);
+                assert!(editor.library_origin.is_none());
+                assert!(editor.document.as_ref().unwrap().selection().is_some());
+                if guitar_library {
+                    #[cfg(feature = "usb")]
+                    {
+                        let mut tab = super::refresh::tests::verified_tab();
+                        editor.library_origin = Some(LibraryOrigin::AttachedDownload(
+                            UNIX_EPOCH,
+                            tab.device.key.clone(),
+                        ));
+                        tab.connection = crate::editor::tabs::Connection::Disconnected;
+                        let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+                        app.tabs.entries[index].device = Some(tab);
+                    }
+                    #[cfg(not(feature = "usb"))]
+                    {
+                        editor.library_origin = Some(LibraryOrigin::Download(UNIX_EPOCH));
+                    }
+                }
+                let frame = |app: &mut Workbench| {
+                    render(app, &ctx, size, density, vec![], egui::Modifiers::NONE)
+                };
+
+                app.variax_mut()
+                    .change(|preset| preset.rename("Local edit"));
+                let editor = app.variax();
+                let document = editor.document.as_ref().unwrap();
+                let (bank, slot) = document.selection().unwrap();
+                assert!(document.slot_is_unsent(bank, slot));
+
+                frame(&mut app);
+                let output = frame(&mut app);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let notice = |output: &egui::FullOutput, label| {
+                    output.shapes.iter().find_map(|shape| {
+                        Some((text_bounds(&shape.shape, label)?, shape.clip_rect))
+                    })
+                };
+                let (bounds, clip) = notice(&output, "Unsaved").expect("unsaved file");
+                assert!(screen.intersect(clip).contains_rect(bounds));
+                if guitar_library {
+                    let (bounds, clip) =
+                        notice(&output, STORAGE_NOTICE).expect("pending guitar storage");
+                    assert!(screen.intersect(clip).contains_rect(bounds));
+                    let last_slot = app.variax().bank_slots[&4];
+                    assert!(last_slot.right() <= bounds.left());
+                    assert!(last_slot.y_range().contains(bounds.center().y));
+                    #[cfg(feature = "usb")]
+                    assert!(text_rect(&output, "Guitar: Disconnected · offline editing").is_some());
+                } else {
+                    assert!(text_rect(&output, "Guitar offline").is_some());
+                    assert!(
+                        notice(&output, STORAGE_NOTICE).is_none(),
+                        "{size:?} at {density}x: a local edit claimed pending guitar storage"
+                    );
+                }
+
+                app.variax_mut().undo();
+                let output = frame(&mut app);
+                assert!(text_rect(&output, "Unsaved").is_none());
+                assert!(notice(&output, STORAGE_NOTICE).is_none());
+                assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), original);
+                assert_eq!(fs::read(&path).unwrap(), original);
+            }
+        }
+    }
+}
+
+#[test]
+fn imported_nonfinite_trim_fits_and_resets_only_on_request() {
+    use std::fs;
+
+    const TRIM: u32 = 0x200000;
+    const RESET: &str = "Reset to minimum";
+    // System model header through the float parameter's type.
+    const TRIM_RECORD: &[u8] = b"\x02\x01\0\0\0\0\0\x01PARM\0\0\0\x0c\x3f\x20\0\0\0\0\0\x01";
+    let seed = include_bytes!("../../../../tests/fixtures/synthetic-host-preset.vwm");
+    let offset = seed
+        .windows(TRIM_RECORD.len())
+        .position(|bytes| bytes == TRIM_RECORD)
+        .unwrap()
+        + TRIM_RECORD.len();
+    let temp = tempfile::tempdir().unwrap();
+
+    for (bits, shown) in [
+        (0x7fc0_0123_u32, "NaN"),
+        (f32::INFINITY.to_bits(), "inf"),
+        (f32::NEG_INFINITY.to_bits(), "-inf"),
+    ] {
+        let mut original = seed.to_vec();
+        original[offset..offset + 4].copy_from_slice(&bits.to_be_bytes());
+        let path = temp.path().join(format!("{bits:08x}.vwm"));
+        fs::write(&path, &original).unwrap();
+        let caption = format!("Output trim: {shown} (stored)");
+        let mut reset = original.clone();
+        reset[offset..offset + 4].copy_from_slice(&(-20.0_f32).to_be_bytes());
+
+        for size in SIZES {
+            for density in [1.0, 2.0] {
+                let (ctx, mut app) = app();
+                app.clear_window_controls = true;
+                app.variax_mut().load(&path);
+                let frame = |app: &mut Workbench, events| {
+                    render(app, &ctx, size, density, events, egui::Modifiers::NONE)
+                };
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let visible = |output: &egui::FullOutput, label: &str| {
+                    let (bounds, clip) = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| {
+                            Some((text_bounds(&shape.shape, label)?, shape.clip_rect))
+                        })
+                        .unwrap_or_else(|| panic!("{size:?} at {density}x lacks {label:?}"));
+                    assert!(
+                        screen.intersect(clip).contains_rect(bounds),
+                        "{size:?} at {density}x clips {label:?} {bounds:?} to {clip:?}"
+                    );
+                    bounds.center()
+                };
+                let click = |app: &mut Workbench, pos| {
+                    frame(
+                        app,
+                        vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+                    );
+                    frame(app, vec![pointer(pos, false)]);
+                    frame(app, vec![])
+                };
+                let bytes =
+                    |app: &Workbench| app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+
+                frame(&mut app, vec![]);
+                let output = frame(&mut app, vec![]);
+                assert_eq!(output.pixels_per_point, density);
+                assert!(!app.variax().dirty());
+                assert_eq!(app.variax().float(SYSTEM, TRIM).unwrap().to_bits(), bits);
+                assert_eq!(bytes(&app), original);
+                visible(&output, &caption);
+                let output = click(&mut app, visible(&output, RESET));
+                assert_eq!(bytes(&app), reset);
+                assert!(app.variax().dirty());
+                assert!(text_rect(&output, RESET).is_none());
+
+                let output = click(&mut app, visible(&output, "Undo"));
+                assert_eq!(bytes(&app), original);
+                assert!(!app.variax().dirty());
+                visible(&output, &caption);
+                visible(&output, RESET);
+                click(&mut app, visible(&output, "Redo"));
+                assert_eq!(bytes(&app), reset);
+                assert_eq!(fs::read(&path).unwrap(), original);
+            }
         }
     }
 }
