@@ -298,6 +298,91 @@ fn cancellation_and_failed_set_both_restore_the_original() {
     }
 }
 
+// Low E is inverted. The raw words include values the Workbench sliders
+// cannot round-trip, so restoring from slider fractions would fail the script.
+const INVERTED_ORIGINAL: Levels =
+    Levels([0x800000, 0x123abc, 0xeeeeee, 0x345678, 0xffffff, 0x923456]);
+const FIRST_PREVIEW: Levels = Levels([0x4fffff, 0x800000, 0x0fffff, 0xa00000, 0x1fffff, 0xc00000]);
+const SECOND_PREVIEW: Levels = Levels([0x7fffff, 0xb00000, 0x5fffff, 0xf00000, 0x3fffff, 0xe00000]);
+
+fn assert_single_original_backup(root: &FilePath) {
+    assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    let backup = root.join("levels");
+    assert_eq!(
+        fs::read(backup.join(BACKUP_FILE)).unwrap(),
+        INVERTED_ORIGINAL.backup_bytes()
+    );
+    assert_eq!(verify_manifest(&backup), Ok(3));
+}
+
+fn two_previews(
+    root: &FilePath,
+    second_readback: Levels,
+    end: impl FnOnce(&mut Edit<'_, '_, Fake>, Result<Levels, String>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut script = start();
+    // run_edit checks the exact writes and both release frames. The script
+    // accepts one restoration and no store, retry, or additional release.
+    script.extend([
+        read_levels(INVERTED_ORIGINAL),
+        write_levels(FIRST_PREVIEW),
+        read_levels(FIRST_PREVIEW),
+        write_levels(SECOND_PREVIEW),
+        read_levels(second_readback),
+        write_levels(INVERTED_ORIGINAL),
+        read_levels(INVERTED_ORIGINAL),
+    ]);
+    let result = run_edit(script, vec![], &AllowAll, root, |edit| {
+        assert_eq!(edit.original(), INVERTED_ORIGINAL);
+        assert_single_original_backup(root);
+        let first = edit
+            .original()
+            .with_workbench_levels([0.5, 0.25, 0.75, 0.125, 1.0, 0.625])?;
+        assert_eq!(edit.set_ram(first)?, FIRST_PREVIEW);
+        assert_eq!(edit.original(), INVERTED_ORIGINAL);
+        assert_single_original_backup(root);
+
+        let second = edit
+            .original()
+            .with_workbench_levels([0.25, 0.5, 0.125, 0.75, 0.625, 1.0])?;
+        let second_result = edit.set_ram(second);
+        assert_eq!(edit.original(), INVERTED_ORIGINAL);
+        assert_single_original_backup(root);
+        end(edit, second_result)
+    });
+    assert_single_original_backup(root);
+    result
+}
+
+#[test]
+fn cancel_after_two_verified_previews_restores_the_first_snapshot() {
+    let tmp = TempRoot::new();
+    two_previews(tmp.path(), SECOND_PREVIEW, |edit, second_result| {
+        assert_eq!(second_result?, SECOND_PREVIEW);
+        edit.restore_ram()
+    })
+    .unwrap();
+}
+
+#[test]
+fn mismatch_after_one_verified_preview_restores_the_first_snapshot() {
+    let tmp = TempRoot::new();
+    // Only the low E word from the second write shows up in its read-back.
+    let mut words = FIRST_PREVIEW.wire_words();
+    words[5] = SECOND_PREVIEW.wire_words()[5];
+    let mismatched = Levels::from_wire_words(words).unwrap();
+    let error = two_previews(tmp.path(), mismatched, |_, second_result| {
+        second_result.map(|_| ())
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "String-level RAM read-back differs: expected {SECOND_PREVIEW:?}, read {mismatched:?}."
+        )
+    );
+}
+
 #[test]
 fn partial_ram_send_terminates_before_restore_and_restore_failure_is_reported() {
     let tmp = TempRoot::new();
