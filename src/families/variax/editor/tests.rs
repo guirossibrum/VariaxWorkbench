@@ -769,6 +769,8 @@ fn rendering_imported_out_of_range_values_does_not_edit_or_create_history() {
 #[test]
 fn missing_artwork_is_cached_without_altering_the_document() {
     let (context, mut app) = app();
+    let folder = tempfile::tempdir().unwrap();
+    app.variax_mut().choose_artwork(folder.path().into());
     let before = app
         .variax()
         .document
@@ -777,11 +779,22 @@ fn missing_artwork_is_cached_without_altering_the_document() {
         .preset()
         .as_bytes()
         .to_vec();
-    let path = "definitely-not-an-original-asset.png";
+    let path = "bodies/wireframe/unbundled-test-outline.png";
     assert!(app.variax_mut().texture(&context, path).is_none());
     assert!(app.variax().missing_textures.contains(path));
+    let fixture = folder.path().join(path);
+    std::fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+    image::RgbaImage::from_pixel(78, 46, image::Rgba([255; 4]))
+        .save(fixture)
+        .unwrap();
     assert!(app.variax_mut().texture(&context, path).is_none());
     assert_eq!(app.variax().missing_textures.len(), 1);
+    app.variax_mut().choose_artwork(folder.path().into());
+    assert!(app.variax().missing_textures.is_empty());
+    assert_eq!(
+        app.variax_mut().texture(&context, path).unwrap().size(),
+        [78, 46]
+    );
     assert_eq!(
         app.variax().document.as_ref().unwrap().preset().as_bytes(),
         before

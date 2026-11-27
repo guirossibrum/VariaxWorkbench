@@ -756,11 +756,12 @@ fn assert_footer(output: &egui::FullOutput, size: egui::Vec2, tuning: egui::Rect
 }
 
 fn body_tab_app(artwork: &std::path::Path) -> (egui::Context, Workbench) {
-    let (ctx, mut app) = app();
+    let ctx = egui::Context::default();
+    let mut app = Workbench::with_context(&ctx, None, artwork.to_owned(), None);
+    app.theme_polled = std::time::Instant::now();
     app.clear_window_controls = true;
     let editor = app.variax_mut();
     editor.open_example();
-    editor.choose_artwork(artwork.into());
     editor.tab = Tab::Body;
     (ctx, app)
 }
@@ -774,6 +775,84 @@ fn render_body_tab(app: &mut Workbench, ctx: &egui::Context) -> egui::FullOutput
         vec![],
         egui::Modifiers::NONE,
     )
+}
+
+#[test]
+fn editor_paints_bundled_body_pickups_and_outline_without_an_artwork_folder() {
+    let install = tempfile::tempdir().unwrap();
+    let artwork = install.path().join("absent-source/assets/ui");
+    let (ctx, mut app) = body_tab_app(&artwork);
+
+    for (body, pickup, expected) in [
+        (
+            0x0310_0000,
+            0x0311_0001,
+            [
+                ("bodies/telecustom.png", [426, 412]),
+                ("pickups/telebridge.png", [120, 120]),
+                ("bodies/wireframe/tele.png", [238, 148]),
+            ],
+        ),
+        (
+            0x0310_0001,
+            0x0311_0000,
+            [
+                ("bodies/tele.png", [426, 412]),
+                ("pickups/teleneck.png", [120, 120]),
+                ("bodies/wireframe/tele.png", [238, 148]),
+            ],
+        ),
+        (
+            0x0310_0004,
+            0x0311_0009,
+            [
+                ("bodies/lester.png", [426, 412]),
+                ("pickups/chromep90.png", [56, 130]),
+                ("bodies/wireframe/lespaul.png", [238, 148]),
+            ],
+        ),
+    ] {
+        app.variax_mut().change(|preset| {
+            preset.select_model(BODY, body)?;
+            preset.select_model(PICKUP1, pickup)
+        });
+        render_body_tab(&mut app, &ctx);
+        let output = render_body_tab(&mut app, &ctx);
+        let editor = app.variax();
+        let (photo, inspector) = editor.workspace_cards.unwrap();
+        for (key, pixels) in expected {
+            let texture = &editor.textures[key].handle;
+            assert_eq!(texture.size(), pixels, "{key}");
+            let mesh = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id() => {
+                    Some(mesh.calc_bounds())
+                }
+                _ => None,
+            });
+            let bounds = mesh.expect(key);
+            if key.starts_with("bodies/wireframe/") {
+                assert!(inspector.contains_rect(bounds), "{key}: {bounds:?}");
+                assert_eq!(bounds.size(), egui::vec2(238.0, 148.0));
+            } else {
+                assert!(photo.contains(bounds.center()), "{key}: {bounds:?}");
+            }
+        }
+        assert!(text_rect(&output, "Guitar artwork unavailable").is_none());
+        assert!(text_rect(&output, "Body outline unavailable").is_none());
+    }
+    assert!(!artwork.exists());
+}
+
+const LESTER_OUTLINE: &str = "bodies/wireframe/lespaul.png";
+
+fn body_tab_with_unavailable_outline(artwork: &std::path::Path) -> (egui::Context, Workbench) {
+    let (ctx, mut app) = body_tab_app(artwork);
+    let editor = app.variax_mut();
+    editor.change(|preset| preset.select_model(BODY, 0x0310_0004));
+    // All normal outlines are bundled. Inject a cached miss to exercise the
+    // unavailable-art UI without changing the selected model or the bundle.
+    editor.missing_textures.insert(LESTER_OUTLINE.into());
+    (ctx, app)
 }
 
 #[test]
@@ -826,17 +905,14 @@ fn body_tab_paints_the_selected_models_private_outline_at_native_size() {
 }
 
 #[test]
-fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
+fn body_tab_keeps_the_outline_slot_when_art_is_unavailable() {
     const NOTICE: &str = "Body outline unavailable";
     let artwork = tempfile::tempdir().unwrap();
-    let (ctx, mut app) = body_tab_app(artwork.path());
-    app.variax_mut()
-        .change(|preset| preset.select_model(BODY, 0x0310_0004));
+    let (ctx, mut app) = body_tab_with_unavailable_outline(artwork.path());
     render_body_tab(&mut app, &ctx);
     let output = render_body_tab(&mut app, &ctx);
-    let path = "bodies/wireframe/lespaul.png";
     let label = text_rect(&output, NOTICE).expect("placeholder before scrolling");
-    assert!(text_rect(&output, path).is_none());
+    assert!(text_rect(&output, LESTER_OUTLINE).is_none());
     let (photo, inspector) = app.variax().workspace_cards.unwrap();
     render(
         &mut app,
@@ -887,10 +963,9 @@ fn body_tab_keeps_the_outline_slot_when_private_art_is_missing() {
 #[test]
 fn body_outline_notice_and_loaded_art_fit_the_inspector_at_both_densities() {
     const NOTICE: &str = "Body outline unavailable";
-    const PATH: &str = "bodies/wireframe/lespaul.png";
     let missing = tempfile::tempdir().unwrap();
     let loaded = tempfile::tempdir().unwrap();
-    let fixture = loaded.path().join(PATH);
+    let fixture = loaded.path().join(LESTER_OUTLINE);
     std::fs::create_dir_all(fixture.parent().unwrap()).unwrap();
     image::RgbaImage::from_pixel(117, 61, image::Rgba([200, 220, 255, 255]))
         .save(fixture)
@@ -898,9 +973,7 @@ fn body_outline_notice_and_loaded_art_fit_the_inspector_at_both_densities() {
 
     for size in SIZES {
         for density in [1.0, 2.0] {
-            let (ctx, mut app) = body_tab_app(missing.path());
-            app.variax_mut()
-                .change(|preset| preset.select_model(BODY, 0x0310_0004));
+            let (ctx, mut app) = body_tab_with_unavailable_outline(missing.path());
             let frame = |app: &mut Workbench, events| {
                 render(app, &ctx, size, density, events, egui::Modifiers::NONE)
             };
@@ -928,7 +1001,7 @@ fn body_outline_notice_and_loaded_art_fit_the_inspector_at_both_densities() {
                     output
                         .shapes
                         .iter()
-                        .all(|shape| text_bounds(&shape.shape, PATH).is_none())
+                        .all(|shape| text_bounds(&shape.shape, LESTER_OUTLINE).is_none())
                 );
                 output.shapes.iter().any(|shape| {
                     text_bounds(&shape.shape, NOTICE).is_some_and(|bounds| {
@@ -948,14 +1021,13 @@ fn body_outline_notice_and_loaded_art_fit_the_inspector_at_both_densities() {
                 label_fits(&output),
                 "{size:?} at {density}x clips {NOTICE:?}"
             );
-            assert!(app.variax().missing_textures.contains(PATH));
-
             app.variax_mut().choose_artwork(loaded.path().into());
+            assert!(!app.variax().missing_textures.contains(LESTER_OUTLINE));
             frame(&mut app, vec![]);
             let output = frame(&mut app, vec![]);
             assert_eq!(app.variax().workspace_cards, Some((photo, inspector)));
             assert!(text_rect(&output, NOTICE).is_none());
-            let texture = app.variax().textures[PATH].handle.id();
+            let texture = app.variax().textures[LESTER_OUTLINE].handle.id();
             let outline = output.shapes.iter().find_map(|shape| match &shape.shape {
                 egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
                     let bounds = mesh.calc_bounds();

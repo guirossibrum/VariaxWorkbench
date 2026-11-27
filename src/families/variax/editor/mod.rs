@@ -150,7 +150,6 @@ pub(super) struct VariaxEditor {
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, body_scene::ArtworkTexture>,
-    bundled_artwork: body_scene::BundledArtwork,
     missing_textures: HashSet<String>,
     pub(super) error: Option<String>,
     pub(super) status: String,
@@ -255,7 +254,6 @@ impl VariaxEditor {
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
-            bundled_artwork: body_scene::BundledArtwork::default(),
             missing_textures: HashSet::new(),
             error,
             status: "Edit preset files offline. Your guitar is unchanged.".into(),
@@ -905,19 +903,18 @@ impl VariaxEditor {
         if self.missing_textures.contains(relative) {
             return None;
         }
-        let path = self.artwork.join(relative);
-        match image::open(&path) {
-            Ok(image) => {
+        match variax_workbench::ui::assets::load_variax_rgba(&self.artwork, relative) {
+            Some(pixels) => {
                 let texture = body_scene::ArtworkTexture::new(
                     ctx,
                     relative,
-                    image.into_rgba8(),
+                    pixels,
                     relative.starts_with("pickups/"),
                 );
                 self.textures.insert(relative.to_owned(), texture.clone());
                 Some(texture)
             }
-            Err(_) => {
+            None => {
                 self.missing_textures.insert(relative.to_owned());
                 None
             }

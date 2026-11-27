@@ -2667,7 +2667,9 @@ mod tests {
             "Spank example"
         );
         assert!(app.variax().read_worker.is_none());
-        assert!(app.variax().textures.is_empty());
+        let textures = &app.variax().textures;
+        assert!(textures.contains_key("bodies/strat.png"));
+        assert!(textures.contains_key("pickups/strat.png"));
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
         let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
         app.dialogs = Box::new(FakeDialogs {

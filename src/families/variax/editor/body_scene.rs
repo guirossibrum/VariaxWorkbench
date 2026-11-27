@@ -8,9 +8,6 @@ use variax_workbench::ui::{
     },
 };
 
-const SPANK_BODY: &[u8] = include_bytes!("../../../../assets/ui/variax/spank-body.png");
-const SPANK_PICKUP: &[u8] = include_bytes!("../../../../assets/ui/variax/spank-pickup.png");
-
 #[derive(Clone)]
 pub(in crate::editor) struct ArtworkTexture {
     pub(super) handle: egui::TextureHandle,
@@ -31,12 +28,6 @@ impl ArtworkTexture {
             rgba: retain_rgba.then(|| Arc::from(pixels.into_raw())),
         }
     }
-}
-
-#[derive(Default)]
-pub(super) struct BundledArtwork {
-    body: Option<ArtworkTexture>,
-    pickup: Option<ArtworkTexture>,
 }
 
 impl VariaxEditor {
@@ -71,26 +62,7 @@ impl VariaxEditor {
             .find(|art| art.id == model_id)?
             .image
             .clone();
-        let artwork = self.artwork_texture(ctx, &name).or_else(|| {
-            let (cache, key, bytes) = match name.as_str() {
-                "bodies/strat.png" => (
-                    &mut self.bundled_artwork.body,
-                    "bundled-spank-body",
-                    SPANK_BODY,
-                ),
-                "pickups/strat.png" => (
-                    &mut self.bundled_artwork.pickup,
-                    "bundled-spank-pickup",
-                    SPANK_PICKUP,
-                ),
-                _ => return None,
-            };
-            if cache.is_none() {
-                let pixels = image::load_from_memory(bytes).ok()?.into_rgba8();
-                *cache = Some(ArtworkTexture::new(ctx, key, pixels, slot != BODY));
-            }
-            cache.clone()
-        })?;
+        let artwork = self.artwork_texture(ctx, &name)?;
         let image = UiImage {
             name,
             pixels: artwork.handle.size(),
