@@ -1,10 +1,14 @@
-use super::{EditorDocument, FamilyTab, VariaxEditor, egui, live_attachment::Attachment};
+use super::{
+    EditorDocument, FamilyTab, GuitarPending, LibraryOrigin, OpenDestination, VariaxEditor, egui,
+    live_attachment::Attachment,
+};
 use crate::editor::{
     detection::DeviceKey,
     tabs::{Connection, DeviceTab},
 };
 use line6_devices::family::variax::{self, Restore};
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -22,16 +26,84 @@ struct Capture {
 
 type ReadLibrary = fn(&Attachment, &AtomicBool, &AtomicUsize) -> Result<Capture, String>;
 
+#[derive(Clone, PartialEq, Eq)]
+struct Attempt {
+    attachment: DeviceKey,
+    id: u64,
+}
+
+struct DocumentView {
+    bytes: Option<Vec<u8>>,
+    selection: Option<(usize, usize)>,
+    source: Option<PathBuf>,
+    history: Option<(bool, bool, bool)>,
+}
+
+impl DocumentView {
+    fn capture(editor: &VariaxEditor) -> Self {
+        Self {
+            bytes: editor.document.as_ref().map(|doc| doc.as_bytes().to_vec()),
+            selection: editor.document.as_ref().and_then(EditorDocument::selection),
+            source: editor.source_path.clone(),
+            history: Self::history(editor),
+        }
+    }
+
+    fn history(editor: &VariaxEditor) -> Option<(bool, bool, bool)> {
+        editor
+            .document
+            .as_ref()
+            .map(|doc| (doc.is_dirty(), doc.can_undo(), doc.can_redo()))
+    }
+
+    fn still_open(&self, editor: &VariaxEditor) -> bool {
+        self.bytes.as_deref() == editor.document.as_ref().map(EditorDocument::as_bytes)
+            && self.selection == editor.document.as_ref().and_then(EditorDocument::selection)
+            && self.source == editor.source_path
+            && self.history == Self::history(editor)
+    }
+}
+
+struct DownloadedLibrary {
+    bundle: BundleFile,
+    position: (usize, usize),
+    captured_at: SystemTime,
+    attachment: DeviceKey,
+}
+
+impl DownloadedLibrary {
+    fn document(&self) -> Result<EditorDocument, String> {
+        let mut document =
+            EditorDocument::from_bundle(self.bundle.clone(), "Downloaded Variax library".into())?;
+        document.select(self.position.0, self.position.1)?;
+        Ok(document)
+    }
+
+    fn origin(&self) -> LibraryOrigin {
+        LibraryOrigin::AttachedDownload(self.captured_at, self.attachment.clone())
+    }
+
+    fn is_open(&self, origin: Option<&LibraryOrigin>) -> bool {
+        matches!(origin, Some(LibraryOrigin::AttachedDownload(time, key))
+            if *time == self.captured_at && *key == self.attachment)
+    }
+}
+
 struct Worker {
+    attempt: Attempt,
+    replace: Option<DocumentView>,
     stop: Arc<AtomicBool>,
     progress: Arc<AtomicUsize>,
-    thread: JoinHandle<Result<(DeviceKey, Capture), String>>,
+    thread: JoinHandle<Result<Capture, String>>,
 }
 
 #[derive(Default)]
 pub(super) struct Refresh {
     attachment: Option<Attachment>,
     attempted: Option<DeviceKey>,
+    active: Option<Attempt>,
+    next_attempt: u64,
+    latest_download: Option<DownloadedLibrary>,
     explicit_download_required: bool,
     #[cfg(test)]
     auto_source: Option<ReadLibrary>,
@@ -47,6 +119,7 @@ impl Refresh {
         }
         if self.attachment != attachment {
             self.cancel();
+            self.active = None;
             self.confirming = false;
             self.attachment = attachment;
         }
@@ -56,6 +129,17 @@ impl Refresh {
         // A historical library previously suppressed automatic downloads.
         // Keep that behavior when it is skipped during device-tab startup.
         self.explicit_download_required = true;
+    }
+
+    pub(super) fn keep_open_document(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            worker.replace = None;
+        }
+    }
+
+    fn accepts(&self, attempt: &Attempt) -> bool {
+        self.active.as_ref() == Some(attempt)
+            && self.attachment.as_ref().map(|a| &a.key) == Some(&attempt.attachment)
     }
 
     pub(super) fn busy(&self) -> bool {
@@ -72,11 +156,16 @@ impl Refresh {
         }
     }
 
-    fn start(&mut self, read: ReadLibrary) -> Result<(), String> {
+    fn start(&mut self, read: ReadLibrary, replace: Option<DocumentView>) -> Result<(), String> {
         let attachment = self
             .attachment
             .clone()
             .ok_or("The verified Variax attachment is no longer available.")?;
+        self.next_attempt += 1;
+        let attempt = Attempt {
+            attachment: attachment.key.clone(),
+            id: self.next_attempt,
+        };
         self.attempted = Some(attachment.key.clone());
         let stop = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(AtomicUsize::new(0));
@@ -84,12 +173,12 @@ impl Refresh {
         let worker_progress = progress.clone();
         let thread = std::thread::Builder::new()
             .name("variax-refresh".into())
-            .spawn(move || {
-                let capture = read(&attachment, &worker_stop, &worker_progress)?;
-                Ok((attachment.key, capture))
-            })
+            .spawn(move || read(&attachment, &worker_stop, &worker_progress))
             .map_err(|error| format!("Could not start Variax Refresh: {error}"))?;
+        self.active = Some(attempt.clone());
         self.worker = Some(Worker {
+            attempt,
+            replace,
             stop,
             progress,
             thread,
@@ -135,6 +224,7 @@ impl VariaxEditor {
 
     fn request_refresh(&mut self, read: ReadLibrary) {
         if self.is_reading()
+            || self.opening_file
             || self.live_edit.busy()
             || self.follow.disconnected()
             || self.blocking_prompt()
@@ -142,15 +232,34 @@ impl VariaxEditor {
         {
             return;
         }
-        if self.dirty() {
+        if FamilyTab::dirty(self) {
             self.refresh.confirming = true;
         } else {
-            self.start_refresh(read);
+            self.start_refresh(read, self.untouched_startup_view());
         }
     }
 
-    fn start_refresh(&mut self, read: ReadLibrary) {
-        match self.refresh.start(read) {
+    fn untouched_startup_view(&self) -> bool {
+        !FamilyTab::dirty(self)
+            && !self.opening_file
+            && self.source_path.is_none()
+            && self.parked_library.is_none()
+            && self.name_draft.is_none()
+            && self.author_draft.is_none()
+            && self.document.as_ref().is_none_or(|document| {
+                matches!(self.library_origin, Some(LibraryOrigin::Factory))
+                    && !document.can_undo()
+                    && !document.can_redo()
+            })
+    }
+
+    fn start_refresh(&mut self, read: ReadLibrary, replace: bool) {
+        let replace = (replace
+            && !self.opening_file
+            && self.name_draft.is_none()
+            && self.author_draft.is_none())
+        .then(|| DocumentView::capture(self));
+        match self.refresh.start(read, replace) {
             Ok(()) => {
                 self.error = None;
                 self.status = "Reading guitar library…".into();
@@ -168,19 +277,23 @@ impl VariaxEditor {
             ui.label("Download reads the stored presets and bank names. It replaces this document only after the full read succeeds.");
             ui.horizontal(|ui| {
                 let cancel = ui.button("Keep editing");
+                let download = ui.button("Download and keep editing");
                 let replace = ui.button("Download and replace");
-                (cancel.clicked(), replace.clicked())
+                (cancel.clicked(), download.clicked(), replace.clicked())
             }).inner
         });
-        let (cancel, replace) = dialog.inner;
-        if cancel || replace || dialog.should_close() {
+        let (cancel, download, replace) = dialog.inner;
+        if download {
+            self.refresh.confirming = false;
+            self.start_refresh(read_library, false);
+        } else if cancel || replace || dialog.should_close() {
             self.confirm_refresh(replace, read_library);
         }
     }
 
     fn confirm_refresh(&mut self, replace: bool, read: ReadLibrary) {
         if std::mem::take(&mut self.refresh.confirming) && replace {
-            self.start_refresh(read);
+            self.start_refresh(read, true);
         }
     }
 
@@ -197,36 +310,33 @@ impl VariaxEditor {
             || self.is_reading()
             || self.live_edit.busy()
             || self.blocking_prompt()
-            || self.dirty()
-            || self.opening_file
-            || self.source_path.is_some()
+            || !self.untouched_startup_view()
             || self
                 .refresh
                 .attachment
                 .as_ref()
                 .is_none_or(|attachment| self.refresh.attempted.as_ref() == Some(&attachment.key))
-            || (self.document.is_some()
-                && !matches!(self.library_origin, Some(super::LibraryOrigin::Factory)))
         {
             return;
         }
         // Workbench 1.75 refreshed a missing bundle on connect. The editor
         // here starts only the library read and does not send an edit buffer.
-        self.start_refresh(read);
+        self.start_refresh(read, true);
     }
 
     pub(super) fn poll_refresh(&mut self, ctx: &egui::Context) {
         let Some(worker) = &self.refresh.worker else {
             return;
         };
-        let stopping = worker.stop.load(Ordering::Relaxed);
         if !worker.thread.is_finished() {
-            if stopping {
-                self.status = "Stopping guitar refresh and releasing the bridge…".into();
-            } else {
-                let completed = worker.progress.load(Ordering::Relaxed);
-                let total = variax::Preset::all().count();
-                self.status = format!("Reading guitar library · {completed}/{total} presets");
+            if self.refresh.accepts(&worker.attempt) {
+                if worker.stop.load(Ordering::Relaxed) {
+                    self.status = "Stopping guitar refresh and releasing the bridge…".into();
+                } else {
+                    let completed = worker.progress.load(Ordering::Relaxed);
+                    let total = variax::Preset::all().count();
+                    self.status = format!("Reading guitar library · {completed}/{total} presets");
+                }
             }
             ctx.request_repaint_after(Duration::from_millis(80));
             return;
@@ -236,46 +346,130 @@ impl VariaxEditor {
             .thread
             .join()
             .unwrap_or_else(|_| Err("The Variax Refresh worker stopped unexpectedly.".into()));
-        if stopping {
+        self.finish_refresh(
+            worker.attempt,
+            worker.stop.load(Ordering::Relaxed),
+            worker.replace,
+            result,
+        );
+    }
+
+    fn finish_refresh(
+        &mut self,
+        attempt: Attempt,
+        cancelled: bool,
+        replace: Option<DocumentView>,
+        result: Result<Capture, String>,
+    ) {
+        if !self.refresh.accepts(&attempt) {
+            return;
+        }
+        self.refresh.active = None;
+        if self.follow.disconnected() {
+            return;
+        }
+        if cancelled {
             self.status = "Guitar refresh stopped. The open document was kept.".into();
             self.error = result.err();
             return;
         }
-        match result.and_then(|(attachment, capture)| {
-            let mut document =
-                EditorDocument::from_bundle(capture.bundle, "Downloaded Variax library".into())?;
-            if let Restore::Switched { to, .. } = capture.restore {
-                document.select(usize::from(to.bank()), usize::from(to.slot()))?;
+
+        let result = result.and_then(|capture| {
+            let Restore::Switched { to, verified: true } = capture.restore else {
+                return Err(with_release_error(
+                    restore_notice(&capture.restore),
+                    capture.release_error,
+                ));
+            };
+            if let Some(error) = capture.release_error {
+                return Err(error);
             }
-            Ok((document, attachment, capture.restore, capture.release_error))
-        }) {
-            Ok((document, attachment, restore, release_error)) => {
-                let time = SystemTime::now();
-                let snapshot_error = self.preferences_path.as_deref().and_then(|preferences| {
-                    super::startup_library::save_download(preferences, &document, time)
-                        .err()
-                        .map(|error| {
-                            format!("Could not remember the downloaded Variax library: {error}")
-                        })
-                });
-                self.adopt_document(document, None);
-                self.refresh.explicit_download_required = false;
-                self.library_origin =
-                    Some(super::LibraryOrigin::AttachedDownload(time, attachment));
-                self.status =
-                    "Read 60 guitar presets and 12 bank names. Use Save As to keep this library."
-                        .into();
-                self.error = match restore {
-                    Restore::Switched { verified: true, .. } => release_error,
-                    other => Some(with_release_error(restore_notice(&other), release_error)),
-                };
-                if let Some(error) = snapshot_error {
-                    self.error = Some(with_release_error(error, self.error.take()));
-                }
-            }
+            let download = DownloadedLibrary {
+                bundle: capture.bundle,
+                position: (usize::from(to.bank()), usize::from(to.slot())),
+                captured_at: SystemTime::now(),
+                attachment: attempt.attachment,
+            };
+            let document = download.document()?;
+            Ok((download, document))
+        });
+        let (download, document) = match result {
+            Ok(completed) => completed,
             Err(error) => {
                 self.error = Some(error);
                 self.status = "Guitar refresh did not complete. The open document was kept.".into();
+                return;
+            }
+        };
+
+        let snapshot_error = self.preferences_path.as_deref().and_then(|preferences| {
+            super::startup_library::save_download(preferences, &document, download.captured_at)
+                .err()
+                .map(|error| format!("Could not remember the downloaded Variax library: {error}"))
+        });
+        let origin = download.origin();
+        self.refresh.latest_download = Some(download);
+        self.refresh.explicit_download_required = false;
+
+        if replace.is_some_and(|view| view.still_open(self))
+            && !self.opening_file
+            && !self.blocking_prompt()
+            && self.parked_library.is_none()
+            && self.name_draft.is_none()
+            && self.author_draft.is_none()
+        {
+            self.adopt_document(document, None);
+            self.library_origin = Some(origin);
+            self.status =
+                "Read 60 guitar presets and 12 bank names. Use Save As to keep this library."
+                    .into();
+        } else {
+            self.status =
+                "Read 60 guitar presets and 12 bank names. The download is ready to open.".into();
+        }
+        self.error = snapshot_error;
+    }
+
+    pub(super) fn open_download_button(&mut self, ui: &mut egui::Ui) {
+        if self
+            .refresh
+            .latest_download
+            .as_ref()
+            .is_none_or(|download| download.is_open(self.library_origin.as_ref()))
+        {
+            return;
+        }
+        let available = !self.is_reading()
+            && !self.blocking_prompt()
+            && !self.opening_file
+            && self.name_draft.is_none()
+            && self.author_draft.is_none()
+            && self
+                .parked_library
+                .as_ref()
+                .is_none_or(|library| !library.document.is_dirty());
+        if ui
+            .add_enabled(available, egui::Button::new("Open downloaded library…"))
+            .clicked()
+        {
+            if FamilyTab::dirty(self) {
+                self.pending = Some(GuitarPending::Open(OpenDestination::Download));
+            } else {
+                self.open_download();
+            }
+        }
+    }
+
+    pub(super) fn open_download(&mut self) {
+        if let Some(download) = &self.refresh.latest_download {
+            match download.document() {
+                Ok(document) => {
+                    let origin = download.origin();
+                    self.adopt_document(document, None);
+                    self.library_origin = Some(origin);
+                    self.status = "Opened the downloaded Variax library.".into();
+                }
+                Err(error) => self.error = Some(error),
             }
         }
     }
@@ -503,7 +697,11 @@ pub(super) mod tests {
 
     pub(crate) fn download(editor: &mut VariaxEditor, ctx: &egui::Context) {
         editor.request_refresh(complete_capture);
+        editor.confirm_refresh(true, complete_capture);
         wait_for_completion(editor, ctx);
+        if !editor.has_current_guitar_library() {
+            editor.open_download();
+        }
         assert!(editor.has_current_guitar_library());
     }
 
@@ -625,6 +823,8 @@ pub(super) mod tests {
 
         editor.request_refresh(complete_capture);
         wait_for_completion(&mut editor, &ctx);
+        assert!(!editor.has_current_guitar_library());
+        editor.open_download();
         assert!(editor.has_current_guitar_library());
         if cfg!(target_os = "linux") {
             assert!(editor.sync_ready(super::super::device_sync::Action::ReadUnmodified));
@@ -672,6 +872,18 @@ pub(super) mod tests {
         editor.poll(&ctx);
         assert!(!editor.refresh.busy());
         editor.undo();
+        editor.poll(&ctx);
+        assert!(
+            !editor.refresh.busy(),
+            "keep the factory document's redo history"
+        );
+
+        editor
+            .adopt_startup_library(
+                BundleFile::new_default_bundle().unwrap(),
+                LibraryOrigin::Factory,
+            )
+            .unwrap();
         editor.poll(&ctx);
         wait_for_completion(editor, &ctx);
         assert!(matches!(
@@ -740,6 +952,241 @@ pub(super) mod tests {
             EditorDocument::open(&new).unwrap().banks().unwrap().len(),
             12
         );
+    }
+
+    #[test]
+    fn download_retains_a_complete_library_while_an_open_file_stays_in_use() {
+        let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let preferences = directory.path().join("editor-preferences.txt");
+        let file = directory.path().join("Open guitar.vwb");
+        let mut original =
+            EditorDocument::from_bundle(BundleFile::new_default_bundle().unwrap(), file.clone())
+                .unwrap();
+        original.apply(|preset| preset.rename("My file")).unwrap();
+        std::fs::write(&file, original.as_bytes()).unwrap();
+
+        let editor = app.variax_mut();
+        editor.preferences_path = Some(preferences.clone());
+        editor.load(&file);
+        attach(editor);
+        editor.request_refresh(complete_capture);
+        wait_for_completion(editor, &ctx);
+        assert_eq!(editor.source_path(), Some(file.as_path()));
+        assert_eq!(
+            editor.document.as_ref().unwrap().as_bytes(),
+            original.as_bytes()
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), original.as_bytes());
+        assert!(!editor.has_current_guitar_library());
+
+        let retained = editor.refresh.latest_download.as_ref().unwrap();
+        let bytes = retained.document().unwrap().as_bytes().to_vec();
+        let defaults = super::super::EditorDefaults {
+            artwork: directory.path().join("artwork"),
+            preferences: Some(preferences),
+            startup_panel: None,
+        };
+        let mut offline = VariaxEditor::new(&defaults);
+        offline.load_initial_library(&defaults);
+        assert_eq!(offline.document.as_ref().unwrap().as_bytes(), bytes);
+        editor.open_download();
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), bytes);
+        assert!(editor.has_current_guitar_library());
+    }
+
+    #[test]
+    fn a_snapshot_save_failure_keeps_the_successful_download_available() {
+        let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let preferences = directory.path().join("editor-preferences.txt");
+        std::fs::write(directory.path().join("variax-library-snapshots"), b"keep").unwrap();
+        let editor = app.variax_mut();
+        editor.preferences_path = Some(preferences);
+        attach(editor);
+
+        editor.request_refresh(complete_capture);
+        wait_for_completion(editor, &ctx);
+        assert!(editor.status.starts_with("Read 60 guitar presets"));
+        assert!(
+            editor
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Could not remember")
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("variax-library-snapshots")).unwrap(),
+            b"keep",
+        );
+        assert!(!editor.has_current_guitar_library());
+        editor.open_download();
+        assert!(editor.has_current_guitar_library());
+    }
+
+    #[test]
+    fn completion_keeps_a_late_file_open_even_when_the_document_bytes_match() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        attach(editor);
+        editor.source_path = None;
+        editor.library_origin = Some(LibraryOrigin::Factory);
+        let bytes = editor.document.as_ref().unwrap().as_bytes().to_vec();
+        let reopened =
+            EditorDocument::from_file_bytes(bytes.clone(), std::path::Path::new("same.vwb"))
+                .unwrap();
+
+        editor.start_refresh(complete_capture, true);
+        // Simulate delivery of another document while the worker is active.
+        editor.adopt_opened_document(reopened, None);
+        wait_for_completion(editor, &ctx);
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), bytes);
+        assert!(editor.library_origin.is_none());
+        assert!(editor.refresh.latest_download.is_some());
+    }
+
+    #[test]
+    fn completion_keeps_edits_and_drafts_added_after_replacement_was_confirmed() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        attach(editor);
+        for late_edit in [true, false] {
+            editor.change(|preset| preset.rename("Confirmed edit"));
+            editor.request_refresh(complete_capture);
+            editor.confirm_refresh(true, complete_capture);
+            if late_edit {
+                // Synthetic editor update between authorization and result delivery.
+                editor
+                    .document
+                    .as_mut()
+                    .unwrap()
+                    .apply(|preset| preset.rename("Later edit"))
+                    .unwrap();
+            } else {
+                editor.name_draft = Some("Unfinished name".into());
+            }
+            let bytes = editor.document.as_ref().unwrap().as_bytes().to_vec();
+            wait_for_completion(editor, &ctx);
+            let document = editor.document.as_ref().unwrap();
+            assert_eq!(document.as_bytes(), bytes);
+            assert!(document.is_dirty() && document.can_undo());
+            assert_eq!(
+                editor.name_draft.as_deref(),
+                (!late_edit).then_some("Unfinished name")
+            );
+            assert!(editor.refresh.latest_download.is_some());
+            assert!(!editor.has_current_guitar_library());
+        }
+    }
+
+    #[test]
+    fn obsolete_attachment_and_attempt_cannot_publish_or_replace_a_library() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let mut rig = verified_rig();
+        let first = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&first));
+        let capture = || {
+            complete_capture(
+                &Attachment::verified(&first).unwrap(),
+                &AtomicBool::new(false),
+                &AtomicUsize::new(0),
+            )
+        };
+
+        editor.start_refresh(complete_capture, false);
+        let old = editor.refresh.worker.as_ref().unwrap().attempt.clone();
+        wait_for_completion(editor, &ctx);
+        let previous = editor.refresh.latest_download.as_ref().unwrap().captured_at;
+
+        editor.start_refresh(complete_capture, true);
+        let current = editor.refresh.worker.as_ref().unwrap().attempt.clone();
+        let view = DocumentView::capture(editor);
+        editor.finish_refresh(old, false, Some(view), capture());
+        assert!(editor.refresh.accepts(&current));
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().captured_at,
+            previous
+        );
+
+        let profiles = crate::editor::registry::DEVICE_PROFILES;
+        rig.report_guitar_disconnect(&first.device.key, profiles)
+            .unwrap();
+        assert!(rig.queue_guitar_refresh(&first.device.key.attachment, false));
+        let second = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&second));
+        assert_eq!(first.device.key.attachment, second.device.key.attachment);
+        assert_ne!(first.device.key, second.device.key);
+        let bytes = editor.document.as_ref().unwrap().as_bytes().to_vec();
+        wait_for_completion(editor, &ctx);
+        editor.finish_refresh(current, false, None, capture());
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().captured_at,
+            previous
+        );
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), bytes);
+        assert!(!editor.has_current_guitar_library());
+
+        editor.start_refresh(complete_capture, false);
+        wait_for_completion(editor, &ctx);
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().attachment,
+            second.device.key
+        );
+    }
+
+    #[test]
+    fn final_bank_name_return_release_and_late_cancellation_keep_the_last_complete_library() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        attach(editor);
+        editor.start_refresh(complete_capture, false);
+        wait_for_completion(editor, &ctx);
+        let previous = editor.refresh.latest_download.as_ref().unwrap().captured_at;
+        let failures: [ReadLibrary; 3] = [
+            |_, _, progress| {
+                progress.store(60, Ordering::Relaxed);
+                Err("Missing the final bank name.".into())
+            },
+            |attachment, stop, progress| {
+                let mut capture = complete_capture(attachment, stop, progress)?;
+                capture.restore = Restore::NoUniqueMatch { matches: 2 };
+                Ok(capture)
+            },
+            |attachment, stop, progress| {
+                let mut capture = complete_capture(attachment, stop, progress)?;
+                capture.release_error = Some("Failed to release the bridge.".into());
+                Ok(capture)
+            },
+        ];
+        for (read, expected) in failures.into_iter().zip([
+            "Missing the final bank name",
+            "Found 2 matches",
+            "Failed to release the bridge",
+        ]) {
+            editor.start_refresh(read, true);
+            wait_for_completion(editor, &ctx);
+            assert!(editor.error.as_deref().unwrap().contains(expected));
+            assert_eq!(
+                editor.refresh.latest_download.as_ref().unwrap().captured_at,
+                previous
+            );
+        }
+
+        editor.start_refresh(complete_capture, true);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !editor.refresh.worker.as_ref().unwrap().thread.is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        editor.cancel_operation();
+        wait_for_completion(editor, &ctx);
+        assert!(editor.status.starts_with("Guitar refresh stopped."));
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().captured_at,
+            previous
+        );
+        assert!(!editor.has_current_guitar_library());
     }
 
     #[test]

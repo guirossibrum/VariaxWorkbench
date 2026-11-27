@@ -367,6 +367,7 @@ impl VariaxEditor {
         #[cfg(feature = "usb")]
         {
             self.startup_fallback = false;
+            self.refresh.keep_open_document();
             self.live_edit.new_document();
             self.device_sync.imported_backup = None;
         }
@@ -1274,6 +1275,8 @@ impl VariaxEditor {
             Some(GuitarPending::Open(OpenDestination::Library)) => self.return_to_library(),
             Some(GuitarPending::Open(OpenDestination::Backup)) => self.adopt_imported_library(),
             #[cfg(feature = "usb")]
+            Some(GuitarPending::Open(OpenDestination::Download)) => self.open_download(),
+            #[cfg(feature = "usb")]
             Some(GuitarPending::Open(OpenDestination::EditBuffer)) => self.get_edit_buffer(),
             #[cfg(test)]
             Some(GuitarPending::ReadCurrent) => self.launch_read(),
@@ -1306,6 +1309,8 @@ pub(super) enum OpenDestination {
     File,
     Library,
     Backup,
+    #[cfg(feature = "usb")]
+    Download,
     #[cfg(feature = "usb")]
     EditBuffer,
 }
@@ -1452,6 +1457,7 @@ impl FamilyTab for VariaxEditor {
         self.string_volume_button(ui);
         #[cfg(feature = "usb")]
         let has_download = {
+            self.open_download_button(ui);
             let ready = self.download_target_ready();
             if ready && self.document.is_some() {
                 self.download_button(ui);
