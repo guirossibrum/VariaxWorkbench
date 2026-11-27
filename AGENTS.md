@@ -47,17 +47,15 @@ below apply.
 
 ## Release builds
 
-Use [the unified release command](docs/release-build.md) for releases and
-owner deliveries. Include Linux, macOS and Windows in every set. Resolve the
-Git source once to a full commit SHA. Every platform builds that exact
-checkout and records its SHA, build number, target, profile and package
-checksums. Deliver the set only after all three packages verify. Platform
-scripts are native build workers and local checks. Use the hosted offline
-profile for cross-platform comparison. For owner USB testing, also build the
-private Linux and macOS USB packages at the same SHA and provide the Windows
-offline package while Windows live device support is pending. State which
-tests each profile can run. Publication and hardware approvals follow their
-existing rules.
+Use [the unified release command](docs/release-build.md). Build routine
+owner test packages locally with `--owner-usb` for Linux and macOS.
+GitHub Actions dispatch requires explicit owner authorization. Use the
+hosted workflow only for an authorized release or cross-platform build.
+An authorized three-platform release set includes Linux, macOS and Windows.
+Resolve the Git source once to a full commit SHA. Every package records the
+same SHA and build number, its native target and profile, and its checksums.
+Deliver packages after verification and state which tests each profile can
+run. Publication and hardware approvals follow their existing rules.
 
 ## Hardware boundary — user requirement
 

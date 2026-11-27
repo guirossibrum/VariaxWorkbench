@@ -1,4 +1,9 @@
-# Build a release set
+# Build Workbench and Rig Check
+
+For routine owner testing, use the local [Linux and macOS USB build](#private-owner-usb-build).
+GitHub Actions dispatch requires explicit owner authorization.
+
+## Authorized hosted release set
 
 Run this from the repository with the GitHub CLI authenticated.
 
@@ -35,8 +40,8 @@ tag after verification succeeds.
 
 Deliver Linux, macOS and Windows from one source revision and build number.
 The hosted packages support offline editing and Rig Check Practice on all
-three. For an owner delivery that also supports live USB checks on Linux
-and macOS, run from Linux with the GitHub CLI authenticated:
+three. For an explicitly authorized owner delivery with Linux and macOS USB
+support, run from Linux with the GitHub CLI authenticated:
 
 ```sh
 bash packaging/build-release.sh --owner-delivery
@@ -62,7 +67,7 @@ The combined mode produces a local owner set and an Actions artifact.
 
 ## Private owner USB build
 
-Run the standalone pair from Linux for build checks.
+Run the local pair from Linux for routine owner testing.
 
 ```sh
 bash packaging/build-release.sh --owner-usb
@@ -71,7 +76,8 @@ bash packaging/build-release.sh --owner-usb
 Linux and macOS build both apps with USB and portable math. The command
 checks each package's revision and hashes, puts the Linux executables and
 local DMG under `backups/packages`, and copies the verified DMG to the Mac's
-Downloads folder. Windows USB is pending. `--revision COMMIT`,
+Downloads folder. Both packages record one source SHA and build number and
+use the local Linux and Mac build hosts. Windows USB is pending. `--revision COMMIT`,
 `--mac-host HOST`, and `--output DIR` select the revision, SSH host and
 local evidence directory. Older owner revisions remain buildable.
 
