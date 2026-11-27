@@ -4,11 +4,13 @@ set -euo pipefail
 umask 077
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
-[[ $# -eq 4 ]] || die 'Use packaging/build-release.sh --owner-usb.'
+[[ $# -eq 4 || ( $# -eq 5 && "$5" == --stage-only ) ]] ||
+    die 'Use packaging/build-release.sh --owner-usb or --owner-delivery.'
 revision=$1
 mac_host=$2
 output=$3
 export VARIAX_BUILD_NUMBER=$4
+stage_only=${5:-}
 [[ "$(uname -s)" == Linux ]] || die 'Start the private USB build from Linux.'
 [[ "$mac_host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._@-]*$ ]] || die 'Use a valid SSH hostname or alias.'
 repo=$(git rev-parse --show-toplevel)
@@ -54,10 +56,12 @@ linux="$stage/pair/linux"
 macos="$stage/pair/macos"
 mkdir -p "$linux" "$macos" "$stage/inputs"
 
-remote=$(ssh "${ssh_options[@]}" "$mac_host" /bin/bash -s <<'REMOTE'
+remote=$(ssh "${ssh_options[@]}" "$mac_host" /bin/bash -s -- "${stage_only:-deliver}" <<'REMOTE'
 set -euo pipefail
 [[ "$(uname -s)" == Darwin ]]
-test -d "$HOME/Downloads"
+if [[ "$1" == deliver ]]; then
+    test -d "$HOME/Downloads"
+fi
 xcrun --sdk macosx --show-sdk-version >/dev/null
 umask 077
 mktemp -d "${TMPDIR:-/tmp}/.variax-owner-pair.XXXXXXXX"
@@ -175,6 +179,12 @@ printf '%s\n' "$VARIAX_BUILD_NUMBER" > "$stage/pair/BUILD_NUMBER"
         'macos/Variax Workbench - Owner USB.dmg' macos/verification.txt > SHA256SUMS
     sha256sum -c SHA256SUMS
 )
+
+if [[ "$stage_only" == --stage-only ]]; then
+    mv -T --no-clobber -- "$stage/pair" "$output/pair"
+    [[ ! -e "$stage/pair" ]] || die 'Could not stage the private pair.'
+    exit
+fi
 
 printf 'Delivering the verified DMG to Mac Downloads…\n'
 ssh "${ssh_options[@]}" "$mac_host" /bin/bash -s -- "$remote" "$version" "$revision" "$build_id" "$digest" \

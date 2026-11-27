@@ -35,15 +35,34 @@ tag after verification succeeds.
 
 Deliver Linux, macOS and Windows from one source revision and build number.
 The hosted packages support offline editing and Rig Check Practice on all
-three. For a hardware comparison, run the private USB build below at the same
-full SHA and provide the Linux and macOS USB packages alongside the Windows
-offline ZIP. The current Windows package cannot run live PODxt or Variax
-checks. Track Windows device support under [#262](https://github.com/guirossibrum/VariaxWorkbench/issues/262)
-and cross-platform release verification under [#263](https://github.com/guirossibrum/VariaxWorkbench/issues/263).
+three. For an owner delivery that also supports live USB checks on Linux
+and macOS, run from Linux with the GitHub CLI authenticated:
+
+```sh
+bash packaging/build-release.sh --owner-delivery
+```
+
+The command pins one master commit and build number, waits for the hosted
+artifact-only build, and verifies its complete offline artifact. It then
+builds the private Linux/macOS USB pair and adds the hosted Windows ZIP.
+After verifying the pair and the Windows package against the same pin, it
+makes the complete set available in one new directory under
+`backups/packages`. Choose a different directory with `--output DIR` or
+select the source and Mac with `--revision COMMIT` and `--mac-host HOST`.
+The combined mode delivers the DMG in that directory for manual transfer
+to the Mac. It requires the private USB build dependencies listed below.
+
+`release-manifest.json` records the SHA, build number, hosted run ID, per-platform
+profiles and targets, package and verification-file checksums, and supported
+tests. Windows supports UI and file operations and Rig Check Practice only.
+Linux and macOS also support approved live USB checks. Track Windows device
+support under [#262](https://github.com/guirossibrum/VariaxWorkbench/issues/262)
+and [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279).
+The combined mode produces a local owner set and an Actions artifact.
 
 ## Private owner USB build
 
-Run the same command from Linux with the owner profile.
+Run the standalone pair from Linux for build checks.
 
 ```sh
 bash packaging/build-release.sh --owner-usb
