@@ -247,9 +247,20 @@ pub(super) fn before_new_run(
     for (path, state) in cleanup {
         confirm_pending_cleanup(op, &path, &state)?;
     }
-    let Some((path, state)) = interrupted.into_iter().next() else {
+    let mut interrupted = interrupted.into_iter();
+    let Some((path, state)) = interrupted.next() else {
         return Ok(());
     };
+    // Only the newest run can be restored automatically. An older interrupted
+    // store may still need verification even if the newest restore is safe.
+    for (older_path, older_state) in interrupted {
+        let _lock = lock_checkpoint(&older_path)?;
+        verify_pending_state(&older_path, &older_state)?;
+        let older_report = older_path.with_extension("txt");
+        if let Err(reason) = super::resume::open(&older_report) {
+            confirm_manual_recovery(op, &older_report, &reason)?;
+        }
+    }
     let report = path.with_extension("txt");
     let plan = match super::resume::open(&report).and_then(|plan| {
         plan.restore_ready(&state)?;

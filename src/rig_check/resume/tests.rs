@@ -1022,3 +1022,78 @@ fn start_new_offers_safe_pending_recovery_and_requires_manual_confirmation_for_a
     assert!(person.cards.is_empty());
     assert!(rig.borrow().written.is_empty());
 }
+
+#[test]
+fn start_new_checks_an_older_interrupted_store_before_offering_the_newer_restore() {
+    let mut newer = Fixture::new();
+    newer.stop_after(FIRST_SAVE, false);
+    let mut older_run = newer.run.clone();
+
+    newer.stop_after(KNOBS, false);
+    newer.run.started = "2026-11-25 02:00:00 UTC".into();
+    newer.run.finished = false;
+    newer.run.current = Some(KNOBS);
+    *newer.run.step_mut(KNOBS) = StepRecord::new(KNOBS);
+    *newer.run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    newer.save(false);
+    let plan = open(&newer.sink.path).unwrap();
+    let newer_state = newer.sink.path.with_extension("state");
+
+    let mut older = ReportFile::create(newer.dir.path(), Redactor::default()).unwrap();
+    older_run.started = "2026-11-25 01:00:00 UTC".into();
+    older_run.finished = false;
+    older_run.current = Some(FIRST_SAVE);
+    *older_run.step_mut(FIRST_SAVE) = StepRecord::new(FIRST_SAVE);
+    *older_run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    older.update(&older_run).unwrap();
+    let older_state = older.path.with_extension("state");
+    let mut state = RigState::from_run(
+        &older_run,
+        &newer.data,
+        older.path.file_name().unwrap().to_str().unwrap(),
+    );
+    state.report_sha256 = older.report_digest();
+    recover::write_state(&older_state, &state).unwrap();
+    assert!(error(&older.path).contains("interrupted during a live edit or store"));
+
+    let pending = recover::pending(newer.dir.path());
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].0, newer_state);
+    assert_eq!(pending[1].0, older_state);
+    plan.restore_ready(&pending[0].1).unwrap();
+    let newer_bytes = std::fs::read(&newer_state).unwrap();
+    let older_bytes = std::fs::read(&older_state).unwrap();
+
+    let rig = SimRig::shared(Faults::default());
+    let mut port = PracticePort::new(rig.clone());
+    let mut person = Script::run_all();
+    person.accept = false;
+    let result = recover::before_new_run(&mut port, &mut person, newer.dir.path(), None);
+    assert!(result.is_err(), "the older store must block Start new");
+    assert_eq!(person.notices.len(), 1);
+    assert!(person.notices[0].contains(&*older.path.to_string_lossy()));
+    assert!(person.notices[0].contains("verify the affected slot"));
+    assert!(person.cards.is_empty());
+    assert!(rig.borrow().written.is_empty());
+    assert_eq!(std::fs::read(&newer_state).unwrap(), newer_bytes);
+    assert_eq!(std::fs::read(&older_state).unwrap(), older_bytes);
+
+    let mut person = Script::run_all();
+    let result = recover::before_new_run(&mut port, &mut person, newer.dir.path(), None);
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(person.notices.len(), 1);
+    assert!(person.notices[0].contains(&*older.path.to_string_lossy()));
+    assert_eq!(person.cards, [RIG_GUARD]);
+    let mut recovered = pending[0].1.clone();
+    recovered.recovery_completed = true;
+    assert_eq!(
+        std::fs::read_to_string(newer_state).unwrap(),
+        recovered.text()
+    );
+    assert_eq!(std::fs::read(older_state).unwrap(), older_bytes);
+    assert_eq!(std::fs::read_to_string(&older.path).unwrap(), older.last);
+    assert_eq!(
+        std::fs::read_to_string(&newer.sink.path).unwrap(),
+        newer.sink.last
+    );
+}

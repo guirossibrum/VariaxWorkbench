@@ -111,6 +111,58 @@ fn negative_reply_silence_and_readback_mismatch_report_slot_state_unknown() {
     session.link.assert_finished();
 }
 
+// The 03 73 request carries the slot address. The 03 74 reply has no slot
+// address to check, so exercise failures the transaction can observe.
+fn assert_unverified_after_ack(replies: Vec<Vec<u8>>, expected_reason: &str) {
+    let slot = slot(64); // 17A, wire address 01 40.
+    let mut script = replay("ok-17a", slot, None);
+    script.push((
+        vec![0xf0, 0, 1, 0x0c, 3, 0x73, 1, 0x40, 0, 0, 0xf7],
+        replies,
+    ));
+    let mut quiet = Quiet;
+    let mut session = Session::new(
+        Fake::from_bytes(Path::PodxtMidi, script),
+        &AllowAll,
+        &mut quiet,
+    );
+    let result = store_tone(&mut session, plan(slot), &StoreControl::default()).unwrap();
+    let StoreResult::SlotStateUnknown {
+        slot: unverified,
+        reason,
+    } = result
+    else {
+        panic!("expected unknown slot state: {result:?}");
+    };
+    assert_eq!(unverified, slot);
+    assert!(reason.contains(expected_reason), "{reason}");
+    // After the store and block end, the fake permits exactly one write:
+    // the addressed verification request. Any extra write fails the script.
+    session.link.assert_finished();
+}
+
+#[test]
+fn acknowledged_store_with_no_verification_dump_reports_slot_state_unknown() {
+    assert_unverified_after_ack(vec![], "No dump for stored tone 17A.");
+}
+
+#[test]
+fn acknowledged_store_with_a_short_verification_dump_reports_slot_state_unknown() {
+    let mut short_dump = tone().edit_dump().raw;
+    short_dump.remove(short_dump.len() - 2); // Keep EOX but leave the payload short.
+    assert_unverified_after_ack(vec![short_dump], "Unexpected SysEx reply:");
+}
+
+#[test]
+fn acknowledged_store_with_unfinished_verification_sysex_reports_slot_state_unknown() {
+    let mut unfinished_dump = tone().edit_dump().raw;
+    assert_eq!(unfinished_dump.pop(), Some(0xf7));
+    assert_unverified_after_ack(
+        vec![unfinished_dump],
+        "Unfinished SysEx during a stored PODxt read.",
+    );
+}
+
 #[test]
 fn typed_confirmation_and_closed_policy_stop_before_store() {
     let slot = slot(64);

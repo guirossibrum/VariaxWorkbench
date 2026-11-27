@@ -29,6 +29,46 @@ a stuck guitar less likely. It leaves open whether the guitar saw the request.
 The large-buffer enable is the `03 23 01` frame that run already sent, so a
 missing large-buffer command does not account for the silence.
 
+## VDI presence, identity and continuity
+
+**Static host trace.** In Workbench 1.75, the selected MIDI input reaches
+`L6MIDIJava.native_WaitForMIDI`, then `L6MIDIManager` dispatches SysEx to
+`L6VariaxPatchManager.OnSysex`. The 11-byte `03 11` branch uses only byte 9
+for connection status (zero means disconnected) and notifies on Boolean
+changes. The 12-byte `7F 03` branch reports disconnected. Neither status
+branch checks a guitar identifier or attachment counter. Bridge-mode
+`PollConnection` returns success without checking the downstream guitar.
+
+On Linux, the app's passive path decodes the notices on the verified PODxt's
+ALSA raw MIDI input. A changed notice queues an identity refresh. A successful
+refresh can retain the guitar's existing host generation. Active Variax Follow
+instead decodes the notices from PODxt USB interface 1 and can invalidate that
+generation on a reported disconnect. Both inputs terminate at the PODxt. The
+host routes do not establish where PODxt 3.01 generates or forwards a notice,
+or whether every VDI interruption reaches either input.
+
+**Existing owner evidence.** The Linux check saw no notices and needed manual
+refresh. [#201](https://github.com/guirossibrum/VariaxWorkbench/issues/201)
+Two macOS Rig Check 6.1 records from 2026-11-26 detected loss and return by
+identity fallback. The packet-recorded run opened Follow windows with the
+bridge enabled and captured a universal identity reply and family-`07`
+`69`/`6A`/`6B` traffic during return. Neither `03 11` nor `7F 03` was decoded.
+Those additional frames have no verified per-guitar identifier or session
+counter. The 17-byte identity reply supplies manufacturer, family, member and
+firmware. Its equality across a replug establishes the same reported identity
+and a responding guitar at each successful read.
+
+**Continuity remains unverified.** A same-model, same-firmware replacement can
+answer identically while the PODxt USB attachment generation stays fixed.
+Evidence would need a device-originated, non-reused VDI attachment token
+bound to the operation, or a loss-detectable stream proven to report every
+VDI break across listener gaps and handoffs. Per-unit identity would distinguish
+two guitars at read time, but even the original guitar can be unplugged and
+reinserted. The existing captures contain no comparison with a known same-model
+replacement, and the firmware trace does not establish the notice producer,
+delivery conditions or the meaning of the unused status bytes.
+[Cache capture requirements](first-connection-cache.md#variax-capture-proof-240)
+
 ## The #225 owner run
 
 **Confirmed** as the owner's comment on #225, 2026-11-24 15:10 UTC. This pass
