@@ -50,8 +50,11 @@ has no production event source in this delivery. Feed the model before
    check them before replacing editor data.
 5. Drain arrivals, disconnects, and read results ahead of drawing the window.
    When all supported reads finish, the window shows completion for 1.4
-   seconds and rechecks the state before auto-close. A disconnect in that
-   window keeps manual dismissal in effect through replug. An unsupported
+   seconds and rechecks the state before auto-close. Report a current
+   attachment's loss through `disconnected` even after the window closes.
+   It reopens at its existing position with the affected rows visible and
+   requires manual dismissal, including if the same device returns before
+   the user closes it. An unsupported
    row can stand on its own, and does not hold up a successfully synced
    supported row. The shell must keep the editor and unsaved edits through
    attachment changes independently of the window.

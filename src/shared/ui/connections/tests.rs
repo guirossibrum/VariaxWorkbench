@@ -170,6 +170,9 @@ fn disconnect_at_the_close_deadline_is_sticky_through_quick_replug() {
     connections.arrived(replug, pod());
     assert!(!connections.visible);
     connections.disconnected(replug);
+    assert!(connections.visible);
+    assert!(connections.manual_close);
+    connections.dismiss();
     let after_dismissal = Attachment {
         generation: 3,
         ..POD
@@ -178,6 +181,39 @@ fn disconnect_at_the_close_deadline_is_sticky_through_quick_replug() {
     assert!(connections.visible);
     assert!(!connections.manual_close);
     assert_eq!(connections.rows.len(), 1);
+}
+
+#[test]
+fn new_generation_after_auto_close_can_sync_without_an_explicit_disconnect() {
+    let mut connections = Connections::default();
+    connections.detection(Detection::Complete);
+    connections.arrived(POD, pod());
+    connections.verified(POD, Verification::Verified);
+    let read = started(&mut connections, POD, 128);
+    connections.finished(read, Ok(()));
+    let now = Instant::now();
+    connections.advance(now);
+    connections.advance(now + COMPLETE_PAUSE);
+    assert!(!connections.visible);
+
+    let replacement = Attachment {
+        generation: 2,
+        ..POD
+    };
+    connections.arrived(replacement, pod());
+    assert!(connections.visible);
+    assert!(!connections.manual_close);
+    connections.disconnected(POD);
+    assert_eq!(status(&connections, replacement), &Status::Checking);
+    connections.verified(replacement, Verification::Verified);
+    let read = started(&mut connections, replacement, 299);
+    connections.finished(read, Ok(()));
+    assert_eq!(
+        connections.advance(now + COMPLETE_PAUSE),
+        Some(COMPLETE_PAUSE)
+    );
+    connections.advance(now + COMPLETE_PAUSE * 2);
+    assert!(!connections.visible);
 }
 
 #[test]
@@ -367,6 +403,76 @@ fn startup_window_replaces_no_device_status_in_place_on_first_arrival() {
     text_shape(&output, "PODxt Live");
     text_shape(&output, "Checking connection…");
     assert_eq!(rect(&screen).min, initial_corner);
+}
+
+#[test]
+fn later_disconnect_reopens_dismissed_window_with_linked_loss() {
+    for auto_close in [true, false] {
+        let mut screen = Screen::new();
+        let c = &mut screen.connections;
+        c.detection(Detection::Complete);
+        c.arrived(POD, pod());
+        c.arrived(GUITAR, guitar(Some(POD)));
+        for (attachment, total) in [(POD, 299), (GUITAR, 32)] {
+            c.verified(attachment, Verification::Verified);
+            let read = started(c, attachment, total);
+            c.finished(read, Ok(()));
+        }
+        screen.draw(vec![]);
+        let output = screen.draw(vec![]);
+        text_shape(&output, "Model Sync Complete");
+        let id = egui::Id::new(view::WINDOW_ID);
+        let corner = |screen: &Screen| egui::AreaState::load(&screen.ctx, id).unwrap().rect().min;
+        let previous = corner(&screen);
+
+        if auto_close {
+            screen.now += COMPLETE_PAUSE;
+            screen.draw(vec![]);
+        } else {
+            screen.click_text("Close");
+        }
+        assert!(!screen.connections.visible);
+
+        screen.connections.disconnected(POD);
+        assert!(screen.connections.visible);
+        assert!(screen.connections.manual_close);
+        let output = screen.draw(vec![]);
+        text_shape(&output, "PODxt Live");
+        text_shape(&output, "Variax 300/600");
+        text_shape(&output, "Disconnected");
+        for row in screen.connections.shown_rows() {
+            assert_eq!(row.status, Status::Disconnected);
+        }
+        assert_eq!(screen.connections.shown_rows().count(), 2);
+        assert_eq!(corner(&screen), previous);
+        screen.now += COMPLETE_PAUSE * 2;
+        screen.draw(vec![]);
+        assert!(screen.connections.visible);
+        screen.click_text("Close");
+
+        screen.connections.disconnected(POD);
+        screen.connections.disconnected(GUITAR);
+        screen.draw(vec![]);
+        assert!(!screen.connections.visible);
+
+        let replug = Attachment {
+            generation: 2,
+            ..POD
+        };
+        screen.connections.arrived(replug, pod());
+        assert!(!screen.connections.manual_close);
+        screen.connections.disconnected(POD);
+        screen.connections.verified(replug, Verification::Verified);
+        let read = started(&mut screen.connections, replug, 299);
+        screen.connections.finished(read, Ok(()));
+        let output = screen.draw(vec![]);
+        text_shape(&output, "Reconnected after disconnect");
+        text_shape(&output, "Model Sync Complete");
+        assert_eq!(screen.connections.shown_rows().count(), 1);
+        screen.now += COMPLETE_PAUSE;
+        screen.draw(vec![]);
+        assert!(!screen.connections.visible);
+    }
 }
 
 #[test]

@@ -124,17 +124,19 @@ impl Connections {
         {
             return;
         }
-        let mut reconnected = false;
-        if let Some(index) = existing {
-            self.disconnected(self.rows[index].attachment);
-            reconnected = true;
+        if let Some(index) = existing
+            && self.rows[index].status != Status::Disconnected
+        {
+            // Retire the old generation without reopening a dismissed
+            // window for a disconnect the caller did not report.
+            self.mark_disconnected(index);
         }
         self.open();
         let row = Row {
             attachment,
             device,
             status: Status::Checking,
-            reconnected,
+            reconnected: existing.is_some(),
             shown: true,
         };
         if let Some(index) = existing {
@@ -224,13 +226,24 @@ impl Connections {
         }
     }
 
+    /// Report the loss of a current attachment and reopen the connection
+    /// window for acknowledgement if it was already dismissed.
     pub fn disconnected(&mut self, attachment: Attachment) {
-        let Some(row) = self.row_mut(attachment) else {
+        let Some(index) = self
+            .rows
+            .iter()
+            .position(|row| row.attachment == attachment && row.status != Status::Disconnected)
+        else {
             return;
         };
-        if row.status == Status::Disconnected {
-            return;
-        }
+        // Open while the newly affected rows are still eligible to be shown.
+        self.open();
+        self.mark_disconnected(index);
+    }
+
+    fn mark_disconnected(&mut self, index: usize) {
+        let row = &mut self.rows[index];
+        let attachment = row.attachment;
         row.status = Status::Disconnected;
         for row in &mut self.rows {
             if row.device.upstream == Some(attachment) {
