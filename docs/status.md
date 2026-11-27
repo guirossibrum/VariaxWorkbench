@@ -10,7 +10,7 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
-- [x] The [#114 offline inventory candidate](device-inventory-reconciliation.md#public-inventory-candidate) deterministically preserves 224 frozen ordinals and maps all 392 draft lines. Eight offline tests cover all 186 identifier-free aliases, 27 cited identifier fields, and 18 unresolved fields. Historical input approval and #96 adoption remain open.
+- [x] The owner approved the [#114 schema-3 catalog](device-inventory-reconciliation.md#adopted-public-inventory) at `research/device-inventory.tsv` with SHA-256 `cd6a6182fb45145654a734ea30709f4f943e6e20751a4d223498ff0a312ff61c`. Eight offline tests verify deterministic generation, all 224 frozen ordinal/name/role rows, all 392 draft line mappings, 186 identifier-free aliases, 27 cited identifier fields and 18 explicit `unresolved` identifier fields. Runtime audio accounting continues to use the frozen schema-2 projection.
 
 - [x] The owner’s macOS Rig Check continuation on `99a62f37` finished with 35 passes and no failures. It retained 30 earlier passes, including the full libraries, and preserved the earlier 5.1 identity failure recorded before upload. The resumed 5.1 Variax save and 5.2 PODxt Live save both matched their verified backups on read-back. The final guard verified the starting tone and guitar program and checked USB release. This records one owner-tested continuation on the supported rig. Workbench and broader USB acceptance stay in #298. [Resume #297](https://github.com/guirossibrum/VariaxWorkbench/issues/297) · [Variax save #258](https://github.com/guirossibrum/VariaxWorkbench/issues/258) · [PODxt save #259](https://github.com/guirossibrum/VariaxWorkbench/issues/259).
 
