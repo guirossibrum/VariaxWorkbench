@@ -21,3 +21,6 @@ rusb = { version = "=0.9.4", path = "../../third_party/usb/rusb-0.9.4", optional
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+macos-usb-inventory = { path = "../macos-usb-inventory" }

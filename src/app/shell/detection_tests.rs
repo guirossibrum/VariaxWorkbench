@@ -250,19 +250,40 @@ fn passive_readiness_reason_updates_without_an_identity_job() {
     source.0.borrow_mut().interfaces_unavailable = true;
 
     for reason in [
-        "The physical USB route is unavailable.",
-        "USB inventory did not confirm both MIDI interfaces.",
+        "PODxt Live detected. USB route unavailable in this scan.",
+        "PODxt Live detected. USB interface 1 was absent from this scan.",
     ] {
         source.0.borrow_mut().readiness_reason = Some(reason.into());
         tick(&ctx, &mut app);
         let (_, _, entry) = entries(&app)[0];
         assert_eq!(entry.device.support, DeviceSupport::UsbOnly);
-        assert_eq!(
-            entry.device.guitar_status.as_deref(),
-            Some(format!("Guitar: {reason}").as_str())
-        );
+        assert_eq!(entry.device.guitar_status.as_deref(), Some(reason));
     }
     assert!(source.0.borrow().completed.is_empty());
+}
+
+#[test]
+fn passive_publication_text_gives_way_to_the_identity_result() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    source.0.borrow_mut().registry_id = Some(30);
+    let ready = "PODxt Live detected. USB interfaces 0 and 1 are published. Identity unverified.";
+    source.0.borrow_mut().readiness_reason = Some(ready.into());
+
+    tick(&ctx, &mut app);
+    assert_eq!(
+        entries(&app)[0].2.device.guitar_status.as_deref(),
+        Some(ready)
+    );
+
+    let attached = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.guitar(attached);
+    tick(&ctx, &mut app);
+    assert_ne!(
+        entries(&app)[0].2.device.guitar_status.as_deref(),
+        Some(ready)
+    );
+    assert_eq!(source.0.borrow().completed.len(), 1);
 }
 
 #[test]

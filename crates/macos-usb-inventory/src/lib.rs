@@ -1,8 +1,43 @@
 //! Narrow IOKit adapter. It only reads registry services, properties and
 //! topology. No plug-in, user client or USB device/interface handle is opened.
 
-#![cfg(any(target_os = "macos", test))]
 #![deny(unsafe_op_in_unsafe_fn)]
+
+/// The support-relevant positives in a scan, indexed by interface number.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishedInterfaces {
+    IncompleteChildren {
+        seen: [bool; 2],
+    },
+    Read {
+        seen: [bool; 2],
+        unknown_number: bool,
+    },
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn read_interfaces(
+    numbers: impl IntoIterator<Item = Option<u8>>,
+    complete: impl FnOnce() -> bool,
+) -> PublishedInterfaces {
+    let mut seen = [false; 2];
+    let mut unknown_number = false;
+    for number in numbers {
+        match number {
+            Some(number @ 0..=1) => seen[usize::from(number)] = true,
+            Some(_) => {}
+            None => unknown_number = true,
+        }
+    }
+    if complete() {
+        PublishedInterfaces::Read {
+            seen,
+            unknown_number,
+        }
+    } else {
+        PublishedInterfaces::IncompleteChildren { seen }
+    }
+}
 
 #[cfg(target_os = "macos")]
 /// Read-only metadata for a device service. Published interfaces are not a
@@ -12,7 +47,7 @@ pub struct Record {
     pub location_id: Option<u32>,
     pub address: Option<u8>,
     pub ports: Vec<u8>,
-    pub midi_interfaces_present: bool,
+    pub interfaces: PublishedInterfaces,
 }
 #[cfg(target_os = "macos")]
 use std::ffi::{CStr, c_void};
@@ -28,6 +63,10 @@ unsafe extern "C" {
     fn IOServiceMatching(class: *const std::ffi::c_char) -> CfRef;
     fn IOServiceGetMatchingServices(port: u32, matching: CfRef, out: *mut u32) -> i32;
     fn IOIteratorNext(iterator: u32) -> u32;
+    #[cfg(target_arch = "aarch64")]
+    fn IOIteratorIsValid(iterator: u32) -> i32;
+    #[cfg(target_arch = "x86_64")]
+    fn IOIteratorIsValid(iterator: u32) -> u32;
     fn IOObjectRelease(object: u32) -> i32;
     fn IOObjectConformsTo(object: u32, class: *const std::ffi::c_char) -> u32;
     fn IORegistryEntryGetRegistryEntryID(entry: u32, out: *mut u64) -> i32;
@@ -174,19 +213,21 @@ impl IoObject {
         Some(ports)
     }
 
-    fn published_interfaces(&self) -> bool {
+    fn published_interfaces(&self) -> PublishedInterfaces {
         let Some(children) = self.children() else {
-            return false;
+            return PublishedInterfaces::IncompleteChildren { seen: [false; 2] };
         };
-        let mut midi = [false; 2];
-        while let Some(child) = children.next() {
-            if (child.conforms(c"IOUSBHostInterface") || child.conforms(c"IOUSBInterface"))
-                && let Some(number @ 0..=1) = child.number(c"bInterfaceNumber")
-            {
-                midi[number as usize] = true;
-            }
-        }
-        midi == [true; 2]
+        let numbers = std::iter::from_fn(|| children.next())
+            .filter(|child| {
+                child.conforms(c"IOUSBHostInterface") || child.conforms(c"IOUSBInterface")
+            })
+            .map(|child| {
+                child
+                    .number(c"bInterfaceNumber")
+                    .and_then(|number| number.try_into().ok())
+            });
+        // A zero from IOIteratorNext can also mean the iterator became invalid.
+        read_interfaces(numbers, || unsafe { IOIteratorIsValid(children.0) != 0 })
     }
 }
 
@@ -250,11 +291,12 @@ pub fn records(vendor: u16, product: u16) -> Result<Vec<Record>, String> {
                 .and_then(|value| u8::try_from(value).ok())
                 .filter(|address| *address != 0),
             ports: device.port_chain().unwrap_or_default(),
-            midi_interfaces_present: device.published_interfaces(),
+            interfaces: device.published_interfaces(),
         })
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn scan_matching_services<Service, Entry>(
     status: i32,
     iterator: Option<impl Iterator<Item = Service>>,
@@ -271,7 +313,7 @@ fn scan_matching_services<Service, Entry>(
 
 #[cfg(test)]
 mod tests {
-    use super::scan_matching_services;
+    use super::{PublishedInterfaces, read_interfaces, scan_matching_services};
     use std::cell::Cell;
 
     #[derive(Default)]
@@ -299,6 +341,30 @@ mod tests {
 
     fn unexpected_service((): ()) -> Option<()> {
         panic!("an empty or failed scan must never read a service")
+    }
+
+    #[test]
+    fn interface_evidence_distinguishes_invalidation_and_unreadable_numbers() {
+        assert_eq!(
+            read_interfaces([Some(0), None, Some(2), Some(0)], || true),
+            PublishedInterfaces::Read {
+                seen: [true, false],
+                unknown_number: true
+            },
+        );
+        assert_eq!(
+            read_interfaces([Some(1)], || false),
+            PublishedInterfaces::IncompleteChildren {
+                seen: [false, true]
+            },
+        );
+        assert_eq!(
+            read_interfaces([], || true),
+            PublishedInterfaces::Read {
+                seen: [false; 2],
+                unknown_number: false
+            },
+        );
     }
 
     #[test]

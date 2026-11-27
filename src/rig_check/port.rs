@@ -468,12 +468,20 @@ impl RigPort for RealPort<'_> {
 
         refuse_in_tests()?;
         let devices = macos_inventory::inventory()?;
-        let view = mac_usb_view(devices.iter().map(|device| MacUsbAttachment {
-            route: device.route(),
-            location_id: device.location_id,
-            address: device.address,
-            midi_interfaces_present: device.midi_interfaces_present,
-        }));
+        let view =
+            mac_usb_view(
+                devices
+                    .iter()
+                    .enumerate()
+                    .map(|(index, device)| MacUsbAttachment {
+                        route: device.route(),
+                        location_id: device.location_id,
+                        address: device.address,
+                        readiness: macos::passive_readiness_message(
+                            macos_inventory::assess_candidate(&devices, index).err(),
+                        ),
+                    }),
+            );
         self.mac_inventory = Some(devices);
         Ok(view)
     }
