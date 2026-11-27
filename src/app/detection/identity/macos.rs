@@ -111,7 +111,7 @@ fn identify_on<L: Link>(
             }
         }
         JobKind::DiscoverGuitar | JobKind::RefreshGuitar => None,
-        JobKind::ReattachGuitarDriver | JobKind::Listen => {
+        JobKind::VerifyGuitarOnReturn | JobKind::ReattachGuitarDriver | JobKind::Listen => {
             return finished(
                 None,
                 Guitar::Unavailable("Unsupported macOS identity action.".into()),

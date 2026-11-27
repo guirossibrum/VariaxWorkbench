@@ -893,8 +893,8 @@ fn linux_return_waits_for_the_rig_and_uses_one_guitar_identity() {
             .collect::<Vec<_>>(),
         [
             SimulatedJobKind::Initial,
-            SimulatedJobKind::RefreshGuitar, // Lock busy, so no exchange.
-            SimulatedJobKind::RefreshGuitar,
+            SimulatedJobKind::VerifyGuitarOnReturn, // Lock busy, so no exchange.
+            SimulatedJobKind::VerifyGuitarOnReturn,
         ]
     );
 }

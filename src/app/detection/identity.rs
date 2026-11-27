@@ -11,8 +11,15 @@ pub(in crate::editor) enum JobKind {
     Initial,
     DiscoverGuitar,
     RefreshGuitar,
+    VerifyGuitarOnReturn,
     ReattachGuitarDriver,
     Listen,
+}
+
+impl JobKind {
+    pub(super) fn is_manual_guitar_check(self) -> bool {
+        matches!(self, Self::RefreshGuitar | Self::ReattachGuitarDriver)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

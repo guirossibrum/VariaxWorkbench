@@ -319,16 +319,15 @@ impl Bridge {
         // accept a release failure and keep the worker until it has returned.
         if std::mem::take(&mut self.running_guitar_invalidated) {
             self.running = None;
-            if !matches!(
-                outcome,
+            match &outcome {
+                // The manual request has yet to run an identity exchange.
+                Outcome::Deferred | Outcome::OtherProcessBusy if kind.is_manual_guitar_check() => {}
                 Outcome::Finished {
                     guitar: Guitar::DriverUnbound(_) | Guitar::CleanupFailed,
                     ..
-                }
-            ) {
-                return;
+                } => self.queued = None,
+                _ => return,
             }
-            self.queued = None;
         }
         match outcome {
             Outcome::Notices(_) => unreachable!("listener results have their own dispatch"),
@@ -432,16 +431,20 @@ impl Bridge {
             Notice::Disconnected => {
                 self.guitar = None;
                 self.firmware_warning = None;
-                self.queued = None;
-                self.waiting_for_other_process = false;
+                self.queued = self.queued.filter(|kind| kind.is_manual_guitar_check());
+                if self.queued.is_none() {
+                    self.waiting_for_other_process = false;
+                }
                 self.running_guitar_invalidated |= self.running.is_some();
                 if !self.suspended && !self.driver_unbound {
                     self.status = "disconnected".into();
                 }
             }
             Notice::Connected if !self.suspended && !self.driver_unbound => {
-                if self.running_guitar_invalidated || !self.pending() {
-                    self.queued = Some(JobKind::RefreshGuitar);
+                if self.queued.is_none()
+                    && (self.running.is_none() || self.running_guitar_invalidated)
+                {
+                    self.queued = Some(JobKind::VerifyGuitarOnReturn);
                 }
             }
             Notice::Connected => {}

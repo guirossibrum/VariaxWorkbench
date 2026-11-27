@@ -57,8 +57,10 @@ when the notice is dispatched. The PODxt stays verified at its existing USB
 attachment and generation, and the editor retains its open document and
 edits. Automatic detection listens passively while the guitar is marked
 disconnected. The user can explicitly choose Refresh guitar if the return
-notice never arrives. A changed return queues one ordinary guitar-only identity operation under the
-shared active rig lock. Busy leaves that operation pending. The original Linux
+notice never arrives. A loss preserves an accepted manual Refresh or approved
+driver repair, including a queued retry after contention. A changed return
+queues one ordinary guitar-only identity operation under the shared active rig
+lock. Busy leaves that operation pending. The original Linux
 discovery exchange still permits its bounded lost-packet retry and requires
 checked release. A matching Follow loss also invalidates any in-flight guitar
 proof. On return, fresh proof gets a new linked guitar generation, so work tied
