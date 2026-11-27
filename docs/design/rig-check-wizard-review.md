@@ -37,10 +37,16 @@ compiler from master `5eddd174f0d848c1a3692e816d78456ce83afa6d` with the
 attempt report. The [blocked-continuation index](../rig-check/design.md#blocked-continuation-at-laptop-and-retina-scales)
 links both cleanup outcomes at each scale.
 
-Two draws produced 38 byte-identical PNGs and matched all 34 previously
-tracked images. The SHA-256 of `LC_ALL=C sha256sum *.png` in a fresh
-output directory is
+Two draws at that checkpoint produced 38 byte-identical PNGs and matched
+all 34 previously tracked images. The SHA-256 of
+`LC_ALL=C sha256sum *.png` for that checkpoint is
 `c4624368930fea7f98ec6809e31a5d8ad11cba3f7610caa3584e3c29506425a9`.
+
+The laptop and Retina verified-release images were redrawn from
+`f542d3fa365a08fe89b2d95ff28a39b4d10bcfb7` with the owner-approved
+**Open source report** label. These two images also show the build footer
+already present at that revision. The other images retain their earlier
+renders.
 
 The clocks in 05 and 06 start immediately before rendering. The stills
 show the start of the read and the selector countdown, respectively.
@@ -72,7 +78,7 @@ Keep owner screenshots private.
 | 15 | Narrow laptop view | Twelve samples at 1120×760 show the headings and controls. The sidebar shortens longer titles, and the 6.2 row needs scrolling. | Review the native layout and whether the sidebar should follow the active step. | |
 | 16 | Retina view | The same twelve samples render at 2 pixels per point. | Review native scaling and focus on a Retina display. | |
 | 17 | Screenshots of wizard states | The 14 numbered images and 24 narrow images cover the generated review set. The paired 0.2, 1.2 and 6.2 cards focus Skip and their results focus Continue. | Keep native screenshots privately, including focus states. | |
-| 18 | Blocked continuation | The four screenshots show 3.3 blocked by 2.2 and the expected and observed CC 120 bytes. Open report has focus in both outcomes. Verified release offers Start fresh and opens the source report via Open report. Failed cleanup shows the manual-check instruction, and Open report opens the attempt inline. | Review the mismatch, cleanup instructions, focus and report destinations. | |
+| 18 | Blocked continuation | The four screenshots show 3.3 blocked by 2.2 and the expected and observed CC 120 bytes. Verified release focuses Open source report and offers Start fresh. Failed cleanup shows the manual-check instruction and focuses Open report, which opens the attempt inline. | Review the mismatch, cleanup instructions, focus and report destinations. | |
 
 The Mac and Windows choose-mode copy remains for native review.
 The VDI Get ready example covers the unplug
@@ -101,7 +107,8 @@ and run ordinals across retries.
 
 `blocked_resume_mockups_fit_and_focus_open_report_at_both_scales` checks
 the full text bounds against the viewport and its clip at 1× and 2×.
-Enter follows Open report to the source file after verified release and
-opens the inline attempt preview after failed cleanup. The existing
+Enter activates Open source report after verified release and Open report
+after failed cleanup. The first opens the source file and the second
+opens the attempt preview inline. The existing
 blocked-resume keyboard tests cover deliberate Start fresh without a
 continuation plan and verify that failed cleanup cannot restart the run.

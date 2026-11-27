@@ -817,7 +817,7 @@ impl Wizard {
         ui.add_space(SPACE_16);
         ui.push_id("blocked-resume", |ui| {
             ui.horizontal(|ui| {
-                let open = button(ui, "Open report", true);
+                let open = button(ui, "Open source report", true);
                 self.focus_once(&open);
                 if open.clicked() {
                     self.leave_blocked_resume(false);

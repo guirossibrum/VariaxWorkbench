@@ -657,10 +657,20 @@ fn blocked_resume_mockups_fit_and_focus_open_report_at_both_scales() {
                 "expected 5B · observed 5B",
                 "byte 159 (linked Variax model (CC 120)) · expected 0x14 · actual 0x15",
                 "Working report: demo/rig-check-attempt.txt",
-                "Open report",
             ] {
                 assert!(visible(expected), "{name} at {scale}×: {expected}");
             }
+            let report_label = if released {
+                "Open source report"
+            } else {
+                "Open report"
+            };
+            assert!(
+                bounds_by_label.iter().any(|(label, bounds, clip)| {
+                    label == report_label && screen.intersect(*clip).contains_rect(*bounds)
+                }),
+                "{name} at {scale}×: {report_label}"
+            );
             if released {
                 assert!(visible("PODxt Live interface 0 released."));
                 assert!(visible("Start fresh"));
@@ -1130,7 +1140,7 @@ fn blocked_resume_offers_safe_report_focus_and_a_fresh_start_without_a_plan() {
         "Blocking check 2.2",
         "expected 5B · observed 5B",
         "byte 159 (linked Variax model (CC 120))",
-        "Open report",
+        "Open source report",
         "Start fresh",
     ] {
         assert!(

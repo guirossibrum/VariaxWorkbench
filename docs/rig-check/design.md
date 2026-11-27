@@ -87,7 +87,7 @@ value `0x14` and observed value `0x15`. The wizard labels the observed value
 
 | USB cleanup | Laptop 1× | Retina 2× | Actions |
 | --- | --- | --- | --- |
-| Release verified | [Laptop](mockups/laptop-resume-blocked.png) | [Retina](mockups/retina-resume-blocked.png) | **Open report** has focus and returns to the source report. **Start fresh** starts a new run without the continuation plan. |
+| Release verified | [Laptop](mockups/laptop-resume-blocked.png) | [Retina](mockups/retina-resume-blocked.png) | **Open source report** has focus and returns to the source report. **Start fresh** starts a new run without the continuation plan. |
 | Release failed | [Laptop](mockups/laptop-resume-cleanup-failed.png) | [Retina](mockups/retina-resume-cleanup-failed.png) | **Open report** has focus and opens the attempt report inline. The screen asks for a manual rig and USB check. |
 
 Both screens label the synthetic attempt path as **Working report**.
