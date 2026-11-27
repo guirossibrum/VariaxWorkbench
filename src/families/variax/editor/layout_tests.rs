@@ -1,5 +1,6 @@
-use super::{BODY, PICKUP1, TUNING, Tab, egui, tuning_presets::DETUNE};
+use super::{BODY, PICKUP1, SYSTEM, TUNING, Tab, egui, tuning_presets::DETUNE};
 use crate::editor::{EditorDefaults, Workbench, registry, tests::app};
+use variax_workbench::preset::{PresetText, legacy_text_issue};
 use variax_workbench::ui::{
     body_canvas::{PICKUP_SLOT_PX, POSITION_MAX, POSITION_MIN},
     editor_layout::{
@@ -42,20 +43,136 @@ fn pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
 }
 
 fn text_rect(output: &egui::FullOutput, expected: &str) -> Option<egui::Rect> {
-    fn bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
-        match shape {
-            egui::Shape::Text(text) if text.galley.text() == expected => {
-                Some(text.galley.rect.translate(text.pos.to_vec2()))
-            }
-            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| bounds(shape, expected)),
-            _ => None,
-        }
-    }
-
     output.shapes.iter().find_map(|shape| {
-        let rect = bounds(&shape.shape, expected)?.intersect(shape.clip_rect);
+        let rect = text_bounds(&shape.shape, expected)?.intersect(shape.clip_rect);
         rect.is_positive().then_some(rect)
     })
+}
+
+fn text_bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
+    match shape {
+        egui::Shape::Text(text) if text.galley.text() == expected => {
+            Some(text.galley.rect.translate(text.pos.to_vec2()))
+        }
+        egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| text_bounds(shape, expected)),
+        _ => None,
+    }
+}
+
+#[test]
+fn twelve_string_metadata_header_fits_and_accepts_input_at_both_densities() {
+    let name = "Twelve-string example";
+    let notice = format!("Model: {}", legacy_text_issue(name, true).unwrap());
+    for size in SIZES {
+        for pixels_per_point in [1.0, 2.0] {
+            let (ctx, mut app) = app();
+            app.clear_window_controls = true;
+            let editor = app.variax_mut();
+            editor.open_example();
+            editor.document.as_mut().unwrap().select(0, 4).unwrap();
+            assert!(editor.has_twelve_string());
+            assert_eq!(editor.document.as_ref().unwrap().preset().name(), name);
+            editor.change(|preset| preset.set_metadata(PresetText::Author, "Fixture author"));
+            editor.change(|preset| preset.set_metadata(PresetText::Notes, "Fixture notes"));
+
+            let frame = |app: &mut Workbench, events| {
+                render(
+                    app,
+                    &ctx,
+                    size,
+                    pixels_per_point,
+                    events,
+                    egui::Modifiers::NONE,
+                )
+            };
+            let click = |app: &mut Workbench, position| {
+                frame(
+                    app,
+                    vec![egui::Event::PointerMoved(position), pointer(position, true)],
+                );
+                frame(app, vec![pointer(position, false)]);
+                frame(app, vec![])
+            };
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let visible = |output: &egui::FullOutput, text: &str| {
+                let (bounds, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| Some((text_bounds(&shape.shape, text)?, shape.clip_rect)))
+                    .unwrap_or_else(|| panic!("{size:?} at {pixels_per_point}: missing {text:?}"));
+                assert!(
+                    screen.intersect(clip).contains_rect(bounds),
+                    "{size:?} at {pixels_per_point}: {text:?} {bounds:?} clipped to {clip:?}",
+                );
+                bounds
+            };
+
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            assert_eq!(output.pixels_per_point, pixels_per_point);
+            for text in [
+                &notice,
+                "Output trim",
+                "Model",
+                "Author",
+                "Notes",
+                "Undo",
+                "Redo",
+            ] {
+                visible(&output, text);
+            }
+            let trim_value = visible(&output, "0.00dB");
+            // The slider track precedes the numeric field on the same line.
+            let track = trim_value.center() - egui::vec2(44.0, 0.0);
+            click(&mut app, track);
+            let changed_trim = app.variax().float(SYSTEM, 0x200000).unwrap();
+            assert_ne!(changed_trim, 0.0);
+            let output = frame(&mut app, vec![]);
+            let output = click(&mut app, visible(&output, "Undo").center());
+            assert_eq!(app.variax().float(SYSTEM, 0x200000), Some(0.0));
+            let output = click(&mut app, visible(&output, "Redo").center());
+            assert_eq!(app.variax().float(SYSTEM, 0x200000), Some(changed_trim));
+            let output = click(&mut app, visible(&output, "Undo").center());
+
+            let enter = |app: &mut Workbench, text: &str| {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::Text(text.into()),
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            };
+            click(&mut app, visible(&output, "0.00dB").center());
+            enter(&mut app, "+1.50dB");
+            assert_eq!(app.variax().float(SYSTEM, 0x200000), Some(1.5));
+
+            for (field, original, input) in [
+                (PresetText::Author, "Fixture author", "A"),
+                (PresetText::Notes, "Fixture notes", "N"),
+            ] {
+                let output = frame(&mut app, vec![]);
+                click(&mut app, visible(&output, original).center());
+                frame(&mut app, vec![egui::Event::Text(input.into())]);
+                let preset = app.variax().document.as_ref().unwrap().preset();
+                assert_ne!(preset.metadata(field).unwrap(), original);
+            }
+
+            let model = ctx
+                .read_response(egui::Id::new("variax-model-name"))
+                .unwrap();
+            assert!(screen.contains_rect(model.rect));
+            assert_eq!(model.interact_rect, model.rect);
+            click(&mut app, model.rect.center());
+            assert!(ctx.memory(|memory| memory.has_focus(model.id)));
+        }
+    }
 }
 
 fn assert_footer(output: &egui::FullOutput, size: egui::Vec2, tuning: egui::Rect) {
