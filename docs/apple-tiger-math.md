@@ -225,3 +225,30 @@ cover valid full-length output, checksum-matching 3274/3275-byte truncations and
 a full-length checksum mismatch. The saved report above retains its original
 auditor hash; review independently checked all twelve saved outputs at the full
 3276-byte length. This guard correction does not replay or relabel that evidence.
+
+### Synthetic pickup-neighbor replay
+
+Two independent offline runs replayed series case 102 with the four synthetic
+positions above, bracketed by the 2.0 control. One reused an initialized
+emulator per adapter. The other ran in a separate process, reversed the order
+and initialized fresh emulators for each pair. With the pinned
+`initialized-host-libm-v2` and `initialized-apple-tiger8839-v1` adapters,
+all 12 packed outputs matched byte for byte between runs, including all eight
+neighbor outputs. Every output was 3,276 bytes and passed its checksum check.
+
+At each neighbor, Apple minus host was −3, −1, +1 and +1 at zero-based
+coefficient words 139, 141, 143 and 145, with equal exponent words and a
+checksum difference of −2 at word 1091. In the host adapter, substituting
+the Apple `sinf` results at generation calls 5570 and 5811 (zero-based)
+reproduced all four complete Apple outputs. Both calls used the same
+float32 argument and differed by one ULP. None of the 35 differing `sinf`
+returns reproduced the complete Apple output alone at the lower outer
+neighbor. Reversing the two substitutions left word 145 one count above the
+host and the checksum one count higher. Reversing call 5696 as well restored
+all four complete host outputs.
+
+The historical report and its eight neighbor reference outputs are unavailable.
+The replay establishes repeatability and bounds the return attribution for
+these synthetic inputs under the pinned adapters. Historical byte equality
+and which result matches historical macOS remain unresolved.
+[Issue #5 replay scope](https://github.com/guirossibrum/VariaxWorkbench/issues/5#issuecomment-7221515102).
