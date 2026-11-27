@@ -1,16 +1,51 @@
 use super::*;
 
+const RESISTANCES: [(f32, &str); 7] = [
+    (25.0, "25k Ω"),
+    (50.0, "50k Ω"),
+    (100.0, "100k Ω"),
+    (250.0, "250k Ω"),
+    (470.0, "470k Ω"),
+    (500.0, "500k Ω"),
+    (1000.0, "1M Ω"),
+];
+const CAPACITANCES: [(f32, &str); 8] = [
+    (-0.047, "Bypass tone (47 nF)"),
+    (0.0011, "1.1 nF"),
+    (0.0022, "2.2 nF"),
+    (0.0047, "4.7 nF"),
+    (0.011, "11 nF"),
+    (0.022, "22 nF"),
+    (0.047, "47 nF"),
+    (0.1, "0.1 µF"),
+];
+
+// Workbench 1.75's L6AssociationFormat scans its map and takes the last
+// equally near entry. These orders come from the original JAR on OpenJDK 17.
+const RESISTANCE_SCAN_ORDER: [usize; 7] = [0, 1, 2, 3, 5, 6, 4];
+const CAPACITANCE_SCAN_ORDER: [usize; 8] = [1, 2, 7, 6, 0, 4, 5, 3];
+
+fn electrical_choice_label<'a>(
+    value: f32,
+    choices: &[(f32, &'a str)],
+    scan_order: &[usize],
+) -> &'a str {
+    let (first, rest) = scan_order.split_first().expect("electrical choices");
+    let (candidate, mut label) = choices[*first];
+    let mut nearest = (value - candidate).abs();
+    for &index in rest {
+        let (candidate, candidate_label) = choices[index];
+        let distance = (value - candidate).abs();
+        if distance <= nearest {
+            nearest = distance;
+            label = candidate_label;
+        }
+    }
+    label
+}
+
 impl VariaxEditor {
     pub(super) fn electrical_controls(&mut self, ui: &mut egui::Ui) {
-        let resistances = [
-            (25.0, "25k Ω"),
-            (50.0, "50k Ω"),
-            (100.0, "100k Ω"),
-            (250.0, "250k Ω"),
-            (470.0, "470k Ω"),
-            (500.0, "500k Ω"),
-            (1000.0, "1M Ω"),
-        ];
         let body = self.model_id(BODY);
         let sitar = body == Some(0x0310_0018);
         let Some(preset) = self.document.as_ref().map(|document| document.preset()) else {
@@ -44,7 +79,13 @@ impl VariaxEditor {
             ui.label("Rolling off volume can darken the sound.");
         }
         ui.columns(2, |columns| {
-            self.float_choices(&mut columns[0], 0x200000, "Resistance", &resistances);
+            self.float_choices(
+                &mut columns[0],
+                0x200000,
+                "Resistance",
+                &RESISTANCES,
+                &RESISTANCE_SCAN_ORDER,
+            );
             self.taper_control(&mut columns[1]);
         });
         ui.separator();
@@ -61,21 +102,19 @@ impl VariaxEditor {
             });
         }
         ui.columns(2, |columns| {
-            self.float_choices(&mut columns[0], 0x200002, "Resistance", &resistances);
+            self.float_choices(
+                &mut columns[0],
+                0x200002,
+                "Resistance",
+                &RESISTANCES,
+                &RESISTANCE_SCAN_ORDER,
+            );
             self.float_choices(
                 &mut columns[1],
                 0x200003,
                 "Capacitance",
-                &[
-                    (-0.047, "Bypass tone (47 nF)"),
-                    (0.0011, "1.1 nF"),
-                    (0.0022, "2.2 nF"),
-                    (0.0047, "4.7 nF"),
-                    (0.011, "11 nF"),
-                    (0.022, "22 nF"),
-                    (0.047, "47 nF"),
-                    (0.1, "0.1 µF"),
-                ],
+                &CAPACITANCES,
+                &CAPACITANCE_SCAN_ORDER,
             );
         });
         self.float_control(
@@ -105,6 +144,36 @@ impl VariaxEditor {
         }
         if response.changed() {
             self.set_auto_select_controls(auto);
+        }
+    }
+
+    fn float_choices(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: u32,
+        label: &str,
+        choices: &[(f32, &str)],
+        scan_order: &[usize],
+    ) {
+        let Some(value) = self.float(WIRING, id) else {
+            return;
+        };
+        let mut selected = value.to_bits();
+        let text = electrical_choice_label(value, choices, scan_order);
+        ui.vertical(|ui| {
+            ui.label(label);
+            egui::ComboBox::from_id_salt(("electrical", id))
+                .selected_text(text)
+                .width(ui.available_width())
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for &(candidate, text) in choices {
+                        ui.selectable_value(&mut selected, candidate.to_bits(), text);
+                    }
+                });
+        });
+        if selected != value.to_bits() {
+            self.change(|p| p.set_parameter(WIRING, id, 1, selected));
         }
     }
 }
@@ -223,6 +292,143 @@ mod tests {
                 text_position(&output, expected).is_some(),
                 "missing {expected} on {body:08x}"
             );
+        }
+    }
+
+    #[test]
+    fn electrical_captions_match_workbench_association_boundaries() {
+        for (value, expected) in [
+            (37.5, "50k Ω"),
+            (360.0, "470k Ω"),
+            (485.0, "470k Ω"),
+            (750.0, "1M Ω"),
+            (f32::MAX, "470k Ω"),
+            (f32::NAN, "25k Ω"),
+        ] {
+            assert_eq!(
+                electrical_choice_label(value, &RESISTANCES, &RESISTANCE_SCAN_ORDER),
+                expected
+            );
+        }
+        for (value, expected) in [
+            (f32::from_bits(0x3cb4_3900), "22 nF"),
+            (0.00785, "4.7 nF"),
+            (0.0345, "22 nF"),
+            (-0.04, "Bypass tone (47 nF)"),
+            (-0.005, "1.1 nF"),
+            (f32::INFINITY, "4.7 nF"),
+            (f32::NAN, "1.1 nF"),
+        ] {
+            assert_eq!(
+                electrical_choice_label(value, &CAPACITANCES, &CAPACITANCE_SCAN_ORDER),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn imported_electrical_choices_keep_file_bits_until_an_explicit_selection() {
+        let (ctx, mut app) = app();
+        ctx.style_mut(|style| style.animation_time = 0.0);
+        app.variax_mut().tab = Tab::Controls;
+        let directory = tempfile::tempdir().unwrap();
+        let bypass_help = "Tone knob bypassed. Choose a positive capacitance to enable it.";
+        for (name, values, labels) in [
+            (
+                "canonical",
+                [500.0_f32, 250.0, 0.047],
+                ["500k Ω", "250k Ω", "47 nF"],
+            ),
+            (
+                "noncanonical-negative",
+                [365.0, 750.0, -0.04],
+                ["470k Ω", "1M Ω", "Bypass tone (47 nF)"],
+            ),
+            (
+                "noncanonical",
+                [485.0, 750.0, 0.08],
+                ["470k Ω", "1M Ω", "0.1 µF"],
+            ),
+        ] {
+            let mut bytes =
+                include_bytes!("../../../../tests/fixtures/synthetic-host-preset.vwm").to_vec();
+            let wiring = bytes
+                .windows(4)
+                .position(|word| word == WIRING.to_be_bytes())
+                .unwrap();
+            let offsets = [0x3f20_0000_u32, 0x3f20_0002, 0x3f20_0003].map(|id| {
+                let record = [id.to_be_bytes(), 1_u32.to_be_bytes()].concat();
+                bytes[wiring..]
+                    .windows(record.len())
+                    .position(|window| window == record)
+                    .unwrap()
+                    + wiring
+                    + record.len()
+            });
+            for (offset, value) in offsets.into_iter().zip(values) {
+                bytes[offset..offset + 4].copy_from_slice(&value.to_bits().to_be_bytes());
+            }
+            let [_, _, capacitance_offset] = offsets;
+            let source = directory.path().join(format!("{name}.vwm"));
+            std::fs::write(&source, &bytes).unwrap();
+            app.variax_mut().load(&source);
+
+            let output = frame(&ctx, &mut app, vec![]);
+            for label in labels {
+                assert!(text_position(&output, label).is_some(), "missing {label}");
+            }
+            assert_eq!(
+                text_position(&output, bypass_help).is_some(),
+                values[2] < 0.0
+            );
+
+            assert!(app.variax().can_edit(WIRING, Some(0x200003)), "{name}");
+            click_text(&ctx, &mut app, labels[2]);
+            assert!(
+                text_position(&frame(&ctx, &mut app, vec![]), "1.1 nF").is_some(),
+                "capacitance popup for {name}"
+            );
+            frame(
+                &ctx,
+                &mut app,
+                vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+            );
+            let doc = app.variax_mut().document.as_mut().unwrap();
+            assert_eq!(doc.as_bytes(), bytes);
+            assert!(!doc.is_dirty());
+            assert!(!doc.can_undo());
+            assert!(!doc.can_redo());
+            let copy = directory.path().join(format!("{name}-copy.vwm"));
+            doc.save_copy(&copy).unwrap();
+            assert_eq!(std::fs::read(&copy).unwrap(), bytes);
+            assert_eq!(std::fs::read(&source).unwrap(), bytes);
+
+            if name == "noncanonical" {
+                click_text(&ctx, &mut app, labels[2]);
+                click_text(&ctx, &mut app, "1.1 nF");
+                let mut edited = bytes.clone();
+                edited[capacitance_offset..capacitance_offset + 4]
+                    .copy_from_slice(&0.0011_f32.to_bits().to_be_bytes());
+                let doc = app.variax().document.as_ref().unwrap();
+                assert_eq!(doc.as_bytes(), edited);
+                assert!(doc.is_dirty());
+                assert!(doc.can_undo());
+                assert_eq!(std::fs::read(&source).unwrap(), bytes);
+
+                app.variax_mut().undo();
+                let doc = app.variax().document.as_ref().unwrap();
+                assert_eq!(doc.as_bytes(), bytes);
+                assert!(!doc.is_dirty());
+                assert!(!doc.can_undo());
+                assert!(doc.can_redo());
+                assert!(text_position(&frame(&ctx, &mut app, vec![]), labels[2]).is_some());
+            }
         }
     }
 
