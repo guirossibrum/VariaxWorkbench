@@ -277,6 +277,7 @@ struct Bridge {
     firmware_warning: Option<FirmwareNotice>,
     pod_warning: Option<FirmwareNotice>,
     last_notice: Option<Notice>,
+    running_guitar_invalidated: bool,
     suspended: bool,
     driver_unbound: bool,
 }
@@ -299,6 +300,7 @@ impl Bridge {
             firmware_warning: None,
             pod_warning: None,
             last_notice: None,
+            running_guitar_invalidated: false,
             suspended: false,
             driver_unbound: false,
         }
@@ -313,12 +315,23 @@ impl Bridge {
     }
 
     fn complete(&mut self, kind: JobKind, outcome: Outcome, generation: &mut u64) {
-        match outcome {
-            Outcome::Notices(notices) => {
-                for notice in notices {
-                    self.observe_notice(notice);
+        // A loss revokes guitar proof from work already in flight. Still
+        // accept a release failure and keep the worker until it has returned.
+        if std::mem::take(&mut self.running_guitar_invalidated) {
+            self.running = None;
+            if !matches!(
+                outcome,
+                Outcome::Finished {
+                    guitar: Guitar::DriverUnbound(_) | Guitar::CleanupFailed,
+                    ..
                 }
+            ) {
+                return;
             }
+            self.queued = None;
+        }
+        match outcome {
+            Outcome::Notices(_) => unreachable!("listener results have their own dispatch"),
             Outcome::Deferred | Outcome::OtherProcessBusy => {
                 self.running = None;
                 self.queued = Some(kind);
@@ -396,6 +409,10 @@ impl Bridge {
     }
 
     fn remember_guitar(&mut self, identity: GuitarIdentity, generation: &mut u64) {
+        // Explicit Refresh can establish presence without a return notice.
+        if self.last_notice == Some(Notice::Disconnected) {
+            self.last_notice = Some(Notice::Connected);
+        }
         // A new assessment of the same attachment updates its existing tab.
         let linked = self.guitar.map_or_else(
             || {
@@ -408,16 +425,33 @@ impl Bridge {
     }
 
     fn observe_notice(&mut self, notice: Notice) {
-        if self.last_notice.replace(notice) != Some(notice)
-            && self.can_refresh()
-            && !self.driver_unbound
-        {
-            self.queued = Some(JobKind::RefreshGuitar);
+        if self.last_notice.replace(notice) == Some(notice) {
+            return;
+        }
+        match notice {
+            Notice::Disconnected => {
+                self.guitar = None;
+                self.firmware_warning = None;
+                self.queued = None;
+                self.waiting_for_other_process = false;
+                self.running_guitar_invalidated |= self.running.is_some();
+                if !self.suspended && !self.driver_unbound {
+                    self.status = "disconnected".into();
+                }
+            }
+            Notice::Connected if !self.suspended && !self.driver_unbound => {
+                if self.running_guitar_invalidated || !self.pending() {
+                    self.queued = Some(JobKind::RefreshGuitar);
+                }
+            }
+            Notice::Connected => {}
         }
     }
 
     fn label(&self) -> String {
-        let status = if self.pending() {
+        let holding_loss =
+            self.running_guitar_invalidated && self.last_notice == Some(Notice::Disconnected);
+        let status = if self.pending() && !holding_loss {
             if self.waiting_for_other_process {
                 "checking… (waiting for the rig)"
             } else {
@@ -531,28 +565,32 @@ impl DetectionService {
                     bridge.running = None;
                     bridge.status = "PODxt Live USB identity unverified".into();
                 }
-            } else {
-                self.cancel_listener();
+            } else if let Some(worker) = &mut self.worker
+                && worker.job.kind == JobKind::Listen
+            {
+                worker.revoke_observation();
             }
             return Err(error);
         }
-        let waiting_for_other_process = self.finish_worker(now);
+        #[cfg(test)]
         if matches!(scan, Scan::Automatic) {
-            #[cfg(test)]
-            for attachment in self.attachments.values_mut() {
-                if let Some(bridge) = attachment
-                    .bridge
-                    .as_mut()
-                    .filter(|bridge| bridge.pod.is_some())
-                {
-                    for notice in self.source.simulated_notices(&attachment.key) {
-                        bridge.observe_notice(notice);
-                    }
-                }
+            let batches: Vec<_> = self
+                .attachments
+                .values()
+                .map(|attachment| {
+                    (
+                        attachment.key.clone(),
+                        self.source.simulated_notices(&attachment.key),
+                    )
+                })
+                .collect();
+            for (key, notices) in batches {
+                self.apply_linux_notices(&key, notices);
             }
-            if !waiting_for_other_process {
-                self.start_queued(now);
-            }
+        }
+        let waiting_for_other_process = self.finish_worker(now);
+        if matches!(scan, Scan::Automatic) && !waiting_for_other_process {
+            self.start_queued(now);
         }
         self.rebuild_devices(scan, profiles);
         Ok(self.known.values().cloned().collect())
@@ -651,9 +689,13 @@ impl DetectionService {
                     .filter(|attachment| attachment.bridge.is_some())
                     .count()
                     != 1;
-            if !same_attachment && worker.job.attachment.registry_id.is_some() {
+            if ambiguous_bridge
+                || !same_attachment
+                    && (worker.job.attachment.registry_id.is_some()
+                        || worker.job.kind == JobKind::Listen)
+            {
                 worker.revoke_observation();
-            } else if !same_attachment || ambiguous_bridge {
+            } else if !same_attachment {
                 worker.cancel();
             }
         }
@@ -673,6 +715,31 @@ impl DetectionService {
             .as_mut()
     }
 
+    fn apply_linux_notices(&mut self, key: &AttachmentKey, notices: Vec<Notice>) {
+        if notices.is_empty()
+            || key.registry_id.is_some()
+            || self
+                .attachments
+                .values()
+                .filter(|attachment| attachment.bridge.is_some())
+                .count()
+                != 1
+        {
+            return;
+        }
+        if let Some(bridge) = self
+            .attachments
+            .get_mut(&key.path)
+            .filter(|attachment| attachment.key == *key && attachment.open_candidate)
+            .and_then(|attachment| attachment.bridge.as_mut())
+            .filter(|bridge| bridge.pod.is_some())
+        {
+            for notice in notices {
+                bridge.observe_notice(notice);
+            }
+        }
+    }
+
     /// Invalidate the previously verified guitar for a matching Follow notice.
     /// Update the cached devices so the shell can reconcile without opening a link.
     pub fn report_guitar_disconnect(
@@ -689,11 +756,14 @@ impl DetectionService {
         {
             return None;
         }
-        bridge.guitar = None;
-        bridge.status = "disconnected".into();
-        bridge.last_notice = Some(Notice::Disconnected);
-        if key.attachment.registry_id.is_some() && bridge.can_refresh() {
-            bridge.queued = Some(JobKind::DiscoverGuitar);
+        if key.attachment.registry_id.is_none() {
+            bridge.observe_notice(Notice::Disconnected);
+        } else {
+            bridge.guitar = None;
+            bridge.status = "disconnected".into();
+            if bridge.can_refresh() {
+                bridge.queued = Some(JobKind::DiscoverGuitar);
+            }
         }
         self.rebuild_devices(Scan::Automatic, profiles);
         Some(self.known.values().cloned().collect())
@@ -777,6 +847,12 @@ impl DetectionService {
         let revoked = worker.observation_revoked();
         let quitting = worker.quitting();
         let (job, outcome) = worker.finish();
+        if let Outcome::Notices(notices) = outcome {
+            if !revoked && !quitting {
+                self.apply_linux_notices(&job.attachment, notices);
+            }
+            return false;
+        }
         if job.attachment.registry_id.is_some()
             && (quitting
                 || !self

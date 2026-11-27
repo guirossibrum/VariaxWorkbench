@@ -35,20 +35,45 @@ missing large-buffer command does not account for the silence.
 `L6MIDIJava.native_WaitForMIDI`, then `L6MIDIManager` dispatches SysEx to
 `L6VariaxPatchManager.OnSysex`. The 11-byte `03 11` branch uses only byte 9
 for connection status (zero means disconnected) and notifies on Boolean
-changes. The 12-byte `7F 03` branch reports disconnected. Neither status
-branch checks a guitar identifier or attachment counter. Bridge-mode
+changes. The 12-byte `7F 03` branch reports disconnected. Both branches
+report presence without a guitar identifier or attachment counter. Bridge-mode
 `PollConnection` returns success without checking the downstream guitar.
+The original reopen path enables relay messages and sends the editor model
+after identity. The Linux notice path uses the existing read-only identity
+exchange.
 
-On Linux, the app's passive path decodes the notices on the verified PODxt's
-ALSA raw MIDI input. A changed notice queues an identity refresh. A successful
-refresh can retain the guitar's existing host generation. Active Variax Follow
-instead decodes the notices from PODxt USB interface 1 and can invalidate that
-generation on a reported disconnect. Both inputs terminate at the PODxt. The
-host routes do not establish where PODxt 3.01 generates or forwards a notice,
-or whether every VDI interruption reaches either input.
+**Linux Build 507 (`d942808`).** Detection has one passive reader for a
+verified PODxt Live. It opens the PODxt control ALSA raw MIDI input read-only
+under the shared passive rig lock, checks the USB path and address, and
+decodes the two code-derived notice forms. The listener returns its batch
+after releasing the input. Build 507's reducer queued the same ordinary
+guitar identity for either changed notice, so the prior guitar could stay
+current until the result was collected. Active Variax Follow instead decodes
+notices from PODxt interface 1 and reports a loss against the current guitar
+key. Both host inputs terminate at the PODxt.
 
-**Existing owner evidence.** The Linux check saw no notices and needed manual
-refresh. [#201](https://github.com/guirossibrum/VariaxWorkbench/issues/201)
+**Linux notice handling.** A validated loss withdraws the current guitar
+when the notice is dispatched. The PODxt stays verified at its existing USB
+attachment and generation, and the editor retains its open document and
+edits. Automatic detection listens passively while the guitar is marked
+disconnected. The user can explicitly choose Refresh guitar if the return
+notice never arrives. A changed return queues one ordinary guitar-only identity operation under the
+shared active rig lock. Busy leaves that operation pending. The original Linux
+discovery exchange still permits its bounded lost-packet retry and requires
+checked release. A matching Follow loss also invalidates any in-flight guitar
+proof. On return, fresh proof gets a new linked guitar generation, so work tied
+to the withdrawn guitar cannot act on the reconnected tab.
+
+**Existing owner evidence.** The Build 507 owner run updated guitar status
+only after manual refresh. Native notice delivery in that run is unknown.
+The separate app-closed Linux USB capture shows 86 driver identity requests
+on 0x05, 63 guitar identity replies and three groups of family-`07`
+`69`/`6A`/`6B` on 0x86, and no complete supported notice on 0x84 or 0x86.
+This stock-driver window had identity traffic and no Workbench relay setup.
+Whether those notices reach the passive app input under normal operation is
+unknown. The family-`07` groups have no verified connection-status meaning.
+[Build 507 owner report](https://github.com/guirossibrum/VariaxWorkbench/issues/201#issuecomment-7226662047)
+
 Two macOS Rig Check 6.1 records from 2026-11-26 detected loss and return by
 identity fallback. The packet-recorded run opened Follow windows with the
 bridge enabled and captured a universal identity reply and family-`07`

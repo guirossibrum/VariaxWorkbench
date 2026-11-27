@@ -277,12 +277,13 @@ mod live {
         }
         // Opening a read-only descriptor sends no request and never detaches a driver.
         let mut input = RawMidiInput::open(PODXT_LIVE_MIDI.device_node(card.index)).ok()?;
-        let notices = read_notices(
+        // An identity request can ask this reader to yield concurrently.
+        // Keep complete notices already received before releasing the input.
+        Some(read_notices(
             |wait| input.read(wait),
             || cancel.load(Ordering::Relaxed) || rig.yield_requested(),
             |message| eprintln!("PODxt Variax presence: ignored {message}"),
-        );
-        (!cancel.load(Ordering::Relaxed)).then_some(notices)
+        ))
     }
 
     fn identify_on(rig: &DeviceLock, job: &Job, cancel: &AtomicBool) -> Outcome {

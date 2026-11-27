@@ -10,9 +10,9 @@ enum InventoryState {
     InterfacesUnavailable,
 }
 
-struct MacFixture(SyntheticSysfs, Rc<Cell<InventoryState>>);
+struct UsbFixture(SyntheticSysfs, Rc<Cell<InventoryState>>, Option<u64>);
 
-impl PresenceSource for MacFixture {
+impl PresenceSource for UsbFixture {
     fn metadata(&self) -> &dyn OsMetadataSource {
         &self.0
     }
@@ -35,7 +35,7 @@ impl PresenceSource for MacFixture {
     }
 
     fn usb_registry_id(&self, _: &str) -> Option<u64> {
-        Some(30)
+        self.2
     }
 }
 
@@ -53,9 +53,10 @@ fn cadence_does_not_overlap_an_active_worker_and_quit_waits_for_its_release() {
 
     let mut usb = SyntheticSysfs::new();
     usb.add_device("1-1", 0x0e41, 0x4650, "PODxt Live", &[]);
-    let mut service = DetectionService::new(Box::new(MacFixture(
+    let mut service = DetectionService::new(Box::new(UsbFixture(
         usb,
         Rc::new(Cell::new(InventoryState::Ready)),
+        Some(30),
     )));
     service.identify = Some(wait_for_quit);
     let start = Instant::now();
@@ -180,10 +181,17 @@ fn check_revoked(
 }
 
 fn in_flight(kind: JobKind) -> (DetectionService, Rc<Cell<InventoryState>>, Job, Instant) {
+    in_flight_with_registry(kind, Some(30))
+}
+
+fn in_flight_with_registry(
+    kind: JobKind,
+    registry_id: Option<u64>,
+) -> (DetectionService, Rc<Cell<InventoryState>>, Job, Instant) {
     let mut usb = SyntheticSysfs::new();
     usb.add_device("1-1", 0x0e41, 0x4650, "PODxt Live", &[]);
     let state = Rc::new(Cell::new(InventoryState::Ready));
-    let mut service = DetectionService::new(Box::new(MacFixture(usb, state.clone())));
+    let mut service = DetectionService::new(Box::new(UsbFixture(usb, state.clone(), registry_id)));
     let start = Instant::now();
     let profiles = super::super::registry::DEVICE_PROFILES;
     service
@@ -424,4 +432,154 @@ fn revoked_busy_discovery_waits_for_both_the_cadence_and_fresh_readiness() {
     state.set(InventoryState::Ready);
     service.refresh_at(Scan::Automatic, profiles, due).unwrap();
     assert_eq!(service.worker.as_ref().unwrap().job, job);
+}
+
+#[test]
+fn linux_loss_revokes_in_flight_identity_and_return_waits_for_release() {
+    for result in [
+        Outcome::Finished {
+            pod_firmware: None,
+            guitar: Guitar::Verified("3.10"),
+        },
+        Outcome::OtherProcessBusy,
+        Outcome::Finished {
+            pod_firmware: None,
+            guitar: Guitar::CleanupFailed,
+        },
+        Outcome::Finished {
+            pod_firmware: None,
+            guitar: Guitar::DriverUnbound("Driver was not restored.".into()),
+        },
+    ] {
+        let cleanup_failed = matches!(
+            result,
+            Outcome::Finished {
+                guitar: Guitar::CleanupFailed,
+                ..
+            }
+        );
+        let driver_unbound = matches!(
+            result,
+            Outcome::Finished {
+                guitar: Guitar::DriverUnbound(_),
+                ..
+            }
+        );
+        let (mut service, _, job, now) = in_flight_with_registry(JobKind::RefreshGuitar, None);
+        let profiles = super::super::registry::DEVICE_PROFILES;
+        let bridge = service.bridge_mut(&job.attachment).unwrap();
+        bridge.guitar = Some((42, GuitarIdentity::Verified("3.10")));
+        bridge.last_guitar = Some("3.10");
+        service.rebuild_devices(Scan::Automatic, profiles);
+        let old_guitar = service
+            .known
+            .keys()
+            .find(|key| key.linked_generation == Some(42))
+            .unwrap()
+            .clone();
+        let (finish, allow_finish) = mpsc::channel();
+        service.worker = Some(
+            Worker::start(job.clone(), move |_, _| {
+                allow_finish.recv_timeout(Duration::from_secs(5)).unwrap();
+                result
+            })
+            .unwrap(),
+        );
+
+        let devices = service
+            .report_guitar_disconnect(&old_guitar, profiles)
+            .unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].key.attachment, job.attachment);
+        assert_eq!(devices[0].support, DeviceSupport::Verified("3.01"));
+        assert_eq!(
+            devices[0].guitar_status.as_deref(),
+            Some("Guitar: disconnected · last verified Variax 600 3.10")
+        );
+        assert!(!service.queue_guitar_refresh(&job.attachment, false));
+
+        service.apply_linux_notices(&job.attachment, vec![Notice::Connected, Notice::Connected]);
+        service.refresh_at(Scan::Automatic, profiles, now).unwrap();
+        assert_eq!(service.worker.as_ref().unwrap().job, job);
+        assert_eq!(service.known.len(), 1);
+
+        finish.send(()).unwrap();
+        await_worker(&service);
+        let devices = service.refresh_at(Scan::Automatic, profiles, now).unwrap();
+        assert_eq!(
+            devices.len(),
+            1,
+            "old identity must never restore the guitar"
+        );
+        assert_eq!(devices[0].support, DeviceSupport::Verified("3.01"));
+        let bridge = service.bridge_mut(&job.attachment).unwrap();
+        assert_eq!(bridge.suspended, cleanup_failed);
+        assert_eq!(bridge.driver_unbound, driver_unbound);
+        assert_eq!(
+            bridge.queued,
+            (!cleanup_failed && !driver_unbound).then_some(JobKind::RefreshGuitar),
+            "keep exactly the return work unless release failed"
+        );
+    }
+}
+
+#[test]
+fn linux_listener_keeps_decoded_loss_on_yield_but_drops_it_after_presence_is_revoked() {
+    for revoke in [false, true] {
+        let (mut service, state, mut job, now) =
+            in_flight_with_registry(JobKind::RefreshGuitar, None);
+        job.kind = JobKind::Listen;
+        let bridge = service.bridge_mut(&job.attachment).unwrap();
+        bridge.running = None;
+        bridge.guitar = Some((42, GuitarIdentity::Verified("3.10")));
+        service.worker = Some(
+            Worker::start(job.clone(), |_, cancel| {
+                while !cancel.load(Ordering::Relaxed) {
+                    std::thread::yield_now();
+                }
+                Outcome::Notices(vec![Notice::Disconnected])
+            })
+            .unwrap(),
+        );
+
+        let profiles = super::super::registry::DEVICE_PROFILES;
+        if revoke {
+            state.set(InventoryState::MissingIterator);
+            assert!(service.refresh_at(Scan::Automatic, profiles, now).is_err());
+            state.set(InventoryState::Ready);
+        } else {
+            assert!(service.queue_guitar_refresh(&job.attachment, false));
+        }
+        await_worker(&service);
+        let devices = service.refresh_at(Scan::Automatic, profiles, now).unwrap();
+        assert_eq!(devices.len(), if revoke { 2 } else { 1 });
+        let bridge = service.bridge_mut(&job.attachment).unwrap();
+        assert!(bridge.queued.is_none());
+        assert!(
+            bridge.can_refresh(),
+            "keep the passive path available for return"
+        );
+    }
+}
+
+#[test]
+fn linux_listener_disregards_results_from_a_stale_generation() {
+    let (mut service, _, mut job, now) = in_flight_with_registry(JobKind::RefreshGuitar, None);
+    let bridge = service.bridge_mut(&job.attachment).unwrap();
+    bridge.running = None;
+    bridge.guitar = Some((42, GuitarIdentity::Verified("3.10")));
+
+    // The USB path and address can both be reused after a replug.
+    job.attachment.generation -= 1;
+    job.kind = JobKind::Listen;
+    service.worker =
+        Some(Worker::start(job, |_, _| Outcome::Notices(vec![Notice::Disconnected])).unwrap());
+    await_worker(&service);
+    let profiles = super::super::registry::DEVICE_PROFILES;
+    let devices = service.refresh_at(Scan::Automatic, profiles, now).unwrap();
+    assert_eq!(devices.len(), 2);
+    assert!(devices.iter().any(|device| {
+        device.key.linked_generation == Some(42)
+            && device.support == DeviceSupport::Verified("3.10")
+    }));
 }

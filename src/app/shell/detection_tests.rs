@@ -774,7 +774,18 @@ fn pod_notices_trigger_identity_and_duplicates_do_not_recheck() {
     );
     source.guitar(attachment.clone());
     tick(&ctx, &mut app);
-    let original = entries(&app)[1].2.device.key.clone();
+    let tabs = entries(&app);
+    let pod = tabs[0].1;
+    let pod_key = tabs[0].2.device.key.clone();
+    let guitar = tabs[1].1;
+    let original = tabs[1].2.device.key.clone();
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
+    app.with_tab(guitar, |entry, _| {
+        let editor = entry.editor.as_mut() as &mut dyn std::any::Any;
+        let editor = editor.downcast_mut::<VariaxEditor>().unwrap();
+        editor.load(&file);
+        editor.change(|preset| preset.rename("Unsaved model"));
+    });
     assert_eq!(source.0.borrow().completed.len(), 2);
 
     source.notice(&attachment, SimulatedNotice::Connected);
@@ -786,31 +797,168 @@ fn pod_notices_trigger_identity_and_duplicates_do_not_recheck() {
     );
 
     source.notice(&attachment, SimulatedNotice::Disconnected);
+    source.guitar(attachment.clone());
     tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    assert_eq!(tabs[0].1, pod);
+    assert_eq!(tabs[0].2.device.key, pod_key);
+    assert_eq!(tabs[0].2.device.support, DeviceSupport::Verified("3.01"));
     assert_eq!(
-        entries(&app)[1].2.device.support,
-        DeviceSupport::Refreshing("3.10")
+        tabs[0].2.device.guitar_status.as_deref(),
+        Some("Guitar: disconnected · last verified Variax 600 3.10")
     );
-    source.finish(attachment.clone(), SimulatedGuitar::Silent);
-    tick(&ctx, &mut app);
+    assert_eq!(tabs[1].1, guitar);
+    assert_eq!(tabs[1].2.connection, Connection::Disconnected);
+    assert!(tabs[1].2.verified_attachment().is_none());
+    assert!(app.verified_backup_guitar().is_none());
+
+    source.notice(&attachment, SimulatedNotice::Disconnected);
+    for _ in 0..3 {
+        tick(&ctx, &mut app);
+    }
+    assert_eq!(source.0.borrow().completed.len(), 2);
     assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
 
     source.notice(&attachment, SimulatedNotice::Connected);
-    source.guitar(attachment.clone());
     tick(&ctx, &mut app);
-    assert_eq!(source.0.borrow().completed.len(), 4);
-    assert_eq!(entries(&app).len(), 2);
-    assert_eq!(entries(&app)[1].2.connection, Connection::Present);
-    assert_ne!(entries(&app)[1].2.device.key, original);
+    let tabs = entries(&app);
+    assert_eq!(source.0.borrow().completed.len(), 3);
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(tabs[0].1, pod);
+    assert_eq!(tabs[0].2.device.key, pod_key);
+    assert_eq!(tabs[1].1, guitar);
+    assert_eq!(tabs[1].2.connection, Connection::Present);
+    assert_eq!(tabs[1].2.device.key.attachment, attachment);
+    assert_ne!(tabs[1].2.device.key, original);
+    assert!(tabs[1].2.reconnected_with_edits);
+    assert_eq!(
+        app.variax().document.as_ref().unwrap().preset().name(),
+        "Unsaved model"
+    );
 
     // A disconnect and reconnect in one read window still recheck once.
     source.notice(&attachment, SimulatedNotice::Disconnected);
     source.notice(&attachment, SimulatedNotice::Connected);
     source.guitar(attachment.clone());
     tick(&ctx, &mut app);
-    assert_eq!(source.0.borrow().completed.len(), 5);
+    assert_eq!(source.0.borrow().completed.len(), 4);
     tick(&ctx, &mut app);
-    assert_eq!(source.0.borrow().completed.len(), 5);
+    assert_eq!(source.0.borrow().completed.len(), 4);
+}
+
+#[test]
+fn linux_return_waits_for_the_rig_and_uses_one_guitar_identity() {
+    use super::super::detection::SimulatedJobKind;
+
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+    source.notice(&attachment, SimulatedNotice::Disconnected);
+    tick(&ctx, &mut app);
+
+    source.notice(&attachment, SimulatedNotice::Connected);
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(attachment.clone(), SimulatedOutcome::OtherProcessBusy);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    assert!(
+        entries(&app)[0]
+            .2
+            .device
+            .guitar_status
+            .as_ref()
+            .unwrap()
+            .contains("waiting for the rig")
+    );
+
+    source.notice(&attachment, SimulatedNotice::Connected);
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Present);
+    source.guitar(attachment);
+    tick(&ctx, &mut app);
+    assert_eq!(
+        source
+            .0
+            .borrow()
+            .completed
+            .iter()
+            .map(|job| job.kind)
+            .collect::<Vec<_>>(),
+        [
+            SimulatedJobKind::Initial,
+            SimulatedJobKind::RefreshGuitar, // Lock busy, so no exchange.
+            SimulatedJobKind::RefreshGuitar,
+        ]
+    );
+}
+
+#[test]
+fn linux_loss_cancels_a_queued_busy_return_and_stale_attachment_notices_are_ignored() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let old = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(old.clone());
+    tick(&ctx, &mut app);
+
+    source.notice(&old, SimulatedNotice::Disconnected);
+    source.notice(&old, SimulatedNotice::Connected);
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(old.clone(), SimulatedOutcome::Deferred);
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 2);
+
+    source.notice(&old, SimulatedNotice::Disconnected);
+    source.guitar(old.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 2);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+
+    source.0.borrow_mut().address = Some(11);
+    tick(&ctx, &mut app);
+    let new = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    assert_ne!(new, old);
+    source.guitar(new.clone());
+    tick(&ctx, &mut app);
+    source.notice(&old, SimulatedNotice::Disconnected);
+    source.notice(&old, SimulatedNotice::Connected);
+    source.guitar(new.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 3);
+    assert_eq!(entries(&app)[1].2.device.key.attachment, new);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Present);
+}
+
+#[test]
+fn linux_explicit_refresh_can_recover_when_no_return_notice_arrives() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+
+    source.notice(&attachment, SimulatedNotice::Disconnected);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    source.guitar(attachment.clone());
+    app.refresh_guitar(&attachment);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Present);
+
+    source.notice(&attachment, SimulatedNotice::Disconnected);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    assert_eq!(source.0.borrow().completed.len(), 2);
 }
 
 fn unverified_guitar(revision: &[u8; 4]) -> SimulatedGuitar {
