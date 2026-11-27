@@ -1,0 +1,313 @@
+use super::*;
+use line6_devices::{identity::REQUEST, session::Path};
+use std::{cell::RefCell, collections::VecDeque};
+use variax_workbench::identity_stage::{bridge_reply, guitar_reply};
+
+#[derive(Debug, PartialEq, Eq)]
+enum Event {
+    Open(Interface),
+    Identity(Interface, Duration),
+    Finish(Interface),
+    Drop(Interface),
+}
+
+#[derive(Default)]
+struct Rig {
+    guitar_replies: Vec<Vec<Vec<u8>>>,
+    stale_on: Option<Interface>,
+    fail_finish: Option<Interface>,
+    cancel_guitar_at: Option<Duration>,
+    cancel: AtomicBool,
+    events: RefCell<Vec<Event>>,
+}
+
+struct FakeLink<'a> {
+    rig: &'a Rig,
+    side: Interface,
+    now: Duration,
+    script: VecDeque<Vec<Vec<u8>>>,
+    inbox: VecDeque<Vec<u8>>,
+}
+
+impl Rig {
+    fn run(&self, kind: JobKind, silence_delay: Option<Duration>) -> Outcome {
+        identify_on(
+            kind,
+            &self.cancel,
+            silence_delay,
+            |side| {
+                self.events.borrow_mut().push(Event::Open(side));
+                if self.stale_on == Some(side) {
+                    return Err("The PODxt Live USB attachment changed.".into());
+                }
+                let script = match side {
+                    Interface::Podxt => vec![vec![bridge_reply()]],
+                    Interface::Variax => self.guitar_replies.clone(),
+                };
+                Ok(FakeLink {
+                    rig: self,
+                    side,
+                    now: Duration::ZERO,
+                    script: script.into(),
+                    inbox: VecDeque::new(),
+                })
+            },
+            |link| {
+                self.events.borrow_mut().push(Event::Finish(link.side));
+                if self.fail_finish == Some(link.side) {
+                    return Err("release failed".into());
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn guitar_requests(&self) -> Vec<Duration> {
+        self.events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                Event::Identity(Interface::Variax, time) => Some(*time),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl Link for FakeLink<'_> {
+    fn path(&self) -> Path {
+        match self.side {
+            Interface::Podxt => Path::PodxtMidi,
+            Interface::Variax => Path::VariaxViaPodxt,
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        assert_eq!(bytes, REQUEST);
+        self.rig
+            .events
+            .borrow_mut()
+            .push(Event::Identity(self.side, self.now));
+        self.inbox
+            .extend(self.script.pop_front().unwrap_or_default());
+        Ok(())
+    }
+
+    fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        let packet = self.inbox.pop_front();
+        if packet.is_none() {
+            self.pause(wait);
+        }
+        Ok(packet)
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.now
+    }
+
+    fn pause(&mut self, duration: Duration) {
+        self.now += duration;
+        if self.side == Interface::Variax
+            && self
+                .rig
+                .cancel_guitar_at
+                .is_some_and(|limit| self.now >= limit)
+        {
+            self.rig.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for FakeLink<'_> {
+    fn drop(&mut self) {
+        self.rig.events.borrow_mut().push(Event::Drop(self.side));
+    }
+}
+
+const RIG_CHECK_DELAY: Option<Duration> = Some(Duration::from_secs(2));
+
+fn split_reply(reply: Vec<u8>) -> Vec<Vec<u8>> {
+    reply.chunks(16).map(<[u8]>::to_vec).collect()
+}
+
+#[test]
+fn rig_check_policy_retries_first_silence_on_the_same_guitar_link() {
+    for (kind, pod) in [
+        (JobKind::Initial, Some("3.01")),
+        (JobKind::RefreshGuitar, None),
+    ] {
+        let rig = Rig {
+            guitar_replies: vec![vec![], split_reply(guitar_reply())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(kind, RIG_CHECK_DELAY),
+            Outcome::Finished { pod_firmware, guitar: Guitar::Verified("3.10") } if pod_firmware == pod
+        ));
+        assert_eq!(
+            rig.guitar_requests(),
+            [Duration::ZERO, Duration::from_secs(5)]
+        );
+        let mut expected = vec![
+            Event::Open(Interface::Variax),
+            Event::Identity(Interface::Variax, Duration::ZERO),
+            Event::Identity(Interface::Variax, Duration::from_secs(5)),
+            Event::Finish(Interface::Variax),
+            Event::Drop(Interface::Variax),
+        ];
+        if kind == JobKind::Initial {
+            expected.splice(
+                0..0,
+                [
+                    Event::Open(Interface::Podxt),
+                    Event::Identity(Interface::Podxt, Duration::from_millis(200)),
+                    Event::Finish(Interface::Podxt),
+                    Event::Drop(Interface::Podxt),
+                ],
+            );
+        }
+        assert_eq!(*rig.events.borrow(), expected);
+    }
+}
+
+#[test]
+fn no_answer_is_bounded_by_the_selected_silence_policy() {
+    for (policy, count) in [(DISCOVERY_SILENCE_DELAY, 1), (RIG_CHECK_DELAY, 2)] {
+        let rig = Rig::default();
+        assert!(matches!(
+            rig.run(JobKind::RefreshGuitar, policy),
+            Outcome::Finished {
+                guitar: Guitar::Silent,
+                ..
+            }
+        ));
+        assert_eq!(rig.guitar_requests().len(), count);
+    }
+}
+
+#[test]
+fn existing_orphan_tail_resend_is_still_available() {
+    let rig = Rig {
+        guitar_replies: vec![vec![vec![0xf7]], split_reply(guitar_reply())],
+        ..Default::default()
+    };
+    assert!(matches!(
+        rig.run(JobKind::RefreshGuitar, None),
+        Outcome::Finished {
+            guitar: Guitar::Verified("3.10"),
+            ..
+        }
+    ));
+    assert_eq!(
+        rig.guitar_requests(),
+        [Duration::ZERO, Duration::from_millis(300)]
+    );
+}
+
+#[test]
+fn malformed_or_incomplete_reply_does_not_trigger_a_silence_resend() {
+    for reply in [vec![0xf0, 0x7e, 0xf7], guitar_reply()[..16].to_vec()] {
+        let rig = Rig {
+            guitar_replies: vec![vec![reply], split_reply(guitar_reply())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
+            Outcome::Finished {
+                guitar: Guitar::Unavailable(_),
+                ..
+            }
+        ));
+        assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
+    }
+}
+
+#[test]
+fn unverified_identity_is_reported_without_a_resend() {
+    let mut old_guitar = guitar_reply();
+    old_guitar[14..16].copy_from_slice(b"06");
+    for (reply, is_variax) in [(old_guitar, true), (bridge_reply(), false)] {
+        let rig = Rig {
+            guitar_replies: vec![split_reply(reply)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
+            Outcome::Finished { guitar: Guitar::Unverified(reply), .. } if reply.is_variax == is_variax
+        ));
+        assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
+    }
+}
+
+#[test]
+fn cancellation_before_open_reads_nothing() {
+    let rig = Rig::default();
+    rig.cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(rig.run(JobKind::Initial, None), Outcome::Deferred));
+    assert!(rig.events.borrow().is_empty());
+}
+
+#[test]
+fn cancellation_during_wait_or_backoff_releases_without_resending() {
+    for time in [100, 3100, 5000] {
+        let rig = Rig {
+            cancel_guitar_at: Some(Duration::from_millis(time)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
+            Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
+                if reason == "Identification cancelled."
+        ));
+        assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
+        assert!(rig.events.borrow().ends_with(&[
+            Event::Finish(Interface::Variax),
+            Event::Drop(Interface::Variax),
+        ]));
+    }
+}
+
+#[test]
+fn stale_attachment_is_rejected_before_sending_on_interface_one() {
+    for kind in [JobKind::Initial, JobKind::RefreshGuitar] {
+        let rig = Rig {
+            stale_on: Some(Interface::Variax),
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(kind, RIG_CHECK_DELAY),
+            Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
+                if reason.contains("attachment changed")
+        ));
+        assert!(rig.guitar_requests().is_empty());
+    }
+}
+
+#[test]
+fn failed_release_prevents_the_next_open_or_a_verified_result() {
+    for side in [Interface::Podxt, Interface::Variax] {
+        let rig = Rig {
+            guitar_replies: vec![split_reply(guitar_reply())],
+            fail_finish: Some(side),
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::Initial, None),
+            Outcome::Finished {
+                guitar: Guitar::CleanupFailed,
+                ..
+            }
+        ));
+        assert_eq!(
+            rig.events
+                .borrow()
+                .contains(&Event::Open(Interface::Variax)),
+            side == Interface::Variax
+        );
+        assert!(
+            rig.events
+                .borrow()
+                .ends_with(&[Event::Finish(side), Event::Drop(side)])
+        );
+    }
+}

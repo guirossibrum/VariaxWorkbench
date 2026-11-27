@@ -233,10 +233,21 @@ impl<'a, L: Link> Session<'a, L> {
         wanted: impl Fn(&[u8]) -> bool,
         stop_on_orphan_quiet: bool,
     ) -> Result<Wait, String> {
+        self.wait_for_checked(window, wanted, stop_on_orphan_quiet, || Ok(()))
+    }
+
+    pub(crate) fn wait_for_checked(
+        &mut self,
+        window: Duration,
+        wanted: impl Fn(&[u8]) -> bool,
+        stop_on_orphan_quiet: bool,
+        check: impl Fn() -> Result<(), String>,
+    ) -> Result<Wait, String> {
         let start = self.link.elapsed();
         let orphans_before = self.assembler.orphans;
         let mut last_packet = start;
         loop {
+            check()?;
             let now = self.link.elapsed();
             let used = now.saturating_sub(start);
             if used >= window {
@@ -251,6 +262,7 @@ impl<'a, L: Link> Session<'a, L> {
             let Some(events) = self.poll((window - used).min(POLL))? else {
                 continue;
             };
+            check()?;
             last_packet = self.link.elapsed();
             if self.require_expected_sysex
                 && !stop_on_orphan_quiet
