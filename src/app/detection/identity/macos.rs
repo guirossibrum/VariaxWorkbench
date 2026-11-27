@@ -115,7 +115,8 @@ fn identify_on<L: Link>(
         );
     }
     let guitar = (|| {
-        let mut link = open(Interface::Variax)?;
+        let mut link = open(Interface::Variax)
+            .map_err(|error| format!("Variax USB interface 1 open failed: {error}"))?;
         let mut quiet = Quiet;
         let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
         let reply = variax::identify_if_present_cancellable(&mut session, silence_delay, &stopping);
@@ -126,7 +127,7 @@ fn identify_on<L: Link>(
         if stopping() {
             return Err("Identification cancelled.".into());
         }
-        match reply? {
+        match reply.map_err(|error| format!("Variax identity exchange failed: {error}"))? {
             Some(reply) if variax::procedures::check_identity(&reply.identity).is_ok() => {
                 Ok(Guitar::Verified(GUITAR_VERSION))
             }

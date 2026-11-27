@@ -14,7 +14,7 @@ enum Event {
 #[derive(Default)]
 struct Rig {
     guitar_replies: Vec<Vec<Vec<u8>>>,
-    stale_on: Option<Interface>,
+    open_failure: Option<(Interface, &'static str)>,
     fail_finish: Option<Interface>,
     cancel_guitar_at: Option<Duration>,
     cancel: AtomicBool,
@@ -37,8 +37,10 @@ impl Rig {
             silence_delay,
             |side| {
                 self.events.borrow_mut().push(Event::Open(side));
-                if self.stale_on == Some(side) {
-                    return Err("The PODxt Live USB attachment changed.".into());
+                if let Some((expected, error)) = self.open_failure
+                    && side == expected
+                {
+                    return Err(error.into());
                 }
                 let script = match side {
                     Interface::Podxt => vec![vec![bridge_reply()]],
@@ -214,9 +216,9 @@ fn malformed_or_incomplete_reply_does_not_trigger_a_silence_resend() {
         assert!(matches!(
             rig.run(JobKind::RefreshGuitar, RIG_CHECK_DELAY),
             Outcome::Finished {
-                guitar: Guitar::Unavailable(_),
+                guitar: Guitar::Unavailable(reason),
                 ..
-            }
+            } if reason.starts_with("Variax identity exchange failed:")
         ));
         assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
     }
@@ -271,7 +273,7 @@ fn cancellation_during_wait_or_backoff_releases_without_resending() {
 fn stale_attachment_is_rejected_before_sending_on_interface_one() {
     for kind in [JobKind::Initial, JobKind::RefreshGuitar] {
         let rig = Rig {
-            stale_on: Some(Interface::Variax),
+            open_failure: Some((Interface::Variax, "The PODxt Live USB attachment changed.")),
             ..Default::default()
         };
         assert!(matches!(
@@ -280,6 +282,36 @@ fn stale_attachment_is_rejected_before_sending_on_interface_one() {
                 if reason.contains("attachment changed")
         ));
         assert!(rig.guitar_requests().is_empty());
+    }
+}
+
+#[test]
+fn guitar_open_refusals_name_the_stage_without_sending_identity() {
+    for (kind, pod_firmware) in [
+        (JobKind::Initial, Some("3.01")),
+        (JobKind::RefreshGuitar, None),
+    ] {
+        for error in [
+            "PODxt Live USB configuration descriptor: Entity not found",
+            "Claim interface 1: Access denied (insufficient permissions)",
+        ] {
+            let rig = Rig {
+                open_failure: Some((Interface::Variax, error)),
+                ..Default::default()
+            };
+            let outcome = rig.run(kind, DISCOVERY_SILENCE_DELAY);
+            assert!(matches!(
+                outcome,
+                Outcome::Finished { pod_firmware: actual, guitar: Guitar::Unavailable(reason) }
+                    if actual == pod_firmware
+                        && reason.strip_prefix("Variax USB interface 1 open failed: ") == Some(error)
+            ));
+            assert!(rig.guitar_requests().is_empty());
+            assert_eq!(
+                rig.events.borrow().last(),
+                Some(&Event::Open(Interface::Variax))
+            );
+        }
     }
 }
 
