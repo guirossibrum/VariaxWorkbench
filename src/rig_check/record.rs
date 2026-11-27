@@ -272,15 +272,27 @@ impl StepRecord {
             }))
     }
 
+    pub fn can_retry_save_preflight(&self) -> bool {
+        !self.reused
+            && self.id == super::variax_save::OWN_BYTES_STEP
+            && self.started.is_some()
+            && self.attempt.is_some_and(|attempt| attempt > 0)
+            && self.duration_ms.is_some()
+            && self.save_phase == Some(SavePhase::PreSend)
+            && matches!(&self.outcome, Outcome::Failed(reason)
+                if reason == line6_devices::family::variax::procedures::SAVE_PREFLIGHT_REOPEN_EXHAUSTED)
+    }
+
     pub fn can_repeat(&self) -> bool {
         if self.reused || self.attempt.is_none() || self.started.is_none() {
             return false;
         }
-        catalogue::step(self.id).is_some_and(|step| step.risk != catalogue::Risk::Save)
-            && matches!(
-                self.outcome,
-                Outcome::Passed | Outcome::Failed(_) | Outcome::SkippedByPerson
-            )
+        self.can_retry_save_preflight()
+            || catalogue::step(self.id).is_some_and(|step| step.risk != catalogue::Risk::Save)
+                && matches!(
+                    self.outcome,
+                    Outcome::Passed | Outcome::Failed(_) | Outcome::SkippedByPerson
+                )
     }
 
     pub fn look_at(&mut self, prompt: &'static str, expected: impl Into<String>) {

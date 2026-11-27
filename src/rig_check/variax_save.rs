@@ -86,9 +86,25 @@ fn check_save_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     for line in cleanup {
         ctx.rec.note(line);
     }
-    with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
+    let retry = with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
         shared_variax::identify_after_save_preflight_reopen(session, stopping)
-    })
+    });
+    if retry
+        .as_ref()
+        .is_err_and(|error| error == shared_variax::SAVE_PREFLIGHT_REOPEN_EXHAUSTED)
+    {
+        for line in ctx.port.release_variax()? {
+            ctx.rec.note(line);
+        }
+        if ctx.port.variax_claimed() || ctx.port.direct_usb_release_failed() {
+            return Err(
+                "Variax USB release could not be verified after the identity check.".into(),
+            );
+        }
+        ctx.rec
+            .show("No program was uploaded or stored. Check the VDI cable before trying again.");
+    }
+    retry
 }
 
 pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {

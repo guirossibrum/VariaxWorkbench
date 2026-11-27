@@ -892,7 +892,12 @@ impl Wizard {
                 let different = record.outcome.passed()
                     && record.look.is_some()
                     && button(ui, "Different…", true).clicked();
-                let repeat = record.can_repeat() && button(ui, "Repeat this step", true).clicked();
+                let repeat_label = if record.can_retry_save_preflight() {
+                    "Try again"
+                } else {
+                    "Repeat this step"
+                };
+                let repeat = record.can_repeat() && button(ui, repeat_label, true).clicked();
                 let stop = button(ui, "Stop", true);
                 let back = button(ui, "Back", self.back_target().is_some());
                 if back.clicked() {
@@ -909,6 +914,9 @@ impl Wizard {
                 }
             });
         } else {
+            if record.can_retry_save_preflight() {
+                ui.label("No upload or store was sent. If this is the current step, return to it to try again. After the run ends, reopen its report to retry step 5.1.");
+            }
             self.review_navigation(ui);
         }
     }

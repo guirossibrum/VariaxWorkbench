@@ -192,9 +192,43 @@ fn stopping_during_the_identity_backoff_does_not_count_a_retry() {
 }
 
 #[test]
-fn completed_preflight_failure_resumes_with_a_fresh_guard_and_no_write_replay() {
+fn operator_can_retry_the_mac_identity_failure_before_any_upload() {
     let mut port = Port::new(Faults::default());
-    port.bus.borrow_mut().save.scripted = [None, Some(vec![0xf7]), None].into();
+    port.bus.borrow_mut().save.scripted = [None, Some(vec![0xf7]), Some(vec![0xf7])].into();
+    let mut person = Script::run_all();
+    person.repeat_once = Some(SAVE);
+    let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+
+    let first = run
+        .prior_attempts
+        .iter()
+        .find(|step| step.id == SAVE)
+        .unwrap();
+    assert!(first.can_retry_save_preflight());
+    assert_eq!(first.save_phase, Some(SavePhase::PreSend));
+    assert_eq!(person.cards.iter().filter(|&&id| id == SAVE).count(), 2);
+    assert_eq!(run.step(SAVE).attempt, Some(2));
+    assert!(run.step(SAVE).outcome.passed());
+    assert!(!run.step(SAVE).can_repeat());
+    assert!(run.step(RIG_GUARD).outcome.passed());
+    let bus = port.bus.borrow();
+    assert_eq!(bus.save.writes[..4], [REQUEST; 4]);
+    assert!(bus.save.releases >= 2);
+    assert!(first.answers.is_empty());
+    assert_eq!(run.step(SAVE).answers.len(), 1);
+    let wire = bus.save.writes.concat();
+    assert_eq!(
+        wire.windows(STORE.len())
+            .filter(|bytes| *bytes == STORE)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn completed_preflight_failure_resumes_the_failed_step_without_replaying_passes() {
+    let mut port = Port::new(Faults::default());
+    port.bus.borrow_mut().save.scripted = [None, Some(vec![0xf7]), Some(vec![0xf7])].into();
     let dir = tempfile::tempdir().unwrap();
     let mut source = ReportFile::create(dir.path(), Redactor::default()).unwrap();
     let data = report_data(&source);
@@ -208,35 +242,37 @@ fn completed_preflight_failure_resumes_with_a_fresh_guard_and_no_write_replay() 
         None,
     );
     let original = run.step(SAVE);
-    assert!(matches!(original.outcome, Outcome::Failed(_)));
+    assert!(original.can_retry_save_preflight());
     assert!(run.step(RIG_GUARD).outcome.passed());
+    assert_eq!(port.bus.borrow().save.writes, vec![REQUEST; 3]);
+    assert_eq!(port.rig.borrow().variax.stores, 0);
     let plan = resume::open(&source.path).unwrap();
-    assert_eq!(plan.target, RIG_GUARD);
+    assert_eq!(plan.target, SAVE);
 
     let mut person = Script::run_all();
     let mut sink = ReportFile::create(dir.path(), Redactor::default()).unwrap();
     let data = report_data(&sink);
     let path = sink.path.with_extension("state");
     let (continued, _) = continue_on(&mut port, &mut person, &mut sink, data, path, plan, None);
-    assert_eq!(continued.step(SAVE).outcome, original.outcome);
-    assert_eq!(continued.step(SAVE).attempt, Some(1));
-    assert_eq!(continued.step(SAVE).retries, 2);
-    assert_eq!(
-        continued.step(SAVE).message_count(),
-        original.message_count()
-    );
-    assert_eq!(continued.step(RIG_GUARD).attempt, Some(2));
-    assert!(continued.step(RIG_GUARD).outcome.passed(), "{continued:?}");
-    assert!(person.saves.is_empty());
-    assert_eq!(port.bus.borrow().save.writes, vec![REQUEST; 3]);
-    let rig = port.rig.borrow();
-    assert_eq!(rig.variax.stores, 0);
-    assert_eq!(rig.podxt.stores, 0);
+    assert_eq!(person.cards.first(), Some(&SAVE));
     assert!(
-        resume::open(&sink.path)
-            .err()
-            .unwrap()
-            .contains("no further checks")
+        continued.step(SAVE).outcome.passed(),
+        "{}",
+        continued.rig_state
+    );
+    assert_eq!(continued.step(SAVE).attempt, Some(2));
+    let first = continued
+        .prior_attempts
+        .iter()
+        .find(|step| step.id == SAVE)
+        .unwrap();
+    assert_eq!(first.outcome, original.outcome);
+    assert_eq!(first.message_count(), original.message_count());
+    assert_eq!(continued.step(RIG_GUARD).attempt, Some(2));
+    assert!(
+        continued.step(RIG_GUARD).outcome.passed(),
+        "{}",
+        continued.rig_state
     );
 }
 

@@ -687,6 +687,7 @@ impl<'a> Runner<'a> {
                         Some(clock.elapsed().as_millis()),
                     );
                     if !stopped_now
+                        && !self.persistence_failed
                         && !self.port.direct_usb_release_failed()
                         && decision == ResultDecision::Repeat
                         && self.run.step(id).can_repeat()

@@ -746,10 +746,14 @@ fn check_prior_actions(
             || step.duration_ms.is_some()
             || step.message_count() != 0
             || step.save_phase.is_some();
+        let proven_read_only = if final_record {
+            proven_pre_send(step, current, legacy)
+        } else {
+            !legacy && step.can_retry_save_preflight()
+        };
         if risk(step.id) == Risk::Save
             && attempted
-            && ((!step.outcome.passed()
-                && !(final_record && proven_pre_send(step, current, legacy)))
+            && ((!step.outcome.passed() && !proven_read_only)
                 || (step.outcome.passed() && step.save_phase == Some(SavePhase::PreSend)))
         {
             return Err(format!(
@@ -906,7 +910,10 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         return Err("The finished report still records an active step.".into());
     }
     check_prior_actions(&run, current, stopped_before_guard, legacy)?;
-    let pre_send_5_1 = proven_pre_send(run.step(OWN_BYTES_STEP), current, legacy);
+    let retry_save_preflight =
+        !legacy && current.is_none() && run.step(OWN_BYTES_STEP).can_retry_save_preflight();
+    let pre_send_5_1 =
+        proven_pre_send(run.step(OWN_BYTES_STEP), current, legacy) && !retry_save_preflight;
     if saved.pre_write_recovery && current == Some(StepId(7, 3)) {
         return Err("The continuation closed during the footswitch return. Verify the PODxt channel and working tone by hand before starting a new run.".into());
     }
@@ -966,6 +973,9 @@ pub fn open(path: &Path) -> Result<Plan, String> {
     } else {
         plan.notes
             .push(format!("First failed or unfinished check: {target}."));
+    }
+    if retry_save_preflight {
+        plan.notes.push("Step 5.1 stopped at the identity check before uploading a program. Rig Check will retry from the preflight after revalidating the rig. A store still requires the usual slot checks and typed confirmation.".into());
     }
     if pre_send_5_1 {
         plan.notes.push("Step 5.1 ended before uploading a program. The earlier result is retained, and preset stores are unavailable for this continuation.".into());
