@@ -199,6 +199,9 @@ pub fn identify_if_present<L: Link>(
     identify_exchange(session, None, false, None)
 }
 
+/// Cancellation result from the cancellable identity exchange.
+pub const IDENTITY_CANCELLED: &str = "Identification cancelled.";
+
 /// Use the Rig Check identity exchange with cancellation. A caller may opt
 /// into the silence resend only when its own workflow allows it.
 pub fn identify_if_present_cancellable<L: Link>(
@@ -218,7 +221,7 @@ fn identify_exchange<L: Link>(
 ) -> Result<Option<Identified>, String> {
     let check = || {
         if stopping.is_some_and(|stopping| stopping()) {
-            Err("Identification cancelled.".into())
+            Err(IDENTITY_CANCELLED.into())
         } else {
             Ok(())
         }

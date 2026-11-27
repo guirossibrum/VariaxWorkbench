@@ -92,6 +92,11 @@ pub(in crate::editor) enum Outcome {
         allow(dead_code)
     )]
     MacPodSilent,
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "macos"))),
+        allow(dead_code)
+    )]
+    MacCancelled { pod_firmware: Option<&'static str> },
     Finished {
         pod_firmware: Option<&'static str>,
         guitar: Guitar,
@@ -100,14 +105,24 @@ pub(in crate::editor) enum Outcome {
 
 pub(super) type Identify = fn(&Job, &AtomicBool) -> Outcome;
 
+#[derive(PartialEq, Eq)]
+enum Cancellation {
+    ObservationRevoked,
+    Quit,
+}
+
 pub(super) struct Worker {
     pub job: Job,
     cancel: Arc<AtomicBool>,
     handle: JoinHandle<Outcome>,
+    cancellation: Option<Cancellation>,
 }
 
 impl Worker {
-    pub fn start(job: Job, identify: Identify) -> std::io::Result<Self> {
+    pub fn start(
+        job: Job,
+        identify: impl FnOnce(&Job, &AtomicBool) -> Outcome + Send + 'static,
+    ) -> std::io::Result<Self> {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let worker_job = job.clone();
@@ -118,6 +133,7 @@ impl Worker {
             job,
             cancel,
             handle,
+            cancellation: None,
         })
     }
 
@@ -127,6 +143,25 @@ impl Worker {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn revoke_observation(&mut self) {
+        self.cancellation
+            .get_or_insert(Cancellation::ObservationRevoked);
+        self.cancel();
+    }
+
+    pub fn cancel_for_quit(&mut self) {
+        self.cancellation = Some(Cancellation::Quit);
+        self.cancel();
+    }
+
+    pub fn observation_revoked(&self) -> bool {
+        self.cancellation == Some(Cancellation::ObservationRevoked)
+    }
+
+    pub fn quitting(&self) -> bool {
+        self.cancellation == Some(Cancellation::Quit)
     }
 
     pub fn finish(self) -> (Job, Outcome) {
@@ -406,7 +441,7 @@ mod pod {
 
     fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
         if cancel.load(Ordering::Relaxed) {
-            Err("Identification cancelled.".into())
+            Err(line6_devices::family::variax::IDENTITY_CANCELLED.into())
         } else {
             Ok(())
         }

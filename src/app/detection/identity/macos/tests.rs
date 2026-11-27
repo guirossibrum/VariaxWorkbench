@@ -18,6 +18,7 @@ struct Rig {
     guitar_replies: Vec<Vec<Vec<u8>>>,
     open_failure: Option<(Interface, &'static str)>,
     fail_finish: Option<Interface>,
+    fail_read_as_cancelled: Option<Interface>,
     cancel_pod_at: Option<Duration>,
     cancel_guitar_at: Option<Duration>,
     cancel: AtomicBool,
@@ -119,6 +120,10 @@ impl Link for FakeLink<'_> {
     }
 
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        if self.rig.fail_read_as_cancelled == Some(self.side) {
+            self.rig.cancel.store(true, Ordering::Relaxed);
+            return Err("USB transfer failed.".into());
+        }
         let packet = self.inbox.pop_front();
         if packet.is_none() {
             self.pause(wait);
@@ -295,8 +300,7 @@ fn pod_startup_cancellation_at_retry_boundary_or_during_retry_releases_link() {
         };
         assert!(matches!(
             rig.run(JobKind::Initial),
-            Outcome::Finished { pod_firmware: None, guitar: Guitar::Unavailable(reason) }
-                if reason == "Identification cancelled."
+            Outcome::MacCancelled { pod_firmware: None }
         ));
         rig.assert_pod_only(requests);
     }
@@ -321,8 +325,7 @@ fn pod_startup_cancellation_during_passive_drain_sends_nothing() {
     };
     assert!(matches!(
         rig.run(JobKind::Initial),
-        Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
-            if reason == "Identification cancelled."
+        Outcome::MacCancelled { pod_firmware: None }
     ));
     rig.assert_pod_only(&[]);
 }
@@ -429,7 +432,10 @@ fn unverified_identity_is_reported_without_a_resend() {
 fn cancellation_before_open_reads_nothing() {
     let rig = Rig::default();
     rig.cancel.store(true, Ordering::Relaxed);
-    assert!(matches!(rig.run(JobKind::Initial), Outcome::Deferred));
+    assert!(matches!(
+        rig.run(JobKind::Initial),
+        Outcome::MacCancelled { pod_firmware: None }
+    ));
     assert!(rig.events.borrow().is_empty());
 }
 
@@ -442,8 +448,9 @@ fn cancellation_during_wait_or_backoff_releases_without_resending() {
         };
         assert!(matches!(
             rig.run(JobKind::Initial),
-            Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
-                if reason == "Identification cancelled."
+            Outcome::MacCancelled {
+                pod_firmware: Some("3.01")
+            }
         ));
         assert_eq!(rig.guitar_requests(), [Duration::ZERO]);
         assert!(rig.events.borrow().ends_with(&[
@@ -521,6 +528,26 @@ fn failed_release_prevents_the_next_open_or_a_verified_result() {
                 .contains(&Event::Open(Interface::Variax)),
             side == Interface::Variax
         );
+        assert!(
+            rig.events
+                .borrow()
+                .ends_with(&[Event::Finish(side), Event::Drop(side)])
+        );
+    }
+}
+
+#[test]
+fn a_hard_read_failure_is_preserved_if_cancellation_arrives_during_the_read() {
+    for side in [Interface::Podxt, Interface::Variax] {
+        let rig = Rig {
+            fail_read_as_cancelled: Some(side),
+            ..Default::default()
+        };
+        assert!(matches!(
+            rig.run(JobKind::Initial),
+            Outcome::Finished { guitar: Guitar::Unavailable(reason), .. }
+                if reason.ends_with("USB transfer failed.")
+        ));
         assert!(
             rig.events
                 .borrow()

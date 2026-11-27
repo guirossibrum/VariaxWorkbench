@@ -1,6 +1,6 @@
 use super::*;
 use line6_devices::{
-    family::variax,
+    family::variax::{self, IDENTITY_CANCELLED},
     gate::{GatePolicy, Operation},
     session::{Link, Quiet, Session},
 };
@@ -60,7 +60,7 @@ pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
                         };
                         macos::with_ready_attachment(&rig, registry_id, &attachment, |matched| {
                             if cancel.load(Ordering::Relaxed) {
-                                return Err("Identification cancelled.".into());
+                                return Err(IDENTITY_CANCELLED.into());
                             }
                             UsbInterfaceLink::open_attachment_borrowed(
                                 spec,
@@ -86,13 +86,13 @@ fn identify_on<L: Link>(
 ) -> Outcome {
     let stopping = || cancel.load(Ordering::Relaxed);
     if stopping() {
-        return Outcome::Deferred;
+        return Outcome::MacCancelled { pod_firmware: None };
     }
     let pod_firmware = match kind {
         JobKind::Initial => {
             let mut link = match open(Interface::Podxt) {
                 Ok(link) => link,
-                Err(error) => return finished(None, Guitar::Unavailable(error)),
+                Err(error) => return failed(None, error),
             };
             let pod = super::pod::identify_macos_startup(&mut link, cancel);
             if let Err(error) = finish(&mut link) {
@@ -107,7 +107,7 @@ fn identify_on<L: Link>(
                     Some(BRIDGE_VERSION)
                 }
                 Ok(None) => return Outcome::MacPodSilent,
-                Err(error) => return finished(None, Guitar::Unavailable(error)),
+                Err(error) => return failed(None, error),
             }
         }
         JobKind::DiscoverGuitar | JobKind::RefreshGuitar => None,
@@ -120,14 +120,11 @@ fn identify_on<L: Link>(
     };
 
     if stopping() {
-        return finished(
-            pod_firmware,
-            Guitar::Unavailable("Identification cancelled.".into()),
-        );
+        return Outcome::MacCancelled { pod_firmware };
     }
     let guitar = (|| {
         let mut link = open(Interface::Variax)
-            .map_err(|error| format!("Variax USB interface 1 open failed: {error}"))?;
+            .map_err(|error| at_stage("Variax USB interface 1 open failed", error))?;
         let mut quiet = Quiet;
         let mut session = Session::new(&mut link, &GuitarIdentityOnly, &mut quiet);
         let silence_delay = matches!(kind, JobKind::Initial | JobKind::DiscoverGuitar)
@@ -137,10 +134,7 @@ fn identify_on<L: Link>(
             eprintln!("PODxt Live interface 1 cleanup: {error}");
             return Ok(Guitar::CleanupFailed);
         }
-        if stopping() {
-            return Err("Identification cancelled.".into());
-        }
-        match reply.map_err(|error| format!("Variax identity exchange failed: {error}"))? {
+        match reply.map_err(|error| at_stage("Variax identity exchange failed", error))? {
             Some(reply) if variax::procedures::check_identity(&reply.identity).is_ok() => {
                 Ok(Guitar::Verified(GUITAR_VERSION))
             }
@@ -150,7 +144,26 @@ fn identify_on<L: Link>(
             None => Ok(Guitar::Silent),
         }
     })();
-    finished(pod_firmware, guitar.unwrap_or_else(Guitar::Unavailable))
+    match guitar {
+        Ok(guitar) => finished(pod_firmware, guitar),
+        Err(error) => failed(pod_firmware, error),
+    }
+}
+
+fn at_stage(stage: &str, error: String) -> String {
+    if error == IDENTITY_CANCELLED {
+        error
+    } else {
+        format!("{stage}: {error}")
+    }
+}
+
+fn failed(pod_firmware: Option<&'static str>, error: String) -> Outcome {
+    if error == IDENTITY_CANCELLED {
+        Outcome::MacCancelled { pod_firmware }
+    } else {
+        finished(pod_firmware, Guitar::Unavailable(error))
+    }
 }
 
 fn finished(pod_firmware: Option<&'static str>, guitar: Guitar) -> Outcome {

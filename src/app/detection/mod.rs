@@ -314,6 +314,14 @@ impl Bridge {
                 self.queued = Some(kind);
                 self.waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
             }
+            Outcome::MacCancelled { pod_firmware } => {
+                self.running = None;
+                self.waiting_for_other_process = false;
+                if kind == JobKind::Initial {
+                    self.pod = pod_firmware;
+                }
+                self.status = "Identification cancelled.".into();
+            }
             Outcome::MacPodSilent => {
                 self.running = None;
                 self.waiting_for_other_process = false;
@@ -504,10 +512,10 @@ impl DetectionService {
         now: Instant,
     ) -> Result<Vec<DetectedDevice>, MetadataError> {
         if let Err(error) = self.refresh_attachments(profiles) {
-            if let Some(worker) = &self.worker
+            if let Some(worker) = &mut self.worker
                 && worker.job.attachment.registry_id.is_some()
             {
-                worker.cancel();
+                worker.revoke_observation();
                 let key = worker.job.attachment.clone();
                 if let Some(bridge) = self.bridge_mut(&key) {
                     bridge.running = None;
@@ -621,7 +629,7 @@ impl DetectionService {
             };
             self.attachments.insert(path, attachment);
         }
-        if let Some(worker) = &self.worker {
+        if let Some(worker) = &mut self.worker {
             let same_attachment = self
                 .attachments
                 .get(&worker.job.attachment.path)
@@ -635,7 +643,9 @@ impl DetectionService {
                     .filter(|attachment| attachment.bridge.is_some())
                     .count()
                     != 1;
-            if !same_attachment || ambiguous_bridge {
+            if !same_attachment && worker.job.attachment.registry_id.is_some() {
+                worker.revoke_observation();
+            } else if !same_attachment || ambiguous_bridge {
                 worker.cancel();
             }
         }
@@ -755,27 +765,17 @@ impl DetectionService {
         if !self.worker.as_ref().is_some_and(Worker::finished) {
             return false;
         }
-        let (job, outcome) = self.worker.take().expect("finished worker").finish();
+        let worker = self.worker.take().expect("finished worker");
+        let revoked = worker.observation_revoked();
+        let quitting = worker.quitting();
+        let (job, outcome) = worker.finish();
         if job.attachment.registry_id.is_some()
-            && !self
-                .bridge_mut(&job.attachment)
-                .is_some_and(|bridge| bridge.running == Some(job.kind))
+            && (quitting
+                || !self
+                    .bridge_mut(&job.attachment)
+                    .is_some_and(|bridge| bridge.running == Some(job.kind)))
         {
-            // A revoked observation cannot verify identity. A release failure
-            // still suspends work on that same physical generation.
-            if matches!(
-                outcome,
-                Outcome::Finished {
-                    guitar: Guitar::CleanupFailed,
-                    ..
-                }
-            ) && let Some(attachment) = self.attachments.get_mut(&job.attachment.path)
-                && attachment.key == job.attachment
-                && let Some(bridge) = &mut attachment.bridge
-            {
-                bridge.queued = None;
-                bridge.complete(job.kind, outcome, &mut self.generation);
-            }
+            self.finish_invalidated(job, outcome, revoked, now);
             return false;
         }
         let waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
@@ -783,14 +783,67 @@ impl DetectionService {
         waiting_for_other_process
     }
 
+    fn finish_invalidated(&mut self, job: Job, outcome: Outcome, revoked: bool, now: Instant) {
+        let Some(bridge) = self
+            .attachments
+            .get_mut(&job.attachment.path)
+            .filter(|attachment| attachment.key == job.attachment)
+            .and_then(|attachment| attachment.bridge.as_mut())
+        else {
+            return;
+        };
+        bridge.running = None;
+        match outcome {
+            Outcome::Deferred
+            | Outcome::OtherProcessBusy
+            | Outcome::MacCancelled { .. }
+            | Outcome::MacPodSilent
+            | Outcome::Finished {
+                guitar: Guitar::Silent | Guitar::Verified(_),
+                ..
+            } if revoked
+                && !bridge.suspended
+                && (job.kind == JobKind::Initial
+                    || (job.kind == JobKind::DiscoverGuitar && bridge.pod.is_some())) =>
+            {
+                // The worker gave back its link or stopped before opening it.
+                // Restart from the last accepted stage without adopting revoked proof.
+                bridge.queued = Some(job.kind);
+                self.next_mac_identity = Some(now + MAC_DISCOVERY_INTERVAL);
+            }
+            Outcome::UnverifiedPod(_) => {
+                bridge.queued = None;
+                bridge.complete(job.kind, outcome, &mut self.generation);
+            }
+            Outcome::Finished {
+                guitar:
+                    guitar @ (Guitar::Unverified(_)
+                    | Guitar::Unavailable(_)
+                    | Guitar::DriverUnbound(_)
+                    | Guitar::CleanupFailed),
+                ..
+            } => {
+                bridge.queued = None;
+                bridge.complete(
+                    job.kind,
+                    Outcome::Finished {
+                        pod_firmware: bridge.pod,
+                        guitar,
+                    },
+                    &mut self.generation,
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Delay quit until the endpoint and the shared lock have been released.
     pub fn cancel_for_quit(&mut self) -> bool {
-        self.finish_worker(Instant::now());
-        if let Some(worker) = &self.worker {
-            worker.cancel();
-            return true;
+        if let Some(worker) = &mut self.worker {
+            worker.cancel_for_quit();
         }
-        false
+        self.finish_worker(Instant::now());
+        self.worker.is_some()
     }
 
     fn note_identity_started(&mut self, job: &Job) {
