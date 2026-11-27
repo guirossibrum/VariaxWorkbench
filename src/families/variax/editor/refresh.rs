@@ -32,6 +32,7 @@ struct Worker {
 pub(super) struct Refresh {
     attachment: Option<Attachment>,
     attempted: Option<DeviceKey>,
+    explicit_download_required: bool,
     #[cfg(test)]
     auto_source: Option<ReadLibrary>,
     confirming: bool,
@@ -49,6 +50,12 @@ impl Refresh {
             self.confirming = false;
             self.attachment = attachment;
         }
+    }
+
+    pub(super) fn require_explicit_download(&mut self) {
+        // A historical library previously suppressed automatic downloads.
+        // Keep that behavior when it is skipped during device-tab startup.
+        self.explicit_download_required = true;
     }
 
     pub(super) fn busy(&self) -> bool {
@@ -185,6 +192,7 @@ impl VariaxEditor {
         #[cfg(not(test))]
         let read = read_library;
         if !cfg!(target_os = "linux")
+            || self.refresh.explicit_download_required
             || !self.download_target_ready()
             || self.is_reading()
             || self.live_edit.busy()
@@ -251,6 +259,7 @@ impl VariaxEditor {
                         })
                 });
                 self.adopt_document(document, None);
+                self.refresh.explicit_download_required = false;
                 self.library_origin =
                     Some(super::LibraryOrigin::AttachedDownload(time, attachment));
                 self.status =
@@ -452,6 +461,12 @@ pub(super) mod tests {
 
     pub(crate) fn attach(editor: &mut VariaxEditor) {
         editor.observe_device(Some(&verified_tab()));
+    }
+
+    pub(in crate::editor::variax_panel) fn allow_fake_automatic_download(
+        editor: &mut VariaxEditor,
+    ) {
+        editor.refresh.auto_source = Some(complete_capture);
     }
 
     fn complete_capture(
