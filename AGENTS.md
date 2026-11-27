@@ -285,6 +285,14 @@ contract. Research-only Linux/MPFR/historical-runtime helpers must remain separa
 from application runtime dependencies. Evaluate dependency maintenance, portability,
 pinning and replacement paths before adopting new production dependencies.
 Keep USB, audio and desktop OS interfaces behind thin replaceable adapters.
+The application and each device-family module are shared across Linux, macOS,
+and Windows. Keep format parsing, protocol exchanges, retry and operation
+policy, and editor workflows in the shared code. Native connection adapters
+own discovery, endpoint selection, opening, I/O and checked release. Expose
+actual route capabilities to the shared app. Keep unsupported routes visible
+as such without duplicating device workflows in OS branches. Add new devices
+through reusable family implementations, model data, native connections where
+needed and registration in the shared app. See [product vision](docs/product-vision.md#platform-and-device-boundaries).
 Normal application operation must not require Line 6 services or external apps.
 A self-contained core does not imply that OS integration can have no OS dependency,
 or relax any hardware-access boundary.

@@ -58,6 +58,29 @@ control, recording/playback and maintenance need independent operation policies
 and simulation coverage. Firmware availability must not trigger an update;
 entering a recording page must not open a stream automatically.
 
+## Platform and device boundaries
+
+The app and each family implementation build from the same Rust source on
+Linux, macOS and Windows. The shared app owns editor and library workflows,
+connection state, operation permissions and reporting. Family code owns model
+data and capabilities, preset codecs, protocol messages, retry decisions and
+the sequence of device operations. A family can reuse common operations when
+the device evidence supports them.
+
+Native connection adapters implement the common transport contract. They
+discover and select endpoints, verify and open the intended attachment, move
+bytes, expose native errors and release the endpoint. The application checks
+whether the selected route can support an operation before offering it. A
+missing native route can make an operation unavailable on a platform even
+when all packages were built from the same commit.
+
+When adding a device, register its model and capabilities with the shared app.
+Reuse its family module if the verified protocol and formats fit. Add a family
+module for a genuinely different protocol or data format and a native adapter
+only where the available OS transport needs one. Test the same family workflow
+with fake links across platforms and verify each native route separately on an
+approved rig.
+
 ## Future families under the same roof
 
 Future targets explicitly include:
