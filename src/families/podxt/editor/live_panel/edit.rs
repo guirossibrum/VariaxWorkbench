@@ -22,6 +22,8 @@ pub(super) struct LiveEditor {
     message: Option<Result<String, String>>,
     #[cfg(test)]
     fake_get: bool,
+    #[cfg(test)]
+    fake_recall: bool,
 }
 
 impl Default for LiveEditor {
@@ -39,6 +41,8 @@ impl Default for LiveEditor {
             message: None,
             #[cfg(test)]
             fake_get: false,
+            #[cfg(test)]
+            fake_recall: false,
         }
     }
 }
@@ -394,6 +398,11 @@ impl LiveEditor {
     }
 
     #[cfg(test)]
+    pub(super) fn use_fake_recall(&mut self) {
+        self.fake_recall = true;
+    }
+
+    #[cfg(test)]
     pub(super) fn use_fake_get(&mut self) {
         self.fake_get = true;
     }
@@ -492,11 +501,19 @@ impl LiveEditor {
         } else {
             Self::admitted(action)
         };
+        #[cfg(test)]
+        let admitted = admitted
+            || self.fake_recall
+                && matches!(action, Action::Recall(_))
+                && Self::admitted_on(true, action);
+        // An initial recall reads the playing channel and buffer on the same
+        // verified link before it can select anything.
+        let fresh_recall = matches!(action, Action::Recall(_)) && recall_confirmation.is_none();
         if self.worker.is_some()
             || self.reply_pending.load(Ordering::Acquire)
             || !admitted
             || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
-            || action != Action::Get && (self.session.is_none() || self.needs_get)
+            || action != Action::Get && !fresh_recall && !self.recall_ready()
             || action == Action::Undo && !self.can_undo()
             || matches!(action, Action::Recall(_)) && (self.stage_only || self.has_pending())
         {
@@ -533,6 +550,8 @@ impl LiveEditor {
         let repaint = ctx.clone();
         #[cfg(test)]
         let fake_get = action == Action::Get && self.fake_get;
+        #[cfg(test)]
+        let fake_recall = self.fake_recall && matches!(action, Action::Recall(_));
         let thread = std::thread::Builder::new()
             .name("podxt-edit-buffer".into())
             .spawn(move || {
@@ -541,6 +560,8 @@ impl LiveEditor {
                 let run = || {
                     if fake_get {
                         tests::fake_get(&job, &worker_stop)
+                    } else if fake_recall {
+                        tests::fake_recall(&job, &worker_stop)
                     } else {
                         run()
                     }

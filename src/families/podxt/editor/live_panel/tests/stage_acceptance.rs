@@ -377,16 +377,31 @@ fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
         "physical update should scroll to the playing channel"
     );
 
-    app.podxt_mut().live.editor.use_fake_get();
-    let requests = app.podxt().live.device_requests;
-    click_text(&ctx, &mut app, "32C  Saved Channel");
+    let live = &mut app.podxt_mut().live;
+    live.startup = None;
+    live.editor.set_live(true);
+    live.editor.use_fake_recall();
+    let requests = live.device_requests;
+    click_text(&ctx, &mut app, "31D  Saved Channel");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.podxt().live.editor.busy() {
+        assert!(
+            Instant::now() < deadline,
+            "fake channel recall did not finish"
+        );
+        std::thread::yield_now();
+        render_stage(&ctx, &mut app, vec![]);
+    }
     let panel = &app.podxt().live;
-    assert_eq!(panel.device_requests, requests + 2);
-    assert_eq!(panel.playing_channel(), Some(slot));
+    assert_eq!(panel.device_requests, requests + 1);
+    assert_eq!(panel.playing_channel(), Location::tone_from_label("31D"));
     assert_eq!(
-        panel.message.as_deref(),
-        Some("Rechecking the playing tone. Select the channel again once the read completes.")
+        panel.snapshot.tone.as_ref().unwrap().name(),
+        "Recalled tone"
     );
+    let visible = rendered(&ctx, &mut app, &["Playing · 31D"]);
+    assert!(!visible.contains("Read playing tone"));
+    assert!(!visible.contains("Reconnect"));
 }
 
 #[test]

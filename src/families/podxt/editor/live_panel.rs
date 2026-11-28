@@ -936,13 +936,6 @@ impl LivePanel {
         if self.busy() {
             self.message =
                 Some("Wait for the current PODxt operation, then select the channel again.".into());
-        } else if !self.editor.recall_ready() {
-            if self.can_refresh_current() {
-                self.refresh_current(ctx);
-                self.message = Some("Rechecking the playing tone. Select the channel again once the read completes.".into());
-            } else {
-                self.message = Some("Use Read playing tone before selecting a channel.".into());
-            }
         } else if let Some(device) = &self.device {
             self.message = None;
             self.follow.pause();
@@ -1027,11 +1020,13 @@ impl LivePanel {
                 *current = true;
             }
         }
+        let needs_refresh = self.editor.needs_refresh();
         if self.visible()
+            && (!self.live_editing || needs_refresh)
             && ui
                 .add_enabled(
                     self.can_refresh_current(),
-                    egui::Button::new("Read playing tone"),
+                    egui::Button::new(if self.live_editing { "Reconnect" } else { "Read playing tone" }),
                 )
                 .on_hover_text(if self.editor.needs_refresh() {
                     "Read the PODxt edit buffer and refresh the editor before editing or recalling a channel."

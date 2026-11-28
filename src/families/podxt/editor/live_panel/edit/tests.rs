@@ -64,6 +64,83 @@ pub(super) fn fake_get(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, Stri
     result
 }
 
+pub(super) fn fake_recall(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, String> {
+    let Action::Recall(target) = job.action else {
+        unreachable!("the fixture only handles recall");
+    };
+    assert!(
+        job.current.is_none(),
+        "initial recall must work without a verified buffer"
+    );
+    let before = Location::tone_from_label("32D").unwrap();
+    let channel = |slot: Location| {
+        let index = slot.index() as u8;
+        (
+            PodxtRequest::QueryGlobal(Global::CurrentChannel),
+            vec![
+                0xf0,
+                0,
+                1,
+                0x0c,
+                3,
+                0x56,
+                17,
+                0,
+                0,
+                index >> 4,
+                index & 15,
+                0xf7,
+            ],
+        )
+    };
+    let before_tone = (
+        PodxtRequest::EditBuffer,
+        super::super::tests::valid_dump("Before recall").raw,
+    );
+    let after = super::super::tests::valid_dump("Recalled tone").raw;
+    let held = Cell::new(false);
+    let writes = Cell::new(0);
+    let result = edit_transaction(
+        job,
+        stop,
+        || {
+            assert!(!held.replace(true));
+            Ok(FakeLock(&held))
+        },
+        |_, run| {
+            run(&mut FakeLink {
+                held: &held,
+                script: [
+                    (
+                        PodxtRequest::Identity,
+                        variax_workbench::identity_stage::bridge_reply(),
+                    ),
+                    channel(before),
+                    before_tone.clone(),
+                    (PodxtRequest::Stored(before), before_tone.1.clone()),
+                    (PodxtRequest::Stored(target), after.clone()),
+                    (
+                        PodxtRequest::InstalledPacks,
+                        vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7],
+                    ),
+                    before_tone,
+                    channel(before),
+                    (PodxtRequest::Program(target), Vec::new()),
+                    (PodxtRequest::EditBuffer, after),
+                    channel(target),
+                ]
+                .into(),
+                reply: None,
+                time: &Cell::new(Duration::ZERO),
+                writes: &writes,
+            })
+        },
+    );
+    assert_eq!(writes.get(), 11);
+    assert!(!held.get());
+    result
+}
+
 #[test]
 fn queued_drag_edits_keep_the_latest_value_and_honor_the_dispatch_interval() {
     let now = Instant::now();
@@ -474,12 +551,8 @@ fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
     let text = super::super::tests::stage_frame(&ctx, &mut app);
     assert!(text.contains("Keep playing tone"), "{text}");
     assert!(text.contains("Discard and recall 1B"), "{text}");
-    assert_eq!(
-        text.lines()
-            .filter(|line| *line == "Read playing tone")
-            .count(),
-        1
-    );
+    assert!(!text.lines().any(|line| line == "Read playing tone"));
+    assert!(!text.lines().any(|line| line == "Reconnect"));
 }
 
 #[test]
@@ -570,12 +643,7 @@ fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
     panel.live_editing = true;
     panel.startup = None;
     let text = super::super::tests::stage_frame(&ctx, &mut app);
-    assert_eq!(
-        text.lines()
-            .filter(|line| *line == "Read playing tone")
-            .count(),
-        1
-    );
+    assert_eq!(text.lines().filter(|line| *line == "Reconnect").count(), 1);
     assert!(!text.contains("Discard and recall"), "{text}");
 }
 
