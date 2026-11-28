@@ -2253,7 +2253,7 @@ fn completed_startup_card_opens_its_editor_and_keeps_background_sync_and_edits()
     frame(&ctx, &mut app, vec![]);
     assert_eq!(guitar.borrow().starts, 1);
     guitar.borrow_mut().update = Some(Reading(19));
-    click_sync_label(&ctx, &mut app, "Open editor");
+    click_sync_label(&ctx, &mut app, "PODxt Live Connected");
 
     assert!(!app.startup_connection);
     assert_eq!(app.tabs.active, Some(pod_tab));
@@ -2400,4 +2400,71 @@ fn skipping_the_queued_startup_guitar_leaves_the_pod_read_running() {
     frame(&ctx, &mut app, vec![]);
     frame(&ctx, &mut app, vec![]);
     assert_eq!(guitar.borrow().starts, 0);
+}
+
+#[test]
+fn first_guitar_verified_after_opening_the_startup_pod_syncs_but_a_return_asks() {
+    use tabs::SyncUpdate::Finished;
+
+    let (ctx, mut app, source) = fixture();
+    app.startup_connection = true;
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let relay = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    let pod = Rc::new(RefCell::new(FakeSync::default()));
+    app.tabs.entries[0].editor = Box::new(SyncEditor {
+        state: pod.clone(),
+        total: 128.try_into().unwrap(),
+        consent: false,
+    });
+    source.finish(relay.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    assert_eq!(pod.borrow().starts, 1);
+
+    // Presence has prompted identification, but no guitar row exists yet.
+    source.notice(&relay, SimulatedNotice::Connected);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    pod.borrow_mut().update = Some(Finished(Ok(())));
+    click_sync_label(&ctx, &mut app, "PODxt Live Connected");
+    assert!(!app.startup_connection);
+    assert_eq!(app.tabs.active, Some(entries(&app)[0].1));
+
+    let guitar_read = |app: &mut Workbench| {
+        source.guitar(relay.clone());
+        // Use normal discovery, and inject the fake reader before polling
+        // sync so it sees the first admission decision for this attachment.
+        app.next_detection = Instant::now();
+        app.poll_detection(&ctx);
+        let guitar = Rc::new(RefCell::new(FakeSync::default()));
+        let entry = app
+            .tabs
+            .entries
+            .iter_mut()
+            .find(|entry| entry.family.info().id == "variax")
+            .unwrap();
+        entry.editor = Box::new(SyncEditor {
+            state: guitar.clone(),
+            total: 60.try_into().unwrap(),
+            consent: true,
+        });
+        guitar
+    };
+    let guitar = guitar_read(&mut app);
+    let downloading = frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert!(!has_label(
+        &downloading.shapes,
+        "Temporarily switch presets?"
+    ));
+
+    source.notice(&relay, SimulatedNotice::Disconnected);
+    tick(&ctx, &mut app);
+    source.notice(&relay, SimulatedNotice::Connected);
+    let replacement = guitar_read(&mut app);
+    let returned = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&returned.shapes, "Reconnected after disconnect"));
+    assert!(has_label(&returned.shapes, "Temporarily switch presets?"));
+    assert_eq!(replacement.borrow().starts, 0);
+    assert_eq!(pod.borrow().starts, 1);
 }

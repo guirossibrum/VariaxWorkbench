@@ -411,6 +411,11 @@ impl Connections {
         self.background = true;
     }
 
+    /// The popup still carries the startup session, even when hidden.
+    pub fn startup_in_background(&self) -> bool {
+        self.background
+    }
+
     pub fn progress_hidden(&self) -> bool {
         self.visible && self.hidden
     }

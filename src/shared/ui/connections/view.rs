@@ -217,47 +217,65 @@ fn device_row(
     paint_artwork: &mut impl FnMut(&egui::Ui, &'static str, Rect) -> bool,
     startup: bool,
 ) -> Option<Action> {
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(12))
-        .show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                let (icon, _) = ui.allocate_exact_size(vec2(48.0, 48.0), egui::Sense::hover());
-                if !row
-                    .device
-                    .artwork
-                    .is_some_and(|path| paint_artwork(ui, path, icon))
-                {
-                    neutral_icon(ui, icon);
-                }
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width());
-                    let connected = matches!(
-                        row.status,
-                        Status::Connected
-                            | Status::Unsupported
-                            | Status::Consent(_)
-                            | Status::Skipped(_)
-                            | Status::Waiting
-                            | Status::Reading { .. }
-                            | Status::Complete
-                            | Status::Failed(_)
-                    );
-                    let title = if connected {
-                        format!("{} Connected", row.device.name)
-                    } else {
-                        row.device.name.clone()
-                    };
-                    ui.label(RichText::new(title).size(theme::BODY).strong());
-                    if row.reconnected && row.status != Status::Disconnected {
-                        ui.label("Reconnected after disconnect");
+    let mut draw = |ui: &mut egui::Ui| {
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    let (icon, _) = ui.allocate_exact_size(vec2(48.0, 48.0), egui::Sense::hover());
+                    if !row
+                        .device
+                        .artwork
+                        .is_some_and(|path| paint_artwork(ui, path, icon))
+                    {
+                        neutral_icon(ui, icon);
                     }
-                    row_status(ui, row, startup)
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width());
+                        let connected = matches!(
+                            row.status,
+                            Status::Connected
+                                | Status::Unsupported
+                                | Status::Consent(_)
+                                | Status::Skipped(_)
+                                | Status::Waiting
+                                | Status::Reading { .. }
+                                | Status::Complete
+                                | Status::Failed(_)
+                        );
+                        let title = if connected {
+                            format!("{} Connected", row.device.name)
+                        } else {
+                            row.device.name.clone()
+                        };
+                        ui.label(RichText::new(title).size(theme::BODY).strong());
+                        if row.reconnected && row.status != Status::Disconnected {
+                            ui.label("Reconnected after disconnect");
+                        }
+                        row_status(ui, row, startup)
+                    })
+                    .inner
                 })
                 .inner
             })
             .inner
-        })
-        .inner
+    };
+    if !startup || row.status != Status::Complete {
+        return draw(ui);
+    }
+
+    // The card senses pointer clicks behind its controls. Open editor
+    // remains the keyboard focus target.
+    let card = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::CLICK), |ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        draw(ui)
+    });
+    card.inner.or_else(|| {
+        card.response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+            .then_some(Action::OpenEditor(row.attachment))
+    })
 }
 
 fn row_status(ui: &mut egui::Ui, row: &Row, startup: bool) -> Option<Action> {

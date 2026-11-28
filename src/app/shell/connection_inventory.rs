@@ -292,27 +292,34 @@ impl ConnectionInventory {
             .into_iter()
             .partition(|(key, _)| key.podxt_upstream().is_none());
         for (key, (name, verification)) in roots.into_iter().chain(linked) {
-            let upstream = if let Some(parent) = key.podxt_upstream() {
-                let Some(row) = self
+            let logical_row = row_key(&key);
+            let (upstream, automatic) = if let Some(parent) = key.podxt_upstream() {
+                let Some(relay) = self
                     .rows
                     .get(&row_key(&parent))
                     .filter(|row| row.current.as_ref() == Some(&parent))
                 else {
                     continue;
                 };
-                Some(row.attachment)
+                // The first guitar may verify after the user opens the
+                // completed relay's editor. A replacement guitar already
+                // has a row, and a new relay has its own startup decision.
+                let first_startup_guitar = connections.startup_in_background()
+                    && relay.startup
+                    && !self.rows.contains_key(&logical_row);
+                (Some(relay.attachment), startup || first_startup_guitar)
             } else {
-                None
+                (None, startup)
             };
 
             let next_device = self.rows.len() as u64;
-            let row = self.rows.entry(row_key(&key)).or_insert(Row {
+            let row = self.rows.entry(logical_row).or_insert(Row {
                 attachment: Attachment {
                     device: next_device,
                     generation: 0,
                 },
                 current: None,
-                startup,
+                startup: automatic,
                 sync: Sync::Pending,
             });
             if row.current.as_ref() != Some(&key) {
@@ -327,7 +334,7 @@ impl ConnectionInventory {
                     },
                 );
                 row.current = Some(key);
-                row.startup = startup;
+                row.startup = automatic;
                 row.sync = Sync::Pending;
             }
             if !matches!(verification, Verification::Verified) && !matches!(row.sync, Sync::Skipped)
