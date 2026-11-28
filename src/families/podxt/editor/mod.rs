@@ -4025,6 +4025,10 @@ impl ProductFamily for Family {
     ) -> Result<Box<dyn FamilyTab>, String> {
         let mut editor = PodxtEditor::new();
         editor.initialize_stage(defaults.preferences.clone());
+        #[cfg(feature = "usb")]
+        editor
+            .live
+            .initialize_tuner(defaults.preferences.as_deref());
         if let TabSource::File(path, bytes) = source {
             editor.import_pod_document(bytes);
             editor.stage.path = Some(path);

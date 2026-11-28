@@ -495,6 +495,8 @@ impl PodxtEditor {
     }
 
     fn stage_toolbar(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        #[cfg(feature = "usb")]
+        let mut tuner_controls = None;
         ui.horizontal_wrapped(|ui| {
             if self.pod_button(ui, "open-stage-document", "Open tone or bank…") {
                 self.open_dialog(ui.ctx(), services);
@@ -571,14 +573,24 @@ impl PodxtEditor {
             ) {
                 self.table_history(true);
             }
-            self.locker.toolbar(ui);
+            let tone_locker = self.locker.toolbar(ui);
+            #[cfg(not(feature = "usb"))]
+            let _ = tone_locker;
             #[cfg(feature = "usb")]
-            self.live.toolbar(ui, &mut self.stage.view_current);
+            {
+                self.live.toolbar(ui, &mut self.stage.view_current);
+                tuner_controls = Some((self.live.tuner_command(ui), tone_locker));
+            }
             #[cfg(feature = "usb")]
             if self.stage_is_current() {
                 self.live.stage_status(ui);
             }
         });
+        #[cfg(feature = "usb")]
+        if let Some((button, tone_locker)) = tuner_controls {
+            self.live
+                .show_tuner(ui.ctx(), button.as_ref(), &tone_locker);
+        }
     }
 
     pub(super) fn show_file_stage(&mut self) {
