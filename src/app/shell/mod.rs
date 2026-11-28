@@ -5,7 +5,9 @@ use variax_workbench::ui::{assets, chrome, connections, theme};
 
 mod connection_inventory;
 mod detect;
+mod session_log_panel;
 pub(super) use connection_inventory::ConnectionInventory;
+pub(super) use session_log_panel::SessionLogPanel;
 #[cfg(test)]
 mod detection_tests;
 pub(super) use detect::DetectConfirmation;
@@ -35,6 +37,7 @@ impl Workbench {
             dialogs: Box::new(FakeDialogs::default()),
             picker: Picker::default(),
             help: false,
+            session_log_panel: SessionLogPanel::new(),
             permit_close: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
@@ -207,6 +210,7 @@ impl Workbench {
                     self.shell_error = self.open_file(path).err();
                 }
             }
+            PickerAction::ExportSessionLog => self.session_log_panel.export_to(ctx, path),
             PickerAction::Backup(choice, target) => self.start_backup_in(choice, target, path),
             PickerAction::SaveReport { restart } => {
                 if let Some(path) = path {
@@ -898,6 +902,9 @@ impl Workbench {
                             .size(theme::BODY)
                             .color(theme::TEXT),
                     );
+                    if ui.button("Diagnostics…").clicked() {
+                        self.session_log_panel.open();
+                    }
                     ui.separator();
                     ui.heading("Keyboard shortcuts");
                     shortcut_help(ui, active_family);
@@ -907,6 +914,7 @@ impl Workbench {
                     }
                 });
         }
+        self.show_session_log_panel(ctx);
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.device_check_window(ctx);

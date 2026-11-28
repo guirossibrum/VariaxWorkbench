@@ -24,6 +24,7 @@ pub(super) enum PickRequest {
         name: String,
         extension: String,
     },
+    SaveSessionLog,
     #[allow(dead_code)]
     Artwork,
     OpenWav,
@@ -71,6 +72,12 @@ impl PickRequest {
                     .set_file_name(name)
                     .save_file(),
             ),
+            Self::SaveSessionLog => file_path(
+                dialog
+                    .add_filter("Session log", &["jsonl"])
+                    .set_file_name("workbench-session-log.jsonl")
+                    .save_file(),
+            ),
             Self::Artwork | Self::Folder => file_path(dialog.pick_folder()),
             Self::OpenWav => file_path(dialog.add_filter("PCM WAV", &["wav"]).pick_file()),
             Self::SaveAudio { name, aiff } => {
@@ -107,6 +114,7 @@ impl PickRequest {
             Self::SaveWorkbenchFile { name, extension } => {
                 Dialog::Save(name_with_extension(name, &extension))
             }
+            Self::SaveSessionLog => Dialog::Save("workbench-session-log.jsonl".into()),
             Self::SaveAudio { name, aiff } => {
                 Dialog::Save(name_with_extension(name, if aiff { "aiff" } else { "wav" }))
             }
