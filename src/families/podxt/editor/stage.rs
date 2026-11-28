@@ -1413,6 +1413,10 @@ impl PodxtEditor {
                             .suffix(suffix)
                             .enabled(enabled)
                             .show(ui);
+                        #[cfg(test)]
+                        if label == "Drive" {
+                            self.pod_buttons.insert("stage-drive", output.response.rect);
+                        }
                         let streaming = self.streams_stage_drags(index);
                         if stage_drag_active(&output.response) {
                             self.parameter_panel.slider = Some((index, selector, current));

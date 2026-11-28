@@ -3,7 +3,7 @@
 GitHub issues and the [project board](https://github.com/users/guirossibrum/projects/17) track priorities and dependencies.
 
 ## Pending implementation or validation
-- [ ] [#320](https://github.com/guirossibrum/VariaxWorkbench/issues/320) still needs Help/Diagnostics integration, PODxt #242 comparison and live-control integration, broader UI and transport coverage, and native package and owner verification. [Initial coverage](session-log.md).
+- [ ] [#320](https://github.com/guirossibrum/VariaxWorkbench/issues/320) still needs Help/Diagnostics integration, broader UI and transport coverage, and native package and owner verification. [Coverage](session-log.md).
 
 - [ ] [#316](https://github.com/guirossibrum/VariaxWorkbench/issues/316) tracks comprehensive CLI capability declarations and the device-onboarding coverage check. Preset help lists offline file support using the core product profiles. The shared mapping from GUI and device operations to CLI commands or exemptions is pending.
 

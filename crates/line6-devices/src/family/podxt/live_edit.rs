@@ -262,6 +262,31 @@ pub fn recall_live_channel_with_draft<L: Link>(
     retained: Option<OutgoingDraft<'_>>,
     cancelled: impl Fn() -> bool,
 ) -> Result<EditorRecall, String> {
+    recall_live_channel_observed(session, target, confirmation, retained, cancelled, None)
+}
+
+/// Checked recall facts for callers that record local diagnostics.
+pub enum RecallObservation<'a> {
+    Comparison {
+        source: Location,
+        matches_saved: bool,
+        comparison: &'a RecallComparison,
+        opaque_changes: &'a [(u8, u8)],
+    },
+    Readback {
+        source: Location,
+        verified: bool,
+    },
+}
+
+pub fn recall_live_channel_observed<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    confirmation: Option<&RecallConfirmation>,
+    retained: Option<OutgoingDraft<'_>>,
+    cancelled: impl Fn() -> bool,
+    mut observe: Option<&mut dyn FnMut(RecallObservation<'_>)>,
+) -> Result<EditorRecall, String> {
     if target.kind() != BankKind::Tones || !session.allows(Operation::PodxtChannelSwitch) {
         return Err("PODxt tone-channel recall is unavailable.".into());
     }
@@ -328,23 +353,46 @@ pub fn recall_live_channel_with_draft<L: Link>(
     {
         return Ok(EditorRecall::ConfirmationExpired(playing));
     }
-    if let Some(saved) = saved_playing
-        && !(retained_before && retains(&playing.tone))
-        && !same_recall_source(&playing.tone, &saved)
-    {
-        let comparison = RecallComparison::between(&playing.tone, &saved);
-        return Ok(EditorRecall::ConfirmationRequired(RecallConfirmation {
-            target,
-            playing,
-            comparison,
-        }));
+    if let Some(saved) = saved_playing {
+        let matches_saved = same_recall_source(&playing.tone, &saved);
+        let needs_confirmation = !(retained_before && retains(&playing.tone)) && !matches_saved;
+        if observe.is_some() || needs_confirmation {
+            let comparison = RecallComparison::between(&playing.tone, &saved);
+            if let Some(observe) = &mut observe {
+                let opaque_changes: Vec<_> = comparison
+                    .opaque_offsets
+                    .iter()
+                    .map(|&offset| (offset as u8, playing.tone.raw[offset] ^ saved.raw[offset]))
+                    .collect();
+                observe(RecallObservation::Comparison {
+                    source: channel,
+                    matches_saved,
+                    comparison: &comparison,
+                    opaque_changes: &opaque_changes,
+                });
+            }
+            if needs_confirmation {
+                return Ok(EditorRecall::ConfirmationRequired(RecallConfirmation {
+                    target,
+                    playing,
+                    comparison,
+                }));
+            }
+        }
     }
-    let Some(target_stored) = target_stored else {
-        return Ok(EditorRecall::Playing(playing));
+    let result = if let Some(target_stored) = target_stored {
+        select_editor_channel(session, target, &target_stored, packs)
+            .map_err(|error| format!("The channel switch could not be verified. {error}"))
+    } else {
+        Ok(playing)
     };
-    select_editor_channel(session, target, &target_stored, packs)
-        .map(EditorRecall::Playing)
-        .map_err(|error| format!("The channel switch could not be verified. {error}"))
+    if let Some(observe) = observe {
+        observe(RecallObservation::Readback {
+            source: channel,
+            verified: result.is_ok(),
+        });
+    }
+    result.map(EditorRecall::Playing)
 }
 
 fn select_editor_channel<L: Link>(

@@ -1247,6 +1247,7 @@ pub fn with_verified_workbench_link<T>(
     path: &str,
     address: u8,
     registry_id: u64,
+    release_log: Option<&crate::session_log::Operation>,
     run: impl FnOnce(&mut dyn Link) -> Result<T, String>,
 ) -> Result<T, String> {
     use line6_devices::transport::usb::{UsbInterfaceLink, macos};
@@ -1260,7 +1261,18 @@ pub fn with_verified_workbench_link<T>(
     };
     let mut link =
         macos::open_ready_attachment(rig, macos::PODXT_MIDI, registry_id, &expected, || Ok(()))?;
-    finish_workbench_link(&mut link, |link| run(link), UsbInterfaceLink::finish)
+    finish_workbench_link(
+        &mut link,
+        |link| run(link),
+        |link| {
+            let started = std::time::Instant::now();
+            let result = link.finish();
+            if let Some(log) = release_log {
+                log.checked_release(result.is_ok(), started.elapsed());
+            }
+            result
+        },
+    )
 }
 
 #[cfg(any(test, target_os = "macos"))]

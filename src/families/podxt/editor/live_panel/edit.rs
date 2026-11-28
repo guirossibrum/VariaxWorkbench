@@ -1,3 +1,10 @@
+mod diagnostics;
+use diagnostics::{ControlBatch, ControlChange, RecallLog};
+use variax_workbench::session_log::{
+    Disposition, Endpoint, Operation as SessionOperation, PodxtSyncEvidence as Evidence,
+    PodxtSyncReason as Reason,
+};
+
 use super::*;
 use podxt::{
     EditorBuffer, EditorRecall, LiveTarget, OutgoingDraft, RecallConfirmation, Target, TonePayload,
@@ -25,9 +32,11 @@ pub(super) struct LiveEditor {
     attachment_session: Arc<()>,
     stage_only: bool,
     needs_get: bool,
-    recall_confirmation: Option<(detection::DeviceKey, RecallConfirmation)>,
+    recall_confirmation: Option<PendingRecall>,
     last_dispatch: Option<Instant>,
     message: Option<Result<String, String>>,
+    #[cfg(test)]
+    session_log: Option<variax_workbench::session_log::SessionLog>,
     #[cfg(test)]
     fake_get: bool,
     #[cfg(test)]
@@ -57,6 +66,8 @@ impl Default for LiveEditor {
             recall_confirmation: None,
             last_dispatch: None,
             message: None,
+            #[cfg(test)]
+            session_log: None,
             #[cfg(test)]
             fake_get: false,
             #[cfg(test)]
@@ -131,22 +142,36 @@ struct QueuedUndo {
 }
 
 #[derive(Default)]
-struct Pending(Vec<LiveTarget>);
+struct Pending {
+    targets: Vec<LiveTarget>,
+    log: Option<ControlBatch>,
+}
 
 impl Pending {
+    fn clear(&mut self, disposition: Disposition) {
+        self.targets.clear();
+        self.stop_logging(disposition);
+    }
+
+    fn stop_logging(&mut self, disposition: Disposition) {
+        if let Some(batch) = self.log.take() {
+            batch.record(disposition, None);
+        }
+    }
+
     fn set(&mut self, target: LiveTarget) {
         match self
-            .0
+            .targets
             .iter_mut()
             .find(|entry| entry.control() == target.control())
         {
             Some(entry) => *entry = target,
-            None => self.0.push(target),
+            None => self.targets.push(target),
         }
     }
 
     fn overlay(&self, targets: &[LiveTarget], control: LiveControl, current: u16) -> u16 {
-        self.0
+        self.targets
             .iter()
             .chain(targets)
             .find(|target| target.control() == control)
@@ -215,6 +240,8 @@ struct EditWorker {
     device: Option<detection::DeviceKey>,
     stop: Arc<AtomicBool>,
     targets: Vec<LiveTarget>,
+    recall_log: Option<RecallLog>,
+    control_log: Option<Arc<ControlBatch>>,
     superseded: bool,
     program_read: bool,
     replay: Option<Arc<DraftReplay>>,
@@ -283,12 +310,20 @@ struct DraftReplay {
     backup: Arc<VerifiedToneBackup>,
 }
 
+struct PendingRecall {
+    device: detection::DeviceKey,
+    confirmation: RecallConfirmation,
+    log: Option<RecallLog>,
+}
+
 enum RecallAuthorization {
     Confirmed(RecallConfirmation),
     RetainedDraft,
 }
 
 struct Job {
+    recall_log: Option<RecallLog>,
+    control_log: Option<SessionOperation>,
     recall_authorization: Option<RecallAuthorization>,
     outgoing_draft: Option<(Location, TonePayload)>,
     reply_pending: Arc<AtomicBool>,
@@ -298,6 +333,15 @@ struct Job {
     current: Option<EditorBuffer>,
     original: Option<EditorBuffer>,
     targets: Vec<LiveTarget>,
+}
+
+impl Job {
+    fn operation(&self) -> Option<&SessionOperation> {
+        self.recall_log
+            .as_ref()
+            .map(RecallLog::operation)
+            .or(self.control_log.as_ref())
+    }
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
@@ -315,6 +359,7 @@ fn edit_transaction<'a, G>(
             lock,
             with_link,
             EditPolicy(job.action),
+            job.operation().cloned(),
             move |session| {
                 let edit = match job.action {
                     Action::Get | Action::Follow(_) => {
@@ -338,12 +383,25 @@ fn edit_transaction<'a, G>(
                                 OutgoingDraft::Available(*slot, payload)
                             }
                         });
-                        return podxt::recall_live_channel_with_draft(
+                        let mut observe = |observation: podxt::RecallObservation<'_>| {
+                            if let Some(log) = &job.recall_log {
+                                log.observe(observation);
+                            }
+                        };
+                        return podxt::recall_live_channel_observed(
                             session,
                             slot,
                             confirmation,
                             draft,
                             stopped,
+                            job.recall_log
+                                .as_ref()
+                                .filter(|log| {
+                                    line6_devices::session::Log::observing(log.operation())
+                                })
+                                .map(|_| {
+                                    &mut observe as &mut dyn FnMut(podxt::RecallObservation<'_>)
+                                }),
                         )
                         .map(EditOutcome::Recall);
                     }
@@ -461,7 +519,7 @@ fn platform_edit(
                     | Action::Controls
                     | Action::Undo
             ) {
-                with_checked_edit_link(device, rig, stop, run)
+                with_checked_edit_link(device, rig, stop, job.operation(), run)
             } else {
                 with_platform_link(device, rig, run)
             }
@@ -474,6 +532,7 @@ fn with_checked_edit_link(
     device: &detection::DeviceKey,
     rig: &line6_devices::device_lock::DeviceLock,
     stop: &AtomicBool,
+    log: Option<&SessionOperation>,
     run: RunOnLink<'_, EditOutcome>,
 ) -> Result<EditOutcome, String> {
     #[cfg(target_os = "linux")]
@@ -490,7 +549,7 @@ fn with_checked_edit_link(
         })
         .map_err(|error| error.to_string())?;
         let result = run(&mut link);
-        match link.finish() {
+        match checked_edit_release(log, || link.finish()) {
             Ok(()) => result,
             Err(close) => Err(match result {
                 Ok(_) => close.to_string(),
@@ -501,8 +560,21 @@ fn with_checked_edit_link(
     #[cfg(target_os = "macos")]
     {
         let _ = stop;
-        with_verified_platform_link(device, rig, run)
+        with_verified_platform_link(device, rig, log, run)
     }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn checked_edit_release<T>(
+    log: Option<&SessionOperation>,
+    finish: impl FnOnce() -> Result<(), T>,
+) -> Result<(), T> {
+    let started = Instant::now();
+    let result = finish();
+    if let Some(log) = log {
+        log.checked_release(result.is_ok(), started.elapsed());
+    }
+    result
 }
 
 #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
@@ -520,20 +592,39 @@ fn platform_edit(
         &job.targets,
         &job.recall_authorization,
         &job.outgoing_draft,
+        job.operation(),
     );
     let _ = (EditOutcome::Buffer, EditOutcome::Recall);
     Err("PODxt Live editing is unavailable in this build.".into())
 }
 
 impl LiveEditor {
+    fn log_operation(&self) -> SessionOperation {
+        #[cfg(test)]
+        if let Some(log) = &self.session_log {
+            return SessionOperation::with_log(log, Endpoint::Podxt);
+        }
+        SessionOperation::begin(Endpoint::Podxt)
+    }
+
+    #[cfg(test)]
+    pub(super) fn use_session_log(&mut self, log: variax_workbench::session_log::SessionLog) {
+        self.session_log = Some(log);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_last_dispatch(&mut self, when: Option<Instant>) {
+        self.last_dispatch = when;
+    }
+
     pub(super) fn busy(&self) -> bool {
-        self.worker.is_some() || !self.stage_only && !self.pending.0.is_empty()
+        self.worker.is_some() || !self.stage_only && !self.pending.targets.is_empty()
     }
 
     pub(super) fn cancel(&mut self) {
         self.clear_recall_confirmation();
         if !self.stage_only {
-            self.pending.0.clear();
+            self.pending.clear(Disposition::Cancelled);
         }
         if let Some(worker) = &self.worker {
             worker.stop.store(true, Ordering::Release);
@@ -550,7 +641,7 @@ impl LiveEditor {
         self.replay_backups.clear();
         self.attachment_session = Arc::new(());
         self.whole_tone_backup = None;
-        self.pending.0.clear();
+        self.pending.clear(Disposition::Cancelled);
         self.needs_get = false;
         self.last_dispatch = None;
         self.message = None;
@@ -606,6 +697,7 @@ impl LiveEditor {
             device,
             false,
             Ok(EditOutcome::Buffer(after)),
+            None,
         );
     }
 
@@ -688,14 +780,14 @@ impl LiveEditor {
     }
 
     pub(super) fn discard_staged(&mut self) {
-        self.pending.0.clear();
+        self.pending.clear(Disposition::Cancelled);
     }
 
     pub(super) fn observe_program(&mut self, slot: Location) -> bool {
         let expired = self
             .recall_confirmation
             .as_ref()
-            .is_some_and(|(_, confirmation)| slot != confirmation.playing().channel);
+            .is_some_and(|pending| slot != pending.confirmation.playing().channel);
         if expired {
             self.clear_recall_confirmation();
         }
@@ -737,7 +829,7 @@ impl LiveEditor {
         let expired = self
             .recall_confirmation
             .as_ref()
-            .is_some_and(|(_, confirmation)| !confirmation.matches_playing(&buffer));
+            .is_some_and(|pending| !pending.confirmation.matches_playing(&buffer));
         let changed_during_undo = self.queued_undo.is_some()
             && self.session.as_ref().is_none_or(|active| {
                 active.current.channel != buffer.channel || active.current.tone != buffer.tone
@@ -771,7 +863,22 @@ impl LiveEditor {
     }
 
     fn clear_recall_confirmation(&mut self) {
-        self.recall_confirmation = None;
+        self.dismiss_recall_confirmation(Reason::Expired);
+    }
+
+    fn dismiss_recall_confirmation(&mut self, reason: Reason) {
+        if let Some(PendingRecall {
+            confirmation,
+            log: Some(log),
+            ..
+        }) = self.recall_confirmation.take()
+        {
+            log.sync(
+                Some(confirmation.playing().channel),
+                reason,
+                Evidence::VerifiedPlaying,
+            );
+        }
     }
 
     fn expire_recall_confirmation(&mut self) {
@@ -821,7 +928,7 @@ impl LiveEditor {
     }
 
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
-        self.start_job(action, device, ctx, None, None);
+        self.start_job(action, device, ctx, None, None, None);
     }
 
     fn start_job(
@@ -831,6 +938,7 @@ impl LiveEditor {
         ctx: &egui::Context,
         recall_authorization: Option<RecallAuthorization>,
         replay: Option<Arc<DraftReplay>>,
+        recall_log: Option<RecallLog>,
     ) {
         let admitted = if action == Action::Get {
             self.can_get()
@@ -853,18 +961,32 @@ impl LiveEditor {
             || action == Action::Undo && !self.can_undo()
             || matches!(action, Action::Recall(_)) && (self.stage_only || self.has_pending())
         {
+            self.recall_blocked(recall_log.as_ref());
             return;
         }
-        self.clear_recall_confirmation();
+        let retained_recall = matches!(
+            recall_authorization,
+            Some(RecallAuthorization::RetainedDraft)
+        );
+        if retained_recall {
+            self.recall_confirmation = None;
+        } else {
+            self.clear_recall_confirmation();
+        }
+        let control_log = if action == Action::Controls {
+            self.pending.log.take()
+        } else {
+            None
+        };
         let targets = match action {
-            Action::Send | Action::Controls => std::mem::take(&mut self.pending.0),
+            Action::Send | Action::Controls => std::mem::take(&mut self.pending.targets),
             Action::Recall(_) => Vec::new(),
             Action::Get
             | Action::Follow(_)
             | Action::Undo
             | Action::ResendWholeTone
             | Action::ReplayDraft(_) => {
-                self.pending.0.clear();
+                self.pending.clear(Disposition::Cancelled);
                 Vec::new()
             }
         };
@@ -874,26 +996,21 @@ impl LiveEditor {
         let outgoing_draft = self
             .session
             .as_ref()
-            .filter(|_| {
-                fresh_recall
-                    || matches!(
-                        recall_authorization,
-                        Some(RecallAuthorization::RetainedDraft)
-                    )
-            })
+            .filter(|_| fresh_recall || retained_recall)
             .and_then(|active| {
                 let slot = active.current.channel;
                 self.draft(slot).cloned().map(|payload| (slot, payload))
             });
-        if matches!(
-            recall_authorization,
-            Some(RecallAuthorization::RetainedDraft)
-        ) && outgoing_draft.is_none()
-        {
+        if retained_recall && outgoing_draft.is_none() {
+            if let Some(log) = &recall_log {
+                log.sync(None, Reason::Expired, Evidence::None);
+            }
             self.expire_recall_confirmation();
             return;
         }
         let job = Job {
+            recall_log: recall_log.clone(),
+            control_log: control_log.as_ref().map(|batch| batch.operation.clone()),
             recall_authorization,
             outgoing_draft,
             reply_pending: Arc::clone(&self.reply_pending),
@@ -925,6 +1042,8 @@ impl LiveEditor {
             .filter(|_| matches!(action, Action::Controls | Action::Undo));
         #[cfg(test)]
         let fake_dispatch = self.fake_dispatch.clone();
+        let control_log = control_log.map(Arc::new);
+        let dispatch_log = control_log.clone();
         let thread = std::thread::Builder::new()
             .name("podxt-edit-buffer".into())
             .spawn(move || {
@@ -943,6 +1062,9 @@ impl LiveEditor {
                         run()
                     }
                 };
+                if let Some(batch) = dispatch_log {
+                    batch.record(Disposition::Accepted, None);
+                }
                 let result = run();
                 repaint.request_repaint();
                 result
@@ -956,6 +1078,8 @@ impl LiveEditor {
                     device: Some(device.clone()),
                     stop,
                     targets,
+                    recall_log,
+                    control_log,
                     superseded: false,
                     program_read: matches!(action, Action::Follow(_)),
                     replay,
@@ -963,7 +1087,12 @@ impl LiveEditor {
                 });
             }
             Err(error) => {
-                self.pending.0 = targets;
+                self.pending.targets = targets;
+                self.pending.log = control_log.and_then(Arc::into_inner);
+                if let Some(log) = recall_log {
+                    log.sync(None, Reason::Failed, Evidence::None);
+                    log.operation().finished(false);
+                }
                 self.message = Some(Err(format!(
                     "Could not start PODxt Live operation: {error}"
                 )));
@@ -1007,7 +1136,7 @@ impl LiveEditor {
             }
             Err(error) => {
                 if !matches!(action, Action::Recall(_)) {
-                    self.pending.0.clear();
+                    self.pending.clear(Disposition::Cancelled);
                 }
                 self.needs_get = true;
                 self.message = Some(Err(error));
@@ -1022,11 +1151,20 @@ impl LiveEditor {
         device: &detection::DeviceKey,
         stopped: bool,
         result: Result<EditOutcome, String>,
+        recall_log: Option<RecallLog>,
     ) -> Option<&EditorBuffer> {
         match result {
             Ok(
                 EditOutcome::Buffer(buffer) | EditOutcome::Recall(EditorRecall::Playing(buffer)),
             ) => {
+                if let Some(log) = recall_log {
+                    if stopped {
+                        log.sync(None, Reason::Cancelled, Evidence::None);
+                    } else {
+                        log.button(Disposition::Applied);
+                        log.operation().finished(true);
+                    }
+                }
                 if matches!(action, Action::Controls | Action::Send | Action::Undo)
                     && !stopped
                     && !self.reply_pending.load(Ordering::Acquire)
@@ -1040,19 +1178,57 @@ impl LiveEditor {
                 let playing = confirmation.playing().clone();
                 self.completed(Action::Get, Ok(playing));
                 if !stopped && !self.stage_only && !self.has_pending() {
-                    self.recall_confirmation = Some((device.clone(), confirmation));
+                    if let Some(log) = &recall_log {
+                        log.sync(
+                            Some(confirmation.playing().channel),
+                            Reason::ConfirmationRequired,
+                            Evidence::CheckedRelease,
+                        );
+                    }
+                    self.recall_confirmation = Some(PendingRecall {
+                        device: device.clone(),
+                        confirmation,
+                        log: recall_log,
+                    });
+                } else if let Some(log) = recall_log {
+                    log.sync(
+                        Some(confirmation.playing().channel),
+                        Reason::Expired,
+                        Evidence::CheckedRelease,
+                    );
                 }
                 self.message = None;
                 self.session.as_ref().map(|active| &active.current)
             }
             Ok(EditOutcome::Recall(EditorRecall::ConfirmationExpired(playing))) => {
+                if let Some(log) = recall_log {
+                    log.sync(
+                        Some(playing.channel),
+                        Reason::Expired,
+                        Evidence::CheckedRelease,
+                    );
+                }
                 self.completed(Action::Get, Ok(playing));
                 self.message = Some(Err(
                     "The playing tone changed. Select the channel again.".into()
                 ));
                 self.session.as_ref().map(|active| &active.current)
             }
-            Err(error) => self.completed(action, Err(error)),
+            Err(error) => {
+                if let Some(log) = recall_log {
+                    log.sync(
+                        None,
+                        if stopped {
+                            Reason::Cancelled
+                        } else {
+                            Reason::Failed
+                        },
+                        Evidence::None,
+                    );
+                    log.operation().finished(false);
+                }
+                self.completed(action, Err(error))
+            }
         }
     }
 
@@ -1097,7 +1273,7 @@ impl LiveEditor {
             payload: payload.clone(),
             backup: Arc::clone(backup),
         });
-        self.start_job(action, device, ctx, None, Some(replay));
+        self.start_job(action, device, ctx, None, Some(replay), None);
     }
 
     fn verify_replay_result(
@@ -1158,17 +1334,20 @@ impl LiveEditor {
                 .join()
                 .unwrap_or_else(|_| Err("PODxt Live editor worker stopped unexpectedly.".into()));
             if let Some(device) = device.filter(|device| worker.device.as_ref() == Some(*device)) {
-                if !self.stage_only && !self.pending.0.is_empty() {
+                if !self.stage_only && !self.pending.targets.is_empty() {
                     ctx.request_repaint();
                 }
                 if worker.action == Action::Send && self.stage_only && result.is_err() {
                     self.needs_get = true;
-                    self.pending.0 = worker.targets.clone();
+                    self.pending.targets = worker.targets.clone();
                     self.message = Some(result.map(|_| String::new()));
                     return None;
                 }
                 let stopped = worker.stop.load(Ordering::Acquire);
                 if worker.superseded {
+                    if let Some(log) = &worker.recall_log {
+                        log.sync(None, Reason::Superseded, Evidence::None);
+                    }
                     // A newer program notice will read back the latest selection.
                     // Keep the previous verified highlight until that read completes.
                     self.needs_get = true;
@@ -1188,8 +1367,33 @@ impl LiveEditor {
                     self.completed(worker.action, result)?;
                     return self.session.as_ref().map(|active| &active.current);
                 }
+                if let Some(batch) = &worker.control_log {
+                    match &result {
+                        Ok(EditOutcome::Buffer(buffer)) if !stopped => {
+                            batch.record(Disposition::Applied, Some(buffer));
+                            batch.operation.finished(true);
+                        }
+                        _ => {
+                            batch.record(
+                                if stopped {
+                                    Disposition::Cancelled
+                                } else {
+                                    Disposition::Failed
+                                },
+                                None,
+                            );
+                            batch.operation.finished(false);
+                        }
+                    }
+                }
                 let verified = self
-                    .complete_job(worker.action, device, stopped, result)
+                    .complete_job(
+                        worker.action,
+                        device,
+                        stopped,
+                        result,
+                        worker.recall_log.take(),
+                    )
                     .is_some();
                 self.finish_queued_undo(device, read_idle, ctx, stopped, verified);
                 if verified && read_idle {
@@ -1205,10 +1409,16 @@ impl LiveEditor {
                     None
                 };
             }
+            if let Some(log) = &worker.recall_log {
+                log.sync(None, Reason::Superseded, Evidence::None);
+            }
+            if let Some(batch) = &worker.control_log {
+                batch.record(Disposition::Cancelled, None);
+            }
             self.cancel_queued_undo("The PODxt Live attachment changed.");
         }
         if let Some(device) =
-            device.filter(|_| read_idle && !self.stage_only && !self.pending.0.is_empty())
+            device.filter(|_| read_idle && !self.stage_only && !self.pending.targets.is_empty())
         {
             let wait = self.dispatch_wait(Instant::now());
             if wait.is_zero() {
@@ -1221,11 +1431,12 @@ impl LiveEditor {
     }
 
     fn retain_outgoing_device_draft(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
-        let Some((attachment, confirmation)) = &self.recall_confirmation else {
+        let Some(pending) = &self.recall_confirmation else {
             return;
         };
+        let confirmation = &pending.confirmation;
         let playing = confirmation.playing();
-        if attachment != device
+        if pending.device != *device
             || !confirmation.comparison().can_retain_as_draft()
             || self.draft(playing.channel).is_some()
         {
@@ -1235,8 +1446,10 @@ impl LiveEditor {
             return;
         };
         let target = confirmation.target();
+        let source = playing.channel;
+        let log = pending.log.clone();
         self.drafts.attached.insert(
-            playing.channel.address(),
+            source.address(),
             SessionDraft {
                 payload,
                 imported: true,
@@ -1245,12 +1458,16 @@ impl LiveEditor {
         // The candidate came from a checked transaction with a clean release.
         // A continuation may select only if the freshly read outgoing bytes
         // still exactly match the retained copy.
+        if let Some(log) = &log {
+            log.retained(source);
+        }
         self.start_job(
             Action::Recall(target),
             device,
             ctx,
             Some(RecallAuthorization::RetainedDraft),
             None,
+            log,
         );
     }
 
@@ -1329,7 +1546,7 @@ impl LiveEditor {
             return;
         }
         self.clear_recall_confirmation();
-        self.pending.0.clear();
+        self.pending.clear(Disposition::Cancelled);
         if self.worker.is_some() {
             let active = self.session.as_ref().expect("Undo request has a snapshot");
             self.queued_undo = Some(QueuedUndo {
@@ -1388,23 +1605,39 @@ impl LiveEditor {
         }
     }
 
+    pub(super) fn recall_requested(&self, slot: Location) -> Option<RecallLog> {
+        RecallLog::requested(self.log_operation(), slot)
+    }
+
+    pub(super) fn recall_blocked(&self, log: Option<&RecallLog>) {
+        if let Some(log) = log {
+            log.button(Disposition::Blocked);
+            if self.has_pending() {
+                log.sync(None, Reason::PendingEdits, Evidence::EditorQueue);
+            }
+        }
+    }
+
     pub(super) fn recall(
         &mut self,
         slot: Location,
         device: &detection::DeviceKey,
         ctx: &egui::Context,
+        log: Option<RecallLog>,
     ) {
-        if let Some((_, confirmation)) = &self.recall_confirmation {
-            if confirmation.target() != slot {
+        if let Some(pending) = &self.recall_confirmation {
+            self.recall_blocked(log.as_ref());
+            if pending.confirmation.target() != slot {
                 self.message = Some(Ok(
                     "Cancel the pending switch before selecting another channel.".into(),
                 ));
             }
             return;
         }
-        if self.pending.0.is_empty() {
-            self.start(Action::Recall(slot), device, ctx);
+        if self.pending.targets.is_empty() {
+            self.start_job(Action::Recall(slot), device, ctx, None, None, log);
         } else {
+            self.recall_blocked(log.as_ref());
             self.message = Some(Err(
                 "Send or clear staged edits before selecting another channel.".into(),
             ));
@@ -1412,15 +1645,29 @@ impl LiveEditor {
     }
 
     fn cancel_switch(&mut self) {
-        self.clear_recall_confirmation();
+        if let Some(log) = self
+            .recall_confirmation
+            .as_ref()
+            .and_then(|pending| pending.log.as_ref())
+        {
+            log.button(Disposition::Cancelled);
+        }
+        self.dismiss_recall_confirmation(Reason::Cancelled);
         self.message = Some(Ok("Kept the playing tone.".into()));
     }
 
     fn take_recall_confirmation(
         &mut self,
         device: &detection::DeviceKey,
-    ) -> Option<RecallConfirmation> {
-        let (attachment, confirmation) = self.recall_confirmation.take()?;
+    ) -> Option<(RecallConfirmation, Option<RecallLog>)> {
+        let PendingRecall {
+            device: attachment,
+            confirmation,
+            log,
+        } = self.recall_confirmation.take()?;
+        if let Some(log) = &log {
+            log.button(Disposition::Accepted);
+        }
         if attachment == *device
             && !self.stage_only
             && !self.has_pending()
@@ -1430,8 +1677,22 @@ impl LiveEditor {
                 .as_ref()
                 .is_some_and(|active| confirmation.matches_playing(&active.current))
         {
-            Some(confirmation)
+            if let Some(log) = &log {
+                log.sync(
+                    Some(confirmation.playing().channel),
+                    Reason::Confirmed,
+                    Evidence::VerifiedPlaying,
+                );
+            }
+            Some((confirmation, log))
         } else {
+            if let Some(log) = log {
+                log.sync(
+                    Some(confirmation.playing().channel),
+                    Reason::Expired,
+                    Evidence::VerifiedPlaying,
+                );
+            }
             self.message = Some(Err(
                 "The recall choice expired. Select the channel again.".into()
             ));
@@ -1445,13 +1706,14 @@ impl LiveEditor {
         device: &detection::DeviceKey,
         idle: bool,
     ) {
-        let Some((attachment, confirmation)) = &self.recall_confirmation else {
+        let Some(pending) = &self.recall_confirmation else {
             return;
         };
-        if attachment != device || self.stage_only || self.has_pending() {
+        if pending.device != *device || self.stage_only || self.has_pending() {
             self.clear_recall_confirmation();
             return;
         }
+        let confirmation = &pending.confirmation;
         let target = confirmation.target();
         ui.label(format!(
             "The playing tone differs from the saved tone read from {}. Switch to {} and leave the playing tone behind?",
@@ -1478,7 +1740,7 @@ impl LiveEditor {
                     egui::Button::new(format!("Switch to {} and discard changes", target.label())),
                 )
                 .clicked()
-                && let Some(confirmation) = self.take_recall_confirmation(device)
+                && let Some((confirmation, log)) = self.take_recall_confirmation(device)
             {
                 self.start_job(
                     Action::Recall(target),
@@ -1486,6 +1748,7 @@ impl LiveEditor {
                     ui.ctx(),
                     Some(RecallAuthorization::Confirmed(confirmation)),
                     None,
+                    log,
                 );
             }
         });
@@ -1494,6 +1757,7 @@ impl LiveEditor {
     pub(super) fn set_live(&mut self, on: bool) {
         if !on {
             self.clear_recall_confirmation();
+            self.pending.stop_logging(Disposition::Cancelled);
             if let Some(worker) = &self.worker
                 && matches!(worker.action, Action::ReplayDraft(_))
             {
@@ -1563,12 +1827,47 @@ impl LiveEditor {
                 .is_none_or(|worker| worker.action == Action::Controls)
     }
 
-    pub(super) fn queue_stage_target(&mut self, target: LiveTarget, ctx: &egui::Context) {
+    pub(super) fn queue_stage_target(
+        &mut self,
+        target: LiveTarget,
+        shown: Option<&EditBuffer>,
+        ctx: &egui::Context,
+    ) {
         if self.stage_editable() {
             self.clear_recall_confirmation();
+            if !self.stage_only && !self.pending.targets.contains(&target) {
+                self.log_stage_target(target, shown);
+            }
             self.pending.set(target);
             ctx.request_repaint();
         }
+    }
+
+    fn log_stage_target(&mut self, target: LiveTarget, shown: Option<&EditBuffer>) {
+        let active = self.session.as_ref().expect("stage has a playing buffer");
+        let control = target.control();
+        let in_flight = self
+            .worker
+            .as_ref()
+            .map_or(&[][..], |worker| worker.targets.as_slice());
+        let old = self.pending.overlay(
+            in_flight,
+            control,
+            control.read(shown.unwrap_or(&active.current.tone)),
+        );
+        let new = match target {
+            LiveTarget::Basic(_, Target::Value(value)) => u16::from(value.get()),
+            LiveTarget::Additional(_, value) => value,
+            _ => return,
+        };
+        if self.pending.log.is_none() {
+            self.pending.log = Some(ControlBatch::new(self.log_operation()));
+        }
+        self.pending
+            .log
+            .as_mut()
+            .expect("control log batch")
+            .queue(ControlChange { control, old, new });
     }
 
     pub(super) fn stage_payload(&self, dump: &EditBuffer) -> Option<[u8; 160]> {
@@ -1577,7 +1876,7 @@ impl LiveEditor {
             .worker
             .as_ref()
             .map_or(&[][..], |worker| worker.targets.as_slice());
-        for &target in in_flight.iter().chain(&self.pending.0) {
+        for &target in in_flight.iter().chain(&self.pending.targets) {
             let control = target.control();
             let value = match target {
                 LiveTarget::Basic(_, Target::Value(value)) => u16::from(value.get()),
@@ -1595,7 +1894,7 @@ impl LiveEditor {
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        !self.pending.0.is_empty()
+        !self.pending.targets.is_empty()
     }
 
     pub(super) fn toolbar(
@@ -1764,7 +2063,7 @@ impl LiveEditor {
                 .add_enabled(
                     idle && backup.is_some()
                         && !self.needs_get
-                        && self.pending.0.is_empty()
+                        && self.pending.targets.is_empty()
                         && Self::admitted(Action::ResendWholeTone),
                     egui::Button::new(Action::ResendWholeTone.label()),
                 )
