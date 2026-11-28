@@ -36,16 +36,44 @@ to verify that Follow preserves it.
    library keeps its offline selection and saved tone settings. Save any
    edits you want to keep, then use **Download from guitar…** again. Confirm
    **Downloaded on this connection** and repeat steps 1 and 2 with this download.
-6. With Follow on, run Device Check. Check that it can use the rig and
-   that Follow resumes after the operation gives the interface back. In
-   separate builds approved for live editing and stores, check the same
-   handoff for those operations. An unknown store outcome must leave
-   Follow stopped.
+6. With Follow on, run Device Check, download the guitar library, and
+   perform an ordinary PODxt read. During each handoff, the Follow strip
+   keeps the last observed values, and a longer hold shows a pause notice.
+   The lower editor should stay in place. When the operation releases
+   the rig, move the selector and both knobs again and check that the
+   editor and live percentages resume tracking. In separate builds approved
+   for live editing and stores, check the same handoff for those operations.
+   An unknown store outcome must leave Follow stopped.
 7. With Follow on, close the Variax tab. **Refresh guitar** on the PODxt tab
    should be able to use the rig.
 
 Follow opens the verified attachment for a G3 read session. It sends no
 preset changes, preset edits or store commands.
+
+## Linux shared rig lease
+
+Variax Follow reads USB interface 1. PODxt physical channel notices use
+ALSA raw MIDI on interface 0 and need the same exclusive rig lease.
+Simultaneous tracking remains pending. Record which listener is active if
+guitar tracking waits or PODxt channel movement is missed. The
+[roadmap](../../../../docs/roadmap.md) records the transport dependency.
+
+## Workbench 1.75 selection behavior
+
+- **Guitar to editor.** Static inspection of `L6VariaxPatchManager.OnPC`
+  and `OnSysex` shows both program notification paths reach the same
+  bank/position filter. `PCFilterThread` waits 300 ms for a synchronized
+  destination or 1 s for an unsynchronized one. The tone controller uses
+  a separate 250 ms post-program settling check. Linux Follow uses the
+  short program and CC messages observed on the guitar interface.
+  The original wrapped handler is static reference evidence. Its use on
+  the Linux guitar interface remains unverified.
+- **Editor to guitar.** Workbench uses `L6VariaxEditor.SetCurrentPatch`
+  for bank/position controls. `SendEditBufferOrPC` recalls a synchronized
+  stored slot by program change or loads the unsynchronized model into
+  the working buffer. That direction belongs to [#204](https://github.com/guirossibrum/VariaxWorkbench/issues/204).
+  The [#275](https://github.com/guirossibrum/VariaxWorkbench/issues/275)
+  Follow path only observes and displays guitar-side changes.
 
 ## Tuning override evidence
 
