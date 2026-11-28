@@ -405,6 +405,63 @@ fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
 }
 
 #[test]
+fn live_sidebar_protects_unsaved_tone_after_an_unobserved_device_save() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = current_fixture(&ctx);
+    let source = Location::tone_from_label("32D").unwrap();
+    let target = Location::tone_from_label("1B").unwrap();
+    let cached_source = valid_dump("Before recall");
+    let panel = &mut app.podxt_mut().live;
+    panel
+        .snapshot
+        .library
+        .insert(source.address(), cached_source.clone());
+    let downloaded = panel.snapshot.library.clone();
+    assert_eq!(downloaded.len(), 128);
+
+    // The user has since saved a different Drive value on the POD and
+    // adjusted the live knob back to the downloaded value. The complete
+    // snapshot and a fresh current-buffer read both agree with the old value.
+    let playing = podxt::EditorBuffer {
+        channel: source,
+        tone: cached_source.clone(),
+        packs: Packs(4),
+    };
+    panel.update_playing(playing.clone());
+    panel.editor.accept_follow(playing);
+    assert!(panel.editor.recall_ready());
+    panel.startup = None;
+    panel.live_editing = true;
+    panel.editor.set_live(true);
+    panel.editor.use_fake_recall_with_changed_source();
+    let requests = panel.device_requests;
+    click_text(&ctx, &mut app, "1B  Saved Channel");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.podxt().live.editor.busy() {
+        assert!(
+            Instant::now() < deadline,
+            "fake channel recall did not finish"
+        );
+        std::thread::yield_now();
+        render_stage(&ctx, &mut app, vec![]);
+    }
+
+    let panel = &app.podxt().live;
+    assert_eq!(panel.device_requests, requests + 1);
+    assert!(panel.editor.awaiting_recall_confirmation());
+    assert_eq!(panel.playing_channel(), Some(source));
+    assert_eq!(panel.snapshot.tone.as_ref(), Some(&cached_source));
+    assert_eq!(panel.snapshot.library, downloaded);
+    assert_eq!(panel.stored_tone(target).unwrap().name(), "Saved Channel");
+    rendered(
+        &ctx,
+        &mut app,
+        &["No channel switch was sent.", "Discard and recall 1B"],
+    );
+}
+
+#[test]
 fn offline_startup_imports_full_backup_and_browses_only_channels_in_stage() {
     let ctx = egui::Context::default();
     let directory = tempfile::tempdir().unwrap();

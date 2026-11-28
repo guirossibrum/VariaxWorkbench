@@ -64,14 +64,20 @@ pub(super) fn fake_get(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, Stri
     result
 }
 
-pub(super) fn fake_recall(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, String> {
+#[derive(Clone, Copy)]
+pub(super) enum FakeRecall {
+    Clean,
+    ChangedSource,
+}
+
+pub(super) fn fake_recall(
+    scenario: FakeRecall,
+    job: &Job,
+    stop: &AtomicBool,
+) -> Result<EditOutcome, String> {
     let Action::Recall(target) = job.action else {
         unreachable!("the fixture only handles recall");
     };
-    assert!(
-        job.current.is_none(),
-        "initial recall must work without a verified buffer"
-    );
     let before = Location::tone_from_label("32D").unwrap();
     let channel = |slot: Location| {
         let index = slot.index() as u8;
@@ -97,7 +103,49 @@ pub(super) fn fake_recall(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, S
         PodxtRequest::EditBuffer,
         super::super::tests::valid_dump("Before recall").raw,
     );
+    let packs = (
+        PodxtRequest::InstalledPacks,
+        vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7],
+    );
+    let mut saved_source = before_tone.1.clone();
     let after = super::super::tests::valid_dump("Recalled tone").raw;
+    let writes_after_source = match scenario {
+        FakeRecall::Clean => {
+            assert!(
+                job.current.is_none(),
+                "initial recall must work without a verified buffer"
+            );
+            vec![
+                (PodxtRequest::Stored(target), after.clone()),
+                packs,
+                before_tone.clone(),
+                channel(before),
+                (PodxtRequest::Program(target), Vec::new()),
+                (PodxtRequest::EditBuffer, after),
+                channel(target),
+            ]
+        }
+        FakeRecall::ChangedSource => {
+            let current = job.current.as_ref().expect("verified playing buffer");
+            assert_eq!(current.channel, before);
+            assert_eq!(current.tone.raw, before_tone.1);
+            saved_source[39 + usize::from(Control::Drive.cc())] = 77;
+            vec![packs, channel(before)]
+        }
+    };
+    let expected_writes = 4 + writes_after_source.len();
+    let script = [
+        (
+            PodxtRequest::Identity,
+            variax_workbench::identity_stage::bridge_reply(),
+        ),
+        channel(before),
+        before_tone,
+        (PodxtRequest::Stored(before), saved_source),
+    ]
+    .into_iter()
+    .chain(writes_after_source)
+    .collect();
     let held = Cell::new(false);
     let writes = Cell::new(0);
     let result = edit_transaction(
@@ -110,33 +158,14 @@ pub(super) fn fake_recall(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, S
         |_, run| {
             run(&mut FakeLink {
                 held: &held,
-                script: [
-                    (
-                        PodxtRequest::Identity,
-                        variax_workbench::identity_stage::bridge_reply(),
-                    ),
-                    channel(before),
-                    before_tone.clone(),
-                    (PodxtRequest::Stored(before), before_tone.1.clone()),
-                    (PodxtRequest::Stored(target), after.clone()),
-                    (
-                        PodxtRequest::InstalledPacks,
-                        vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7],
-                    ),
-                    before_tone,
-                    channel(before),
-                    (PodxtRequest::Program(target), Vec::new()),
-                    (PodxtRequest::EditBuffer, after),
-                    channel(target),
-                ]
-                .into(),
+                script,
                 reply: None,
                 time: &Cell::new(Duration::ZERO),
                 writes: &writes,
             })
         },
     );
-    assert_eq!(writes.get(), 11);
+    assert_eq!(writes.get(), expected_writes);
     assert!(!held.get());
     result
 }
