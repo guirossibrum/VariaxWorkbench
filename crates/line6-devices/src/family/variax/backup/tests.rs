@@ -69,6 +69,16 @@ pub(super) fn blocks(script: &mut Script, data: &[u8; 192]) {
     ]);
 }
 
+const VARIAX_600_310: [u8; 17] = {
+    let mut reply = VARIAX_600;
+    let [major, minor, patch, build] = *b"0310";
+    reply[12] = major;
+    reply[13] = minor;
+    reply[14] = patch;
+    reply[15] = build;
+    reply
+};
+
 pub(super) fn start(original: u8) -> Script {
     let mut script = vec![
         (IDENTITY.into(), packets(&VARIAX_600)),
@@ -125,7 +135,7 @@ fn whole_sweep(original: u8, duplicate: bool) -> Script {
 fn run(
     script: Script,
     fail_at: Vec<usize>,
-    cancelled: impl FnMut() -> bool,
+    cancelled: impl Fn() -> bool,
     progress: impl FnMut(Preset),
 ) -> Result<RefreshedLibrary, RefreshError> {
     let mut quiet = Quiet;
@@ -137,17 +147,22 @@ fn run(
     result
 }
 
+fn refresh_identity(mut script: Script) -> Script {
+    script[0].1 = packets(&VARIAX_600_310);
+    script
+}
+
 #[test]
 fn refresh_returns_all_sixty_settings_and_twelve_bank_names_in_backup_order() {
     let mut progress = Vec::new();
     let capture = run(
-        whole_sweep(85, false),
+        refresh_identity(whole_sweep(85, false)),
         vec![],
         || false,
         |preset| progress.push(preset),
     )
     .unwrap();
-    assert_eq!(capture.identified.reply, VARIAX_600);
+    assert_eq!(capture.identified.reply, VARIAX_600_310);
     assert_eq!(capture.library.original.unwrap().raw, metadata(85));
     assert_eq!(progress, Preset::all().collect::<Vec<_>>());
     assert_eq!(capture.library.presets.len(), 60);
@@ -169,6 +184,31 @@ fn refresh_returns_all_sixty_settings_and_twelve_bank_names_in_backup_order() {
         }
     );
     assert!(capture.release_error.is_none());
+}
+
+#[test]
+fn refresh_retries_silent_identity_before_selecting_any_preset() {
+    let mut script = refresh_identity(whole_sweep(85, false));
+    script.insert(0, (IDENTITY.into(), vec![]));
+    let capture = run(script, vec![], || false, |_| {}).unwrap();
+    assert_eq!(capture.identified.requests, 2);
+    assert_eq!(capture.library.presets.len(), 60);
+}
+
+#[test]
+fn refresh_stops_after_two_silent_requests_without_selecting_a_preset() {
+    let script = vec![(IDENTITY.into(), vec![]); 2];
+    let result = run(script, vec![], || false, |_| panic!("unexpected progress"));
+    assert!(matches!(result, Err(RefreshError::Read(error))
+        if error.contains("Guitar sync identity: No reply after two requests.")));
+}
+
+#[test]
+fn refresh_does_not_retry_a_reply_from_unsupported_firmware() {
+    let script = vec![(IDENTITY.into(), packets(&VARIAX_600))];
+    let result = run(script, vec![], || false, |_| panic!("unexpected progress"));
+    assert!(matches!(result, Err(RefreshError::Read(error))
+        if error.contains("Guitar sync identity: Expected Variax 300/600")));
 }
 
 #[test]
@@ -212,7 +252,7 @@ fn a_damaged_metadata_block_retries_without_reselecting_and_the_backup_completes
 
 #[test]
 fn cancel_between_presets_attempts_switch_back_and_withholds_partial_library() {
-    let mut script = start(4);
+    let mut script = refresh_identity(start(4));
     select(&mut script, 4, 4);
     select(&mut script, 3, 3);
     select(&mut script, 4, 4);
@@ -245,7 +285,7 @@ fn cancel_between_presets_attempts_switch_back_and_withholds_partial_library() {
 
 #[test]
 fn a_failed_bank_name_read_stops_the_sweep_and_reselects_the_original() {
-    let mut script = start(4);
+    let mut script = refresh_identity(start(4));
     for program in (0..=4).rev() {
         select(&mut script, program, program);
     }
@@ -273,7 +313,13 @@ fn a_failed_bank_name_read_stops_the_sweep_and_reselects_the_original() {
 
 #[test]
 fn ambiguous_original_yields_complete_data_without_an_automatic_switch() {
-    let capture = run(whole_sweep(4, true), vec![], || false, |_| {}).unwrap();
+    let capture = run(
+        refresh_identity(whole_sweep(4, true)),
+        vec![],
+        || false,
+        |_| {},
+    )
+    .unwrap();
     assert_eq!(capture.library.presets.len(), 60);
     assert_eq!(capture.library.bank_names.len(), 12);
     assert_eq!(capture.restore, Restore::NoUniqueMatch { matches: 2 });
@@ -281,7 +327,7 @@ fn ambiguous_original_yields_complete_data_without_an_automatic_switch() {
 
 #[test]
 fn complete_data_retains_the_bridge_release_failure() {
-    let script = whole_sweep(4, false);
+    let script = refresh_identity(whole_sweep(4, false));
     let release_at = script.len() - 1;
     let capture = run(script, vec![release_at], || false, |_| {}).unwrap();
     assert_eq!(capture.library.presets.len(), 60);

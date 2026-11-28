@@ -395,7 +395,8 @@ impl std::error::Error for RefreshError {}
 
 /// Capture all 60 preset settings and 12 bank names without saving files.
 /// Acquire the rig lock before opening the link and hold it through cleanup.
-/// Progress reports a preset after both metadata replies have decoded.
+/// The identification stage retries complete silence once before selecting
+/// a preset. Progress reports a preset after both metadata replies decode.
 /// Cancellation is checked between requests for presets and bank names. On
 /// cancellation or read failure, the backup sweep still attempts to reselect
 /// a unique match for the original preset. Only complete data reaches the editor.
@@ -405,7 +406,7 @@ impl std::error::Error for RefreshError {}
 pub fn refresh_library<L: Link>(
     _rig: &DeviceLock,
     session: &mut Session<L>,
-    cancelled: impl FnMut() -> bool,
+    cancelled: impl Fn() -> bool,
     progress: impl FnMut(variax::Preset),
 ) -> Result<RefreshedLibrary, RefreshError> {
     refresh_on(session, cancelled, progress)
@@ -413,7 +414,7 @@ pub fn refresh_library<L: Link>(
 
 fn refresh_on<L: Link>(
     session: &mut Session<L>,
-    cancelled: impl FnMut() -> bool,
+    cancelled: impl Fn() -> bool,
     mut progress: impl FnMut(variax::Preset),
 ) -> Result<RefreshedLibrary, RefreshError> {
     for operation in [
@@ -429,8 +430,27 @@ fn refresh_on<L: Link>(
             )));
         }
     }
-    let read = variax::sweep_library(session, cancelled, |stored| progress(stored.preset))
-        .map_err(RefreshError::Read)?;
+    let identified = variax::identify_exchange(
+        session,
+        Some(variax::procedures::IDENTITY_RETRY_DELAY),
+        true,
+        Some(&cancelled),
+    )
+    .and_then(|reply| reply.ok_or_else(|| "No reply after two requests.".into()))
+    .and_then(|identified| {
+        variax::procedures::check_identity(&identified.identity)?;
+        Ok(identified)
+    })
+    .map_err(|error| RefreshError::Read(format!("Guitar sync identity: {error}")))?;
+    let read = variax::sweep_identified_library(
+        session,
+        identified,
+        cancelled,
+        |stored| progress(stored.preset),
+        None,
+        None,
+    )
+    .map_err(|error| RefreshError::Read(format!("Guitar sync preparation: {error}")))?;
     if let Some(reason) = read.stopped {
         return Err(RefreshError::Incomplete {
             reason,

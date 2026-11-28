@@ -741,15 +741,33 @@ struct KnownStart<'a> {
 fn sweep_library_from<L: Link>(
     session: &mut Session<L>,
     mut cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&StoredPreset),
+    programs: Option<&mut backup::ProgramCaptures>,
+    known_start: Option<KnownStart<'_>>,
+) -> Result<Library, String> {
+    if cancelled() {
+        return Err("Variax library read cancelled.".into());
+    }
+    let identified = identify_variax(session)?;
+    sweep_identified_library(
+        session,
+        identified,
+        cancelled,
+        progress,
+        programs,
+        known_start,
+    )
+}
+
+fn sweep_identified_library<L: Link>(
+    session: &mut Session<L>,
+    identified: Identified,
+    mut cancelled: impl FnMut() -> bool,
     mut progress: impl FnMut(&StoredPreset),
     mut programs: Option<&mut backup::ProgramCaptures>,
     known_start: Option<KnownStart<'_>>,
 ) -> Result<Library, String> {
     const CANCELLED: &str = "Variax library read cancelled.";
-    if cancelled() {
-        return Err(CANCELLED.into());
-    }
-    let identified = identify_variax(session)?;
     if known_start
         .as_ref()
         .is_some_and(|start| identified.identity != *start.guitar)
@@ -772,7 +790,8 @@ fn sweep_library_from<L: Link>(
             }
         }
         in_session(session, |session| {
-            let (original_replies, original) = read_metadata(session)?;
+            let (original_replies, original) = read_metadata(session)
+                .map_err(|error| format!("Could not read the starting guitar model: {error}"))?;
             if known_start
                 .as_ref()
                 .is_some_and(|start| !same_preset(&original, start.stored_metadata))

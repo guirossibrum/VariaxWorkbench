@@ -61,7 +61,7 @@ pub use save_identity::{
     identify_after_save_preflight_reopen, identify_for_save_preflight,
 };
 
-const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
+pub(super) const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 pub const SILENT_STORE_WAIT: Duration = Duration::from_secs(120);
 const CHUNK_WORDS: u16 = 32;
 pub const CHUNK_COUNT: usize = BUFFER_WORDS.div_ceil(CHUNK_WORDS) as usize;
