@@ -110,11 +110,124 @@ pub fn recall_editor_channel<L: Link>(
     let packs = query_packs(session)?;
     check_channel(session, channel)?;
     check_stop(&cancelled)?;
+    select_editor_channel(session, target, &target_stored, packs)
+}
+
+/// The exact playing buffer the user was asked to discard, and its intended destination.
+#[derive(Clone, Debug)]
+pub struct RecallConfirmation {
+    target: Location,
+    playing: EditorBuffer,
+}
+
+impl RecallConfirmation {
+    pub fn target(&self) -> Location {
+        self.target
+    }
+
+    pub fn playing(&self) -> &EditorBuffer {
+        &self.playing
+    }
+
+    pub fn matches_playing(&self, buffer: &EditorBuffer) -> bool {
+        self.playing.channel == buffer.channel && self.playing.tone == buffer.tone
+    }
+}
+
+#[derive(Debug)]
+pub enum EditorRecall {
+    Playing(EditorBuffer),
+    ConfirmationRequired(RecallConfirmation),
+    ConfirmationExpired(EditorBuffer),
+}
+
+/// Workbench Live recall. Only an exact, freshly re-read buffer can use a
+/// discard confirmation. Rig Check uses the separate strict entry point above.
+pub fn recall_live_channel<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    confirmation: Option<&RecallConfirmation>,
+    cancelled: impl Fn() -> bool,
+) -> Result<EditorRecall, String> {
+    if target.kind() != BankKind::Tones || !session.allows(Operation::PodxtChannelSwitch) {
+        return Err("PODxt tone-channel recall is unavailable.".into());
+    }
+    open_editor(session, &cancelled)?;
+    let channel = playing_channel(session)?;
+    check_stop(&cancelled)?;
+    let tone = editor_tone(session)?;
+    check_stop(&cancelled)?;
+    let expired = confirmation.is_some_and(|consent| {
+        consent.target != target
+            || consent.playing.channel != channel
+            || consent.playing.tone != tone
+    });
+    let saved_playing = if channel != target && confirmation.is_none() {
+        let stored = read_stored(session, channel)?;
+        validate_editor_tone(&stored)?;
+        Some(stored)
+    } else {
+        None
+    };
+    let differs_from_saved = |tone: &EditBuffer| {
+        saved_playing
+            .as_ref()
+            .is_some_and(|saved| !saved.same_tone(tone) || saved.raw[23..39] != tone.raw[23..39])
+    };
+    let needs_confirmation = differs_from_saved(&tone);
+    check_stop(&cancelled)?;
+    let target_stored = if channel != target && !expired && !needs_confirmation {
+        let stored = read_stored(session, target)?;
+        validate_editor_tone(&stored)?;
+        check_stop(&cancelled)?;
+        Some(stored)
+    } else {
+        None
+    };
+    let packs = query_packs(session)?;
+    check_stop(&cancelled)?;
+    // Recheck after the addressed target read, immediately before the final
+    // channel check. Any intervening edit requires a new decision.
+    let playing = EditorBuffer {
+        channel,
+        tone: if target_stored.is_some() {
+            editor_tone(session)?
+        } else {
+            tone
+        },
+        packs,
+    };
+    check_channel(session, channel)?;
+    check_stop(&cancelled)?;
+
+    if expired || confirmation.is_some_and(|consent| !consent.matches_playing(&playing)) {
+        return Ok(EditorRecall::ConfirmationExpired(playing));
+    }
+    if differs_from_saved(&playing.tone) {
+        return Ok(EditorRecall::ConfirmationRequired(RecallConfirmation {
+            target,
+            playing,
+        }));
+    }
+    let Some(target_stored) = target_stored else {
+        return Ok(EditorRecall::Playing(playing));
+    };
+    select_editor_channel(session, target, &target_stored, packs)
+        .map(EditorRecall::Playing)
+        .map_err(|error| format!("The channel switch could not be verified. {error}"))
+}
+
+fn select_editor_channel<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    target_stored: &EditBuffer,
+    packs: Packs,
+) -> Result<EditorBuffer, String> {
     session.send(PodxtRequest::Program(target))?;
     session.link.pause(CHANNEL_LOAD);
     session.listen(Duration::from_millis(50))?;
     let tone = read_after_write(session, target)?;
-    if !tone.same_tone(&target_stored) {
+    if !tone.same_tone(target_stored) {
         return Err(
             "The selected channel differs from the saved tone. Refresh the current tone.".into(),
         );

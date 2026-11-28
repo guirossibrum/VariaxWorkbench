@@ -84,6 +84,7 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         )
     };
     let job = Job {
+        recall_confirmation: None,
         reply_pending: Arc::default(),
         action: Action::Controls,
         whole_tone_backup: None,
@@ -127,6 +128,9 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         },
     )
     .unwrap();
+    let EditOutcome::Buffer(result) = result else {
+        panic!("expected edited buffer")
+    };
     assert_eq!(result.tone, after.tone);
     assert_eq!(writes.get(), 7);
     assert!(!held.get());
@@ -188,7 +192,7 @@ fn the_whole_tone_resend_has_its_own_closed_owner_gate() {
 }
 
 #[test]
-fn stage_get_recovers_but_recall_keeps_its_original_read_and_selection_count() {
+fn stage_get_recovers_and_recall_sends_one_selection_after_final_read() {
     use super::super::tests::read_recovery::{TimedLink, identity_reply};
 
     let before = sample(20, 17);
@@ -236,18 +240,20 @@ fn stage_get_recovers_but_recall_keeps_its_original_read_and_selection_count() {
                     vec![(1, target.tone.raw.clone())],
                 ),
                 packs,
+                (PodxtRequest::EditBuffer, vec![(1, before.tone.raw.clone())]),
                 channel(1),
                 (PodxtRequest::Program(target.channel), vec![]),
                 (PodxtRequest::EditBuffer, vec![(1, target.tone.raw.clone())]),
                 channel(2),
             ],
-            10,
+            11,
             &target,
         ),
     ] {
         let writes = Cell::new(0);
         let result = edit_transaction(
             &Job {
+                recall_confirmation: None,
                 reply_pending: Arc::clone(&pending),
                 action,
                 whole_tone_backup: None,
@@ -276,6 +282,11 @@ fn stage_get_recovers_but_recall_keeps_its_original_read_and_selection_count() {
         assert_eq!(writes.get(), count);
         assert!(!held.get());
         assert!(!pending.load(Ordering::Acquire));
+        let (EditOutcome::Buffer(result) | EditOutcome::Recall(EditorRecall::Playing(result))) =
+            result
+        else {
+            panic!("expected a verified playing buffer");
+        };
         assert_eq!(result.channel, expected.channel);
         assert_eq!(result.packs, expected.packs);
         assert_eq!(result.tone, expected.tone);
@@ -290,6 +301,7 @@ pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked
     for action in [Action::Recall(target), Action::Controls] {
         let result = edit_transaction(
             &Job {
+                recall_confirmation: None,
                 reply_pending: Arc::clone(pending),
                 action,
                 whole_tone_backup: None,
@@ -303,4 +315,211 @@ pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked
         );
         assert_eq!(result.unwrap_err(), PENDING_REPLY);
     }
+}
+
+fn refusal(
+    playing: &EditorBuffer,
+    target: Location,
+    release_ok: bool,
+) -> Result<EditOutcome, String> {
+    use super::super::tests::read_recovery::{TimedLink, identity_reply};
+
+    let held = Cell::new(false);
+    let writes = Cell::new(0);
+    let stop = AtomicBool::new(false);
+    let channel = (
+        PodxtRequest::QueryGlobal(Global::CurrentChannel),
+        vec![(1, vec![0xf0, 0, 1, 0x0c, 3, 0x56, 17, 0, 0, 1, 1, 0xf7])],
+    );
+    let saved = sample(20, 17);
+    let result = edit_transaction(
+        &Job {
+            recall_confirmation: None,
+            reply_pending: Arc::default(),
+            action: Action::Recall(target),
+            whole_tone_backup: None,
+            current: None,
+            original: None,
+            targets: Vec::new(),
+        },
+        &stop,
+        || {
+            assert!(!held.replace(true));
+            Ok(FakeLock(&held))
+        },
+        |_, run| {
+            let result = run(&mut TimedLink {
+                held: &held,
+                writes: &writes,
+                script: VecDeque::from([
+                    identity_reply(),
+                    channel.clone(),
+                    (
+                        PodxtRequest::EditBuffer,
+                        vec![(1, playing.tone.raw.clone())],
+                    ),
+                    (
+                        PodxtRequest::Stored(saved.channel),
+                        vec![(1, saved.tone.raw)],
+                    ),
+                    (
+                        PodxtRequest::InstalledPacks,
+                        vec![(1, vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7])],
+                    ),
+                    channel,
+                ]),
+                queue: Vec::new(),
+                now: Duration::ZERO,
+                stop: &stop,
+                stop_at: Duration::MAX,
+            });
+            assert!(held.get(), "release must remain covered by the rig lock");
+            if release_ok {
+                result
+            } else {
+                Err("USB release failed.".into())
+            }
+        },
+    );
+    assert!(!held.get());
+    assert_eq!(writes.get(), 6);
+    result
+}
+
+#[test]
+fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = super::super::tests::connected_fixture(&ctx);
+    let panel = &mut app.podxt_mut().live;
+    let device = panel.device.clone().unwrap();
+    let editor = &mut panel.editor;
+    let playing = sample(44, 17);
+    let target = Location::tone_from_label("1B").unwrap();
+
+    editor.completed(Action::Get, Ok(sample(20, 17)));
+    editor.set_live(true);
+    for stopped in [false, true] {
+        let observed = editor
+            .complete_job(
+                Action::Recall(target),
+                &device,
+                stopped,
+                refusal(&playing, target, true),
+            )
+            .unwrap();
+        assert_eq!(observed.tone, playing.tone);
+        assert!(editor.recall_ready());
+        assert!(!editor.needs_refresh());
+        assert_eq!(editor.awaiting_recall_confirmation(), !stopped);
+        if !stopped {
+            editor.keep_playing();
+        }
+        assert!(editor.take_recall_confirmation(&device).is_none());
+        assert!(!editor.busy());
+    }
+
+    panel.editor.complete_job(
+        Action::Recall(target),
+        &device,
+        false,
+        refusal(&playing, target, true),
+    );
+    panel.live_editing = true;
+    panel.startup = None;
+    let text = super::super::tests::stage_frame(&ctx, &mut app);
+    assert!(text.contains("Keep playing tone"), "{text}");
+    assert!(text.contains("Discard and recall 1B"), "{text}");
+    assert!(!text.contains("Refresh playing tone"), "{text}");
+}
+
+#[test]
+fn recall_choice_expires_with_attachment_mode_or_staged_edits() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = super::super::tests::connected_fixture(&ctx);
+    let panel = &mut app.podxt_mut().live;
+    let device = panel.device.clone().unwrap();
+    let mut replacement = device.clone();
+    replacement.attachment.path.push_str(".1");
+    let editor = &mut panel.editor;
+    let playing = sample(44, 17);
+    let target = Location::tone_from_label("1B").unwrap();
+
+    editor.set_live(true);
+    editor.complete_job(
+        Action::Recall(target),
+        &device,
+        false,
+        refusal(&playing, target, true),
+    );
+    assert_eq!(
+        editor.take_recall_confirmation(&device).unwrap().target(),
+        target
+    );
+    assert!(editor.take_recall_confirmation(&device).is_none());
+
+    editor.complete_job(
+        Action::Recall(target),
+        &device,
+        false,
+        refusal(&playing, target, true),
+    );
+    assert!(editor.take_recall_confirmation(&replacement).is_none());
+
+    editor.complete_job(
+        Action::Recall(target),
+        &device,
+        false,
+        refusal(&playing, target, true),
+    );
+    editor.set_live(false);
+    assert!(editor.take_recall_confirmation(&device).is_none());
+
+    editor.set_live(true);
+    editor.complete_job(
+        Action::Recall(target),
+        &device,
+        false,
+        refusal(&playing, target, true),
+    );
+    editor.pending.set(drive(55));
+    assert!(editor.take_recall_confirmation(&device).is_none());
+    editor.recall(target, &device, &ctx);
+    assert_eq!(editor.pending.0, [drive(55)]);
+    assert!(editor.worker.is_none());
+}
+
+#[test]
+fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = super::super::tests::connected_fixture(&ctx);
+    let panel = &mut app.podxt_mut().live;
+    let device = panel.device.clone().unwrap();
+    let editor = &mut panel.editor;
+    let playing = sample(44, 17);
+    let target = Location::tone_from_label("1B").unwrap();
+    editor.set_live(true);
+    for failure in [
+        refusal(&playing, target, false),
+        Err("The channel switch could not be verified.".into()),
+    ] {
+        editor.completed(Action::Get, Ok(playing.clone()));
+        editor.pending.set(drive(55));
+        assert!(
+            editor
+                .complete_job(Action::Recall(target), &device, false, failure)
+                .is_none()
+        );
+        assert!(editor.needs_refresh());
+        assert!(!editor.recall_ready());
+        assert!(!editor.stage_editable());
+        assert!(!editor.awaiting_recall_confirmation());
+        assert_eq!(editor.pending.0, [drive(55)]);
+    }
+
+    panel.editor.discard_staged();
+    panel.live_editing = true;
+    panel.startup = None;
+    let text = super::super::tests::stage_frame(&ctx, &mut app);
+    assert!(text.contains("Refresh playing tone"), "{text}");
+    assert!(!text.contains("Discard and recall"), "{text}");
 }

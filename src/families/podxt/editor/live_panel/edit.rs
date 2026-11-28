@@ -1,5 +1,7 @@
 use super::*;
-use podxt::{EditorBuffer, LiveTarget, Target, VerifiedToneBackup};
+use podxt::{
+    EditorBuffer, EditorRecall, LiveTarget, RecallConfirmation, Target, VerifiedToneBackup,
+};
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use podxt::{EditorEdit, WholeToneSource};
 
@@ -15,6 +17,7 @@ pub(super) struct LiveEditor {
     whole_tone_backup: Option<VerifiedToneBackup>,
     stage_only: bool,
     needs_get: bool,
+    recall_confirmation: Option<(detection::DeviceKey, RecallConfirmation)>,
     last_dispatch: Option<Instant>,
     message: Option<Result<String, String>>,
 }
@@ -29,6 +32,7 @@ impl Default for LiveEditor {
             whole_tone_backup: None,
             stage_only: true,
             needs_get: false,
+            recall_confirmation: None,
             last_dispatch: None,
             message: None,
         }
@@ -91,12 +95,18 @@ impl Action {
     }
 }
 
+#[derive(Debug)]
+enum EditOutcome {
+    Buffer(EditorBuffer),
+    Recall(EditorRecall),
+}
+
 struct EditWorker {
     action: Action,
     device: Option<detection::DeviceKey>,
     stop: Arc<AtomicBool>,
     targets: Vec<LiveTarget>,
-    thread: Option<std::thread::JoinHandle<Result<EditorBuffer, String>>>,
+    thread: Option<std::thread::JoinHandle<Result<EditOutcome, String>>>,
 }
 
 impl Drop for EditWorker {
@@ -153,6 +163,7 @@ impl GatePolicy for ReadBufferPolicy {
 }
 
 struct Job {
+    recall_confirmation: Option<RecallConfirmation>,
     reply_pending: Arc<AtomicBool>,
     action: Action,
     whole_tone_backup: Option<VerifiedToneBackup>,
@@ -166,8 +177,8 @@ fn edit_transaction<'a, G>(
     job: &'a Job,
     stop: &'a AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
-    with_link: impl FnOnce(&G, RunOnLink<'a, EditorBuffer>) -> Result<EditorBuffer, String>,
-) -> Result<EditorBuffer, String> {
+    with_link: impl FnOnce(&G, RunOnLink<'a, EditOutcome>) -> Result<EditOutcome, String>,
+) -> Result<EditOutcome, String> {
     let run = || {
         let stopped = || stop.load(Ordering::Acquire);
         with_session(
@@ -181,10 +192,17 @@ fn edit_transaction<'a, G>(
                     Action::Get => {
                         return track_reply(&job.reply_pending, |outstanding| {
                             podxt::get_editor_buffer_tracking_reply(session, stopped, outstanding)
-                        });
+                        })
+                        .map(EditOutcome::Buffer);
                     }
                     Action::Recall(slot) => {
-                        return podxt::recall_editor_channel(session, slot, stopped);
+                        return podxt::recall_live_channel(
+                            session,
+                            slot,
+                            job.recall_confirmation.as_ref(),
+                            stopped,
+                        )
+                        .map(EditOutcome::Recall);
                     }
                     Action::ResendWholeTone => {
                         return podxt::send_whole_tone(
@@ -195,7 +213,8 @@ fn edit_transaction<'a, G>(
                                 .as_ref()
                                 .ok_or("Verify a backup for the playing channel first.")?,
                             stopped,
-                        );
+                        )
+                        .map(EditOutcome::Buffer);
                     }
                     Action::Controls => EditorEdit::Controls(&job.targets),
                     Action::Send => EditorEdit::Send(&job.targets),
@@ -209,6 +228,7 @@ fn edit_transaction<'a, G>(
                     edit,
                     stopped,
                 )
+                .map(EditOutcome::Buffer)
             },
         )
     };
@@ -234,7 +254,7 @@ fn platform_edit(
     device: &detection::DeviceKey,
     job: &Job,
     stop: &AtomicBool,
-) -> Result<EditorBuffer, String> {
+) -> Result<EditOutcome, String> {
     if job.action == Action::ResendWholeTone && !WHOLE_TONE_SEND_APPROVED {
         return Err("Whole-tone resend awaits owner approval.".into());
     }
@@ -242,8 +262,50 @@ fn platform_edit(
         job,
         stop,
         || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
-        |rig, run| with_platform_link(device, rig, run),
+        |rig, run| {
+            if matches!(job.action, Action::Recall(_)) {
+                with_recall_link(device, rig, stop, run)
+            } else {
+                with_platform_link(device, rig, run)
+            }
+        },
     )
+}
+
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+fn with_recall_link(
+    device: &detection::DeviceKey,
+    rig: &line6_devices::device_lock::DeviceLock,
+    stop: &AtomicBool,
+    run: RunOnLink<'_, EditOutcome>,
+) -> Result<EditOutcome, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use line6_devices::transport::rawmidi::{RawMidiAttachment, ScopedRawMidiLink};
+
+        let (path, address) = device
+            .attachment
+            .usb_location()
+            .ok_or("The verified PODxt Live USB attachment is no longer available.")?;
+        let selected = RawMidiAttachment::select_podxt_live(rig, path, address)?;
+        let mut link = ScopedRawMidiLink::open_attachment_borrowed(&selected, rig, || {
+            stop.load(Ordering::Acquire)
+        })
+        .map_err(|error| error.to_string())?;
+        let result = run(&mut link);
+        match link.finish() {
+            Ok(()) => result,
+            Err(close) => Err(match result {
+                Ok(_) => close.to_string(),
+                Err(error) => format!("{error} Cleanup also failed. {close}"),
+            }),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = stop;
+        with_verified_platform_link(device, rig, run)
+    }
 }
 
 #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
@@ -251,14 +313,16 @@ fn platform_edit(
     _device: &detection::DeviceKey,
     job: &Job,
     _stop: &AtomicBool,
-) -> Result<EditorBuffer, String> {
+) -> Result<EditOutcome, String> {
     let _ = (
         job.action,
         &job.whole_tone_backup,
         &job.current,
         &job.original,
         &job.targets,
+        &job.recall_confirmation,
     );
+    let _ = (EditOutcome::Buffer, EditOutcome::Recall);
     Err("PODxt Live editing is unavailable in this build.".into())
 }
 
@@ -268,6 +332,7 @@ impl LiveEditor {
     }
 
     pub(super) fn cancel(&mut self) {
+        self.clear_recall_confirmation();
         if !self.stage_only {
             self.pending.0.clear();
         }
@@ -318,12 +383,35 @@ impl LiveEditor {
 
     pub(super) fn accept_follow(&mut self, buffer: EditorBuffer) {
         self.whole_tone_backup = None;
+        let expired = self
+            .recall_confirmation
+            .as_ref()
+            .is_some_and(|(_, confirmation)| !confirmation.matches_playing(&buffer));
         self.completed(Action::Get, Ok(buffer));
-        self.message = None;
+        if expired {
+            self.recall_confirmation = None;
+            self.message = Some(Err(
+                "The playing tone changed. Select the channel again.".into()
+            ));
+        } else {
+            self.message = None;
+        }
     }
 
     pub(super) fn recall_ready(&self) -> bool {
         self.session.is_some() && !self.needs_get
+    }
+
+    pub(super) fn needs_refresh(&self) -> bool {
+        !self.recall_ready()
+    }
+
+    pub(super) fn awaiting_recall_confirmation(&self) -> bool {
+        self.recall_confirmation.is_some()
+    }
+
+    fn clear_recall_confirmation(&mut self) {
+        self.recall_confirmation = None;
     }
 
     fn admitted(action: Action) -> bool {
@@ -346,17 +434,30 @@ impl LiveEditor {
     }
 
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
+        self.start_job(action, device, ctx, None);
+    }
+
+    fn start_job(
+        &mut self,
+        action: Action,
+        device: &detection::DeviceKey,
+        ctx: &egui::Context,
+        recall_confirmation: Option<RecallConfirmation>,
+    ) {
         if self.worker.is_some()
             || self.reply_pending.load(Ordering::Acquire)
             || !Self::admitted(action)
             || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
             || action != Action::Get && (self.session.is_none() || self.needs_get)
+            || matches!(action, Action::Recall(_)) && (self.stage_only || self.has_pending())
         {
             return;
         }
+        self.clear_recall_confirmation();
         let targets = match action {
             Action::Send | Action::Controls => std::mem::take(&mut self.pending.0),
-            Action::Get | Action::Undo | Action::ResendWholeTone | Action::Recall(_) => {
+            Action::Recall(_) => Vec::new(),
+            Action::Get | Action::Undo | Action::ResendWholeTone => {
                 self.pending.0.clear();
                 Vec::new()
             }
@@ -365,6 +466,7 @@ impl LiveEditor {
             self.whole_tone_backup = None;
         }
         let job = Job {
+            recall_confirmation,
             reply_pending: Arc::clone(&self.reply_pending),
             action,
             whole_tone_backup: if action == Action::ResendWholeTone {
@@ -437,11 +539,44 @@ impl LiveEditor {
                 Some(&active.current)
             }
             Err(error) => {
-                self.pending.0.clear();
+                if !matches!(action, Action::Recall(_)) {
+                    self.pending.0.clear();
+                }
                 self.needs_get = true;
                 self.message = Some(Err(error));
                 None
             }
+        }
+    }
+
+    fn complete_job(
+        &mut self,
+        action: Action,
+        device: &detection::DeviceKey,
+        stopped: bool,
+        result: Result<EditOutcome, String>,
+    ) -> Option<&EditorBuffer> {
+        match result {
+            Ok(
+                EditOutcome::Buffer(buffer) | EditOutcome::Recall(EditorRecall::Playing(buffer)),
+            ) => self.completed(action, Ok(buffer)),
+            Ok(EditOutcome::Recall(EditorRecall::ConfirmationRequired(confirmation))) => {
+                let playing = confirmation.playing().clone();
+                self.completed(Action::Get, Ok(playing));
+                if !stopped && !self.stage_only && !self.has_pending() {
+                    self.recall_confirmation = Some((device.clone(), confirmation));
+                }
+                self.message = Some(Ok("No channel switch was sent.".into()));
+                self.session.as_ref().map(|active| &active.current)
+            }
+            Ok(EditOutcome::Recall(EditorRecall::ConfirmationExpired(playing))) => {
+                self.completed(Action::Get, Ok(playing));
+                self.message = Some(Err(
+                    "The playing tone changed. Select the channel again.".into()
+                ));
+                self.session.as_ref().map(|active| &active.current)
+            }
+            Err(error) => self.completed(action, Err(error)),
         }
     }
 
@@ -469,7 +604,7 @@ impl LiveEditor {
                 .expect("edit worker")
                 .join()
                 .unwrap_or_else(|_| Err("PODxt Live editor worker stopped unexpectedly.".into()));
-            if device.is_some() && worker.device.as_ref() == device {
+            if let Some(device) = device.filter(|device| worker.device.as_ref() == Some(*device)) {
                 if !self.stage_only && !self.pending.0.is_empty() {
                     ctx.request_repaint();
                 }
@@ -479,7 +614,12 @@ impl LiveEditor {
                     self.message = Some(result.map(|_| String::new()));
                     return None;
                 }
-                return self.completed(worker.action, result);
+                return self.complete_job(
+                    worker.action,
+                    device,
+                    worker.stop.load(Ordering::Acquire),
+                    result,
+                );
             }
         }
         if let Some(device) =
@@ -516,7 +656,73 @@ impl LiveEditor {
         }
     }
 
+    fn keep_playing(&mut self) {
+        self.clear_recall_confirmation();
+        self.message = Some(Ok("Kept the playing tone.".into()));
+    }
+
+    fn take_recall_confirmation(
+        &mut self,
+        device: &detection::DeviceKey,
+    ) -> Option<RecallConfirmation> {
+        let (attachment, confirmation) = self.recall_confirmation.take()?;
+        if attachment == *device
+            && !self.stage_only
+            && !self.has_pending()
+            && self.recall_ready()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|active| confirmation.matches_playing(&active.current))
+        {
+            Some(confirmation)
+        } else {
+            self.message = Some(Err(
+                "The recall choice expired. Select the channel again.".into()
+            ));
+            None
+        }
+    }
+
+    pub(super) fn show_recall_confirmation(
+        &mut self,
+        ui: &mut egui::Ui,
+        device: &detection::DeviceKey,
+        idle: bool,
+    ) {
+        let Some((attachment, confirmation)) = &self.recall_confirmation else {
+            return;
+        };
+        if attachment != device || self.stage_only || self.has_pending() {
+            self.clear_recall_confirmation();
+            return;
+        }
+        let target = confirmation.target();
+        ui.label(format!(
+            "The playing tone differs from saved channel {}. Recall {} and discard any unsaved changes on the PODxt?",
+            confirmation.playing().channel.label(),
+            target.label(),
+        ));
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Keep playing tone").clicked() {
+                self.keep_playing();
+            } else if ui
+                .add_enabled(
+                    idle && Self::admitted(Action::Recall(target)),
+                    egui::Button::new(format!("Discard and recall {}", target.label())),
+                )
+                .clicked()
+                && let Some(confirmation) = self.take_recall_confirmation(device)
+            {
+                self.start_job(Action::Recall(target), device, ui.ctx(), Some(confirmation));
+            }
+        });
+    }
+
     pub(super) fn set_live(&mut self, on: bool) {
+        if !on {
+            self.clear_recall_confirmation();
+        }
         self.stage_only = !on;
     }
 
@@ -584,6 +790,7 @@ impl LiveEditor {
 
     pub(super) fn queue_stage_target(&mut self, target: LiveTarget, ctx: &egui::Context) {
         if self.stage_editable() {
+            self.clear_recall_confirmation();
             self.pending.set(target);
             ctx.request_repaint();
         }
