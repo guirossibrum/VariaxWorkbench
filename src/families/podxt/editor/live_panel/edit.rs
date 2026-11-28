@@ -317,6 +317,7 @@ struct PendingRecall {
 }
 
 enum RecallAuthorization {
+    Cached(Arc<recall_cache::Bank>),
     Confirmed(RecallConfirmation),
     RetainedDraft,
 }
@@ -351,9 +352,17 @@ fn edit_transaction<'a, G>(
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, EditOutcome>) -> Result<EditOutcome, String>,
 ) -> Result<EditOutcome, String> {
+    let selected_from_cache = std::rc::Rc::new(std::cell::Cell::new(false));
+    let cached = match (&job.recall_authorization, &job.current, job.action) {
+        (Some(RecallAuthorization::Cached(bank)), Some(current), Action::Recall(target)) => {
+            Some((bank, current, target))
+        }
+        _ => None,
+    };
     let run = || {
         let stopped = || stop.load(Ordering::Acquire);
-        with_session(
+        let selected_in_transaction = selected_from_cache.clone();
+        let result = with_session(
             stopped,
             &job.reply_pending,
             lock,
@@ -369,6 +378,30 @@ fn edit_transaction<'a, G>(
                         .map(EditOutcome::Buffer);
                     }
                     Action::Recall(slot) => {
+                        if let Some((bank, current, target)) = cached
+                            && let (Some(source), Some(destination)) =
+                                (bank.slot(current.channel), bank.slot(target))
+                        {
+                            let still_observed = || bank.observes_pair(current.channel, target);
+                            let attempt = track_reply(&job.reply_pending, |outstanding| {
+                                podxt::try_cached_recall(
+                                    session,
+                                    target,
+                                    podxt::CachedRecall {
+                                        current,
+                                        source: &source.tone,
+                                        destination,
+                                        still_observed: &still_observed,
+                                    },
+                                    stopped,
+                                    outstanding,
+                                )
+                            })?;
+                            if let Some(buffer) = attempt {
+                                selected_in_transaction.set(true);
+                                return Ok(EditOutcome::Recall(EditorRecall::Playing(buffer)));
+                            }
+                        }
                         let authorization = job.recall_authorization.as_ref();
                         let confirmation = match authorization {
                             Some(RecallAuthorization::Confirmed(confirmation)) => {
@@ -448,7 +481,25 @@ fn edit_transaction<'a, G>(
                 )
                 .map(EditOutcome::Buffer)
             },
-        )
+        );
+        if let Some((bank, current, target)) = cached {
+            if result.is_err() {
+                bank.invalidate();
+                if selected_from_cache.get() {
+                    // The protocol succeeded but the checked link did not.
+                    job.reply_pending.store(true, Ordering::Release);
+                }
+            } else if selected_from_cache.get()
+                && (stopped() || !bank.observes_pair(current.channel, target))
+            {
+                bank.invalidate();
+                return Err(
+                    "PODxt recall evidence changed before release. Read the playing tone again."
+                        .into(),
+                );
+            }
+        }
+        result
     };
     match job.action {
         Action::Get | Action::Follow(_) => run(),
@@ -950,9 +1001,13 @@ impl LiveEditor {
             || self.fake_recall.is_some()
                 && matches!(action, Action::Recall(_))
                 && Self::admitted_on(true, action.native_approval(), action);
-        // An initial recall reads the playing channel and buffer on the same
-        // verified link before it can select anything.
-        let fresh_recall = matches!(action, Action::Recall(_)) && recall_authorization.is_none();
+        // An initial recall verifies the playing state on the same link
+        // before it can select anything.
+        let fresh_recall = matches!(action, Action::Recall(_))
+            && matches!(
+                recall_authorization,
+                None | Some(RecallAuthorization::Cached(_))
+            );
         if self.worker.is_some()
             || self.reply_pending.load(Ordering::Acquire)
             || !admitted
@@ -1618,12 +1673,13 @@ impl LiveEditor {
         }
     }
 
-    pub(super) fn recall(
+    pub(super) fn recall_with_cache(
         &mut self,
         slot: Location,
         device: &detection::DeviceKey,
         ctx: &egui::Context,
         log: Option<RecallLog>,
+        cache: Option<Arc<recall_cache::Bank>>,
     ) {
         if let Some(pending) = &self.recall_confirmation {
             self.recall_blocked(log.as_ref());
@@ -1635,7 +1691,14 @@ impl LiveEditor {
             return;
         }
         if self.pending.targets.is_empty() {
-            self.start_job(Action::Recall(slot), device, ctx, None, None, log);
+            self.start_job(
+                Action::Recall(slot),
+                device,
+                ctx,
+                cache.map(RecallAuthorization::Cached),
+                None,
+                log,
+            );
         } else {
             self.recall_blocked(log.as_ref());
             self.message = Some(Err(

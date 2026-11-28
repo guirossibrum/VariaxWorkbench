@@ -6,6 +6,7 @@ use variax_workbench::hardware_gates::Gate;
 mod edit;
 mod follow;
 mod locker;
+mod recall_cache;
 mod store;
 mod tuner;
 use line6_devices::family::podxt::{
@@ -34,6 +35,7 @@ pub(super) struct LivePanel {
     editor: edit::LiveEditor,
     follow: follow::Follow,
     save_ingress: Arc<detection::PodxtSaveIngress>,
+    recall_observer: Option<recall_cache::Observer>,
     resume_live: bool,
     reveal_playing: bool,
     live_since: Option<Instant>,
@@ -103,6 +105,7 @@ struct Snapshot {
     library: std::collections::BTreeMap<u16, EditBuffer>,
     library_count: Option<usize>,
     library_save_baseline: u64,
+    recall_bank: Option<Arc<recall_cache::Bank>>,
     packs: Option<Packs>,
     globals: Option<GlobalValues>,
     tuner: Option<tuner::Sample>,
@@ -126,6 +129,7 @@ impl Snapshot {
             ReadUpdate::LibraryStarted => {
                 self.library.clear();
                 self.library_count = Some(0);
+                self.recall_bank = None;
             }
             ReadUpdate::Stored(stored) => {
                 self.library.insert(stored.location.address(), stored.tone);
@@ -500,6 +504,7 @@ impl LivePanel {
         self.follow.reset();
         self.store.detach();
         self.locker.detach(&mut self.store);
+        self.recall_observer = None;
         self.save_ingress =
             verified.map_or_else(Arc::default, |tab| Arc::clone(&tab.device.podxt_saves));
         if let Some(tab) = verified {
@@ -575,6 +580,15 @@ impl LivePanel {
         }
     }
 
+    fn begin_recall_bank(&self, command: ReadCommand) -> Option<recall_cache::BankRead> {
+        if !requires_library(command) {
+            return None;
+        }
+        self.recall_observer
+            .as_ref()?
+            .begin_bank(&self.save_ingress)
+    }
+
     fn start_read(
         &mut self,
         command: ReadCommand,
@@ -603,6 +617,7 @@ impl LivePanel {
             previous.library_count = None;
             previous.library_save_baseline = self.save_ingress.revision();
         }
+        let bank_read = self.begin_recall_bank(command);
         let snapshot = Arc::new(Mutex::new(previous));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -615,7 +630,7 @@ impl LivePanel {
         let thread = std::thread::Builder::new()
             .name("podxt-read".into())
             .spawn(move || {
-                platform_read(
+                let result = platform_read(
                     &endpoint,
                     command,
                     &worker_stop,
@@ -635,7 +650,12 @@ impl LivePanel {
                             repaint.request_repaint();
                         }
                     },
-                )
+                );
+                if let Some(bank_read) = bank_read.filter(|_| result.is_ok()) {
+                    let mut snapshot = worker_snapshot.lock().expect("snapshot mutex");
+                    snapshot.recall_bank = bank_read.finish(&snapshot);
+                }
+                result
             });
         let thread = thread.map_err(|error| format!("Could not start PODxt read: {error}"))?;
         self.message = None;
@@ -798,6 +818,9 @@ impl LivePanel {
 
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
         self.poll_follow(ctx);
+        if self.store.busy() {
+            self.snapshot.recall_bank = None;
+        }
         if let Some((device, result)) = self.store.poll(ctx) {
             let result = if self.device.as_ref() == Some(&device) {
                 result
@@ -885,6 +908,7 @@ impl LivePanel {
                 }
                 self.snapshot.library.append(&mut captured.library);
                 self.snapshot.library_count = Some(count);
+                self.snapshot.recall_bank = captured.recall_bank.take();
                 Ok(())
             });
             if worker.acquired.is_some() {
@@ -1069,7 +1093,12 @@ impl LivePanel {
         } else if let Some(device) = &self.device {
             self.message = None;
             self.follow.pause();
-            self.editor.recall(slot, device, ctx, log);
+            let cache = self
+                .snapshot
+                .recall_bank
+                .as_ref()
+                .and_then(|bank| bank.candidate(&self.save_ingress, &self.snapshot, slot));
+            self.editor.recall_with_cache(slot, device, ctx, log, cache);
         }
     }
 

@@ -1,9 +1,13 @@
 //! Bounded PODxt Live 3.01 edit-buffer transactions for the editor.
 //! The app owns the attachment and holds the rig lock until the link closes.
 
+use super::live_read::tone_event;
 use super::*;
 use crate::midi::Event;
 use crate::session::POLL;
+
+mod cached;
+pub use cached::{CachedRecall, try_cached_recall};
 
 #[derive(Clone, Debug)]
 pub struct EditorBuffer {

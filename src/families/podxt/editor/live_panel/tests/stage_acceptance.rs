@@ -1,3 +1,5 @@
+mod cached_recall;
+
 use super::super::edit::tests::{ScriptedAction, ScriptedKind};
 use super::*;
 use crate::editor::FakeDialogs;
@@ -1128,6 +1130,15 @@ fn recall_fixture(
     playing: &EditBuffer,
     cached: &EditBuffer,
 ) -> (Workbench, Presence, RecallSteps, EditBuffer) {
+    recall_fixture_with_observer(ctx, playing, cached, false)
+}
+
+fn recall_fixture_with_observer(
+    ctx: &egui::Context,
+    playing: &EditBuffer,
+    cached: &EditBuffer,
+    observed: bool,
+) -> (Workbench, Presence, RecallSteps, EditBuffer) {
     let (mut app, presence) = connected_fixture(ctx);
     let (a, b) = recall_pair();
     let saved_b = valid_dump("Saved 2B");
@@ -1152,6 +1163,13 @@ fn recall_fixture(
     // transaction and the managed worker completion path.
     let panel = &mut app.podxt_mut().live;
     assert_eq!(panel.next_startup(), Some(Startup::Tones));
+    if observed {
+        panel.recall_observer = Some(recall_cache::Observer {
+            listener: Arc::new(panel.save_ingress.begin()),
+            ingress: Arc::clone(&panel.save_ingress),
+        });
+    }
+    let bank_read = panel.begin_recall_bank(ReadCommand::ToneBank);
     let mut captured = panel.snapshot.clone();
     let held = Cell::new(false);
     let writes = Cell::new(0);
@@ -1192,6 +1210,9 @@ fn recall_fixture(
     );
     assert_eq!(writes.get(), 129);
     assert!(!held.get());
+    if let Some(bank_read) = bank_read.filter(|_| result.is_ok()) {
+        captured.recall_bank = bank_read.finish(&captured);
+    }
     let thread = std::thread::spawn(move || result);
     while !thread.is_finished() {
         std::thread::yield_now();
