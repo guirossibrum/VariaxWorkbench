@@ -18,7 +18,7 @@ fn checked_edits_keep_separate_drafts_through_failures_and_attachment_changes() 
     for action in [Action::Get, Action::Recall(b.channel), Action::Controls] {
         assert!(
             editor
-                .complete_job(action, device, false, Err("Unverified reply".into()))
+                .complete_job(action, device, false, Err("Unverified reply".into()), None)
                 .is_none()
         );
         assert_eq!(editor.draft(a.channel), Some(&saved_draft_a));
@@ -35,6 +35,7 @@ fn checked_edits_keep_separate_drafts_through_failures_and_attachment_changes() 
             device,
             stopped,
             Ok(EditOutcome::Buffer(sample(47, 4))),
+            None,
         );
         assert!(editor.draft(b.channel).is_none());
         editor.reply_pending.store(false, Ordering::Release);
@@ -46,9 +47,16 @@ fn checked_edits_keep_separate_drafts_through_failures_and_attachment_changes() 
         device,
         false,
         Ok(EditOutcome::Buffer(sample(56, 4))),
+        None,
     );
     assert_eq!(editor.draft_counts(), (2, 0));
-    editor.complete_job(Action::Undo, device, false, Ok(EditOutcome::Buffer(b)));
+    editor.complete_job(
+        Action::Undo,
+        device,
+        false,
+        Ok(EditOutcome::Buffer(b)),
+        None,
+    );
     assert_eq!(editor.draft_counts(), (1, 0));
 
     editor.accept_follow(a.clone());
@@ -57,6 +65,7 @@ fn checked_edits_keep_separate_drafts_through_failures_and_attachment_changes() 
         device,
         false,
         Ok(EditOutcome::Buffer(a.clone())),
+        None,
     );
     assert_eq!(editor.draft(a.channel), Some(&saved_draft_a));
 

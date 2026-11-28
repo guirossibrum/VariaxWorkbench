@@ -216,6 +216,7 @@ fn with_session<'a, G, T>(
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, T>) -> Result<T, String>,
     policy: impl GatePolicy + 'a,
+    log: Option<variax_workbench::session_log::Operation>,
     run: impl FnOnce(&mut MidiSession<'_, &mut dyn Link>) -> Result<T, String> + 'a,
 ) -> Result<T, String> {
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
@@ -236,7 +237,12 @@ fn with_session<'a, G, T>(
                 &rig,
                 Box::new(move |link| {
                     let mut quiet = Quiet;
-                    let mut session = MidiSession::new(link, &policy, &mut quiet);
+                    let mut log = log;
+                    let logger: &mut dyn line6_devices::session::Log = match &mut log {
+                        Some(log) => log,
+                        None => &mut quiet,
+                    };
+                    let mut session = MidiSession::new(link, &policy, logger);
                     session.log_packets = false;
                     run(&mut session)
                 }),
@@ -262,6 +268,7 @@ fn transaction<'a, G>(
             lock,
             with_link,
             ReadPolicy(command),
+            None,
             move |session| {
                 track_reply(reply_pending, |outstanding| {
                     podxt::read_live_tracking_reply(
@@ -355,6 +362,7 @@ fn with_platform_link<T>(
 fn with_verified_platform_link<T>(
     device: &detection::DeviceKey,
     rig: &line6_devices::device_lock::DeviceLock,
+    release_log: Option<&variax_workbench::session_log::Operation>,
     run: RunOnLink<'_, T>,
 ) -> Result<T, String> {
     let (path, address) = device
@@ -363,6 +371,7 @@ fn with_verified_platform_link<T>(
         .ok_or("The verified PODxt Live USB attachment is no longer available.")?;
     #[cfg(target_os = "linux")]
     {
+        let _ = release_log;
         let source = variax_workbench::device_probe::LinuxSysfs::new();
         if source.usb_device_address(path) != Some(address) {
             return Err("The PODxt Live USB attachment changed.".into());
@@ -380,6 +389,7 @@ fn with_verified_platform_link<T>(
             path,
             address,
             registry_id,
+            release_log,
             run,
         )
     }
@@ -409,7 +419,7 @@ fn platform_read(
         },
         |rig, run| {
             if acquired.is_some() {
-                with_verified_platform_link(device, rig, run)
+                with_verified_platform_link(device, rig, None, run)
             } else {
                 with_platform_link(device, rig, run)
             }
@@ -1026,7 +1036,8 @@ impl LivePanel {
 
     pub(super) fn queue_stage_target(&mut self, target: podxt::LiveTarget, ctx: &egui::Context) {
         if self.device_ready() && self.worker.is_none() && !self.store.busy() {
-            self.editor.queue_stage_target(target, ctx);
+            self.editor
+                .queue_stage_target(target, self.snapshot.tone.as_ref(), ctx);
         }
     }
 
@@ -1042,19 +1053,23 @@ impl LivePanel {
         {
             self.device_requests += 1;
         }
+        let log = self.editor.recall_requested(slot);
         if !self.live_editing || !self.device_ready() {
+            self.editor.recall_blocked(log.as_ref());
             return;
         }
         if self.editor.awaiting_recall_confirmation() {
+            self.editor.recall_blocked(log.as_ref());
             self.message =
                 Some("Cancel the pending switch before selecting another channel.".into());
         } else if self.busy() {
+            self.editor.recall_blocked(log.as_ref());
             self.message =
                 Some("Wait for the current PODxt operation, then select the channel again.".into());
         } else if let Some(device) = &self.device {
             self.message = None;
             self.follow.pause();
-            self.editor.recall(slot, device, ctx);
+            self.editor.recall(slot, device, ctx, log);
         }
     }
 

@@ -8,18 +8,26 @@ use super::*;
 use podxt::{Global, PodxtRequest, Value};
 use std::{cell::Cell, collections::VecDeque};
 
+pub(in crate::editor::podxt_panel::live_panel) enum ScriptedKind {
+    Get,
+    Recall(Location),
+    Controls,
+}
+
 pub(in crate::editor::podxt_panel::live_panel) struct ScriptedAction {
-    pub expected_target: Option<Location>,
+    pub kind: ScriptedKind,
     pub requests: VecDeque<(PodxtRequest, Vec<u8>)>,
     pub release: Box<dyn FnOnce() -> Result<(), String> + Send>,
 }
 
 impl ScriptedAction {
     pub(super) fn run(self, job: &Job, stop: &AtomicBool) -> Result<EditOutcome, String> {
-        match self.expected_target {
-            Some(target) => assert_eq!(job.action, Action::Recall(target)),
-            None => assert_eq!(job.action, Action::Get),
-        }
+        let expected = match self.kind {
+            ScriptedKind::Get => Action::Get,
+            ScriptedKind::Recall(target) => Action::Recall(target),
+            ScriptedKind::Controls => Action::Controls,
+        };
+        assert_eq!(job.action, expected);
         let held = Cell::new(false);
         let writes = Cell::new(0);
         let expected = self.requests.len();
@@ -39,7 +47,7 @@ impl ScriptedAction {
                     writes: &writes,
                 });
                 assert!(held.get(), "verified release must be inside the rig lock");
-                (self.release)()?;
+                checked_edit_release(job.operation(), self.release)?;
                 result
             },
         );
@@ -244,7 +252,7 @@ fn queued_drag_edits_keep_the_latest_value_and_honor_the_dispatch_interval() {
     for value in [22, 40, 57] {
         editor.pending.set(drive(value));
     }
-    assert_eq!(editor.pending.0, [drive(57)]);
+    assert_eq!(editor.pending.targets, [drive(57)]);
     assert_eq!(editor.pending.overlay(&in_flight, control, 0), 57);
     assert!(editor.busy());
     assert_eq!(
@@ -259,7 +267,7 @@ fn queued_drag_edits_keep_the_latest_value_and_honor_the_dispatch_interval() {
     editor.pending.set(drive(84));
     assert!(!editor.busy(), "staged values never dispatch automatically");
     editor.detach();
-    assert!(editor.pending.0.is_empty());
+    assert!(editor.pending.targets.is_empty());
 }
 
 #[test]
@@ -270,7 +278,7 @@ fn a_failed_edit_keeps_the_original_snapshot_until_the_playing_channel_changes()
     editor.pending.set(drive(58));
     editor.completed(Action::Controls, Err("missing readback".into()));
     assert!(editor.needs_get);
-    assert!(editor.pending.0.is_empty());
+    assert!(editor.pending.targets.is_empty());
     editor.completed(Action::Get, Ok(sample(55, 17)));
     assert!(!editor.needs_get);
     let active = editor.session.as_ref().unwrap();
@@ -294,6 +302,8 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         )
     };
     let job = Job {
+        recall_log: None,
+        control_log: None,
         recall_authorization: None,
         outgoing_draft: None,
         reply_pending: Arc::default(),
@@ -477,6 +487,8 @@ fn stage_get_recovers_and_recall_sends_one_selection_after_final_read() {
         let writes = Cell::new(0);
         let result = edit_transaction(
             &Job {
+                recall_log: None,
+                control_log: None,
                 recall_authorization: None,
                 outgoing_draft: None,
                 reply_pending: Arc::clone(&pending),
@@ -527,6 +539,8 @@ pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked
     for action in [Action::Recall(target), Action::Controls] {
         let result = edit_transaction(
             &Job {
+                recall_log: None,
+                control_log: None,
                 recall_authorization: None,
                 outgoing_draft: None,
                 reply_pending: Arc::clone(pending),
@@ -562,6 +576,8 @@ fn refusal(
     let saved = sample(20, 17);
     let result = edit_transaction(
         &Job {
+            recall_log: None,
+            control_log: None,
             recall_authorization: None,
             outgoing_draft: None,
             reply_pending: Arc::default(),
@@ -635,6 +651,7 @@ fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
                 &device,
                 stopped,
                 refusal(&playing, target, true),
+                None,
             )
             .unwrap();
         assert_eq!(observed.tone, playing.tone);
@@ -653,6 +670,7 @@ fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
         &device,
         false,
         refusal(&playing, target, true),
+        None,
     );
     panel.live_editing = true;
     panel.startup = None;
@@ -681,9 +699,10 @@ fn recall_choice_expires_with_attachment_mode_or_staged_edits() {
         &device,
         false,
         refusal(&playing, target, true),
+        None,
     );
     assert_eq!(
-        editor.take_recall_confirmation(&device).unwrap().target(),
+        editor.take_recall_confirmation(&device).unwrap().0.target(),
         target
     );
     assert!(editor.take_recall_confirmation(&device).is_none());
@@ -693,6 +712,7 @@ fn recall_choice_expires_with_attachment_mode_or_staged_edits() {
         &device,
         false,
         refusal(&playing, target, true),
+        None,
     );
     assert!(editor.take_recall_confirmation(&replacement).is_none());
 
@@ -701,6 +721,7 @@ fn recall_choice_expires_with_attachment_mode_or_staged_edits() {
         &device,
         false,
         refusal(&playing, target, true),
+        None,
     );
     editor.set_live(false);
     assert!(editor.take_recall_confirmation(&device).is_none());
@@ -711,11 +732,12 @@ fn recall_choice_expires_with_attachment_mode_or_staged_edits() {
         &device,
         false,
         refusal(&playing, target, true),
+        None,
     );
     editor.pending.set(drive(55));
     assert!(editor.take_recall_confirmation(&device).is_none());
-    editor.recall(target, &device, &ctx);
-    assert_eq!(editor.pending.0, [drive(55)]);
+    editor.recall(target, &device, &ctx, None);
+    assert_eq!(editor.pending.targets, [drive(55)]);
     assert!(editor.worker.is_none());
 }
 
@@ -737,14 +759,14 @@ fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
         editor.pending.set(drive(55));
         assert!(
             editor
-                .complete_job(Action::Recall(target), &device, false, failure)
+                .complete_job(Action::Recall(target), &device, false, failure, None)
                 .is_none()
         );
         assert!(editor.needs_refresh());
         assert!(!editor.recall_ready());
         assert!(!editor.stage_editable());
         assert!(!editor.awaiting_recall_confirmation());
-        assert_eq!(editor.pending.0, [drive(55)]);
+        assert_eq!(editor.pending.targets, [drive(55)]);
     }
 
     panel.editor.discard_staged();
@@ -828,13 +850,15 @@ fn automatic_edits_hide_progress_and_success_but_keep_errors_visible() {
     assert!(!panel.shows_operation_progress());
 
     let editor = &mut panel.editor;
-    editor.pending.0.clear();
+    editor.pending.targets.clear();
     for (action, expected) in [
         (Action::Controls, None),
         (Action::Get, Some("Read playing tone")),
         (Action::Send, Some("Send edit buffer")),
     ] {
         editor.worker = Some(EditWorker {
+            recall_log: None,
+            control_log: None,
             superseded: false,
             program_read: false,
             replay: None,
@@ -1014,12 +1038,12 @@ impl UndoFixture {
     }
 
     fn queue_undo_while_controls_run(&mut self) {
-        self.editor.queue_stage_target(drive(45), &self.ctx);
+        self.editor.queue_stage_target(drive(45), None, &self.ctx);
         self.editor.poll(Some(&self.device), true, &self.ctx);
         self.readback_done
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
-        self.editor.queue_stage_target(drive(60), &self.ctx);
+        self.editor.queue_stage_target(drive(60), None, &self.ctx);
         assert!(self.editor.can_request_undo(&self.device));
         self.editor.request_undo(&self.device, &self.ctx);
         assert!(!self.editor.has_pending());
@@ -1031,7 +1055,7 @@ impl UndoFixture {
         );
         assert!(!self.editor.can_request_undo(&self.device));
         self.editor.request_undo(&self.device, &self.ctx);
-        self.editor.queue_stage_target(drive(70), &self.ctx);
+        self.editor.queue_stage_target(drive(70), None, &self.ctx);
         assert!(
             !self.editor.has_pending(),
             "controls cannot queue behind Undo"
@@ -1070,7 +1094,7 @@ impl UndoFixture {
 fn undo_discards_unsent_live_targets_without_sending_or_applying_staged_edits() {
     let mut fixture = UndoFixture::new(ControlResult::Verified);
     let editor = &mut fixture.editor;
-    editor.queue_stage_target(drive(60), &fixture.ctx);
+    editor.queue_stage_target(drive(60), None, &fixture.ctx);
     editor.request_undo(&fixture.device, &fixture.ctx);
     assert!(!editor.has_pending());
     assert!(!editor.busy());
@@ -1081,10 +1105,10 @@ fn undo_discards_unsent_live_targets_without_sending_or_applying_staged_edits() 
     );
 
     editor.set_live(false);
-    editor.queue_stage_target(drive(60), &fixture.ctx);
+    editor.queue_stage_target(drive(60), None, &fixture.ctx);
     assert!(!editor.can_request_undo(&fixture.device));
     editor.request_undo(&fixture.device, &fixture.ctx);
-    assert_eq!(editor.pending.0, [drive(60)]);
+    assert_eq!(editor.pending.targets, [drive(60)]);
     assert!(editor.worker.is_none());
     fixture.assert_actions(&[]);
 }
@@ -1206,6 +1230,8 @@ fn undo_never_queues_behind_non_control_jobs() {
         Action::Recall(sample(20, 3).channel),
     ] {
         fixture.editor.worker = Some(EditWorker {
+            recall_log: None,
+            control_log: None,
             superseded: false,
             program_read: false,
             replay: None,

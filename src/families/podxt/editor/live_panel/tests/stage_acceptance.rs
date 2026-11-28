@@ -1,5 +1,8 @@
+use super::super::edit::tests::{ScriptedAction, ScriptedKind};
 use super::*;
 use crate::editor::FakeDialogs;
+use serde_json::Value as LogRow;
+use variax_workbench::session_log::{SessionGuard, SessionLog, Severity};
 
 fn visible_text(frame: &egui::FullOutput, label: &str) -> Option<Pos2> {
     fn find(shape: &egui::epaint::Shape, label: &str) -> Option<Pos2> {
@@ -22,21 +25,25 @@ fn click_text(ctx: &egui::Context, app: &mut Workbench, label: &str) {
     let pos = visible_text(&frame, label)
         .unwrap_or_else(|| panic!("no visible {label:?}: {}", stage_frame(ctx, app)));
 
-    for pressed in [true, false] {
-        render_stage(
-            ctx,
-            app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
+    click_position(ctx, app, pos);
+}
+
+fn pointer(pos: Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
     }
+}
+
+fn click_position(ctx: &egui::Context, app: &mut Workbench, pos: Pos2) {
+    render_stage(
+        ctx,
+        app,
+        vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+    );
+    render_stage(ctx, app, vec![pointer(pos, false)]);
 }
 
 fn current_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
@@ -463,6 +470,7 @@ fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
     live.editor.set_live(true);
     live.editor.use_fake_recall();
     let requests = live.device_requests;
+    let log = EditorLog::attach(&mut app);
     click_text(&ctx, &mut app, "31D  Saved Channel");
     let deadline = Instant::now() + Duration::from_secs(2);
     while app.podxt().live.editor.busy() {
@@ -483,6 +491,12 @@ fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
     let visible = rendered(&ctx, &mut app, &["Playing · 31D"]);
     assert!(!visible.contains("Read playing tone"));
     assert!(!visible.contains("Reconnect"));
+    let target = Location::tone_from_label("31D").unwrap();
+    let rows = operation_for(&log.read(&["Before recall", "Recalled tone"]), target);
+    let checked = position(&rows, |row| row["evidence"] == "addressed_slot");
+    assert_eq!(rows[checked]["source"], 127);
+    assert_eq!(rows[checked]["target"], 123);
+    assert!(rows.iter().any(program_sent));
 }
 
 #[test]
@@ -1082,14 +1096,11 @@ fn expect_action(
     requests: Vec<(PodxtRequest, Vec<u8>)>,
     release: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) {
-    steps
-        .lock()
-        .unwrap()
-        .push_back(super::super::edit::tests::ScriptedAction {
-            expected_target: target,
-            requests: requests.into(),
-            release: Box::new(release),
-        });
+    steps.lock().unwrap().push_back(ScriptedAction {
+        kind: target.map_or(ScriptedKind::Get, ScriptedKind::Recall),
+        requests: requests.into(),
+        release: Box::new(release),
+    });
 }
 
 fn finish_action(ctx: &egui::Context, app: &mut Workbench, steps: &RecallSteps) {
@@ -1204,6 +1215,79 @@ fn recall_fixture(
     (app, presence, steps, saved_b)
 }
 
+struct EditorLog {
+    _folder: tempfile::TempDir,
+    guard: SessionGuard,
+    sink: SessionLog,
+}
+
+impl EditorLog {
+    fn attach(app: &mut Workbench) -> Self {
+        let folder = tempfile::tempdir().unwrap();
+        let (sink, guard) = SessionLog::open(Some(folder.path().join("logs")), Severity::Trace);
+        app.podxt_mut().live.editor.use_session_log(sink.clone());
+        Self {
+            _folder: folder,
+            guard,
+            sink,
+        }
+    }
+
+    fn read(self, private_values: &[&str]) -> Vec<LogRow> {
+        drop(self.guard);
+        let log = std::fs::read_to_string(self.sink.status().path.unwrap()).unwrap();
+        for value in private_values {
+            assert!(!log.contains(value), "private value recorded");
+        }
+        log.lines()
+            .map(|line| serde_json::from_str::<LogRow>(line).unwrap())
+            .filter(|row| row["endpoint"] == "podxt")
+            .collect()
+    }
+}
+
+fn position(rows: &[LogRow], predicate: impl Fn(&LogRow) -> bool) -> usize {
+    rows.iter().position(predicate).expect("expected log fact")
+}
+
+fn operation_for(rows: &[LogRow], target: Location) -> Vec<LogRow> {
+    let click = position(rows, |row| {
+        row["reason"] == "requested" && row["target"] == target.index()
+    });
+    let id = rows[click]["operation"].as_u64().unwrap();
+    let operation: Vec<_> = rows
+        .iter()
+        .filter(|row| row["operation"] == id)
+        .cloned()
+        .collect();
+    assert_eq!(operation[0]["control"], "podxt_channel");
+    assert_eq!(operation[0]["action"]["kind"], "button");
+    operation
+}
+
+fn program_sent(row: &LogRow) -> bool {
+    row["observation"]["stage"] == "Send"
+        && row["observation"]["request"] == "PodxtChannelSwitch"
+        && row["observation"]["outcome"] == "Sent"
+}
+
+fn assert_recall_checked(rows: &[LogRow], source: Location) {
+    let sent = position(rows, program_sent);
+    let readback = position(rows, |row| {
+        row["reason"] == "verified" && row["evidence"] == "verified_playing"
+    });
+    let finished = position(rows, |row| {
+        row["category"] == "operation_finished" && row["success"] == true
+    });
+    assert_eq!(rows[readback]["source"], source.index());
+    assert!(sent < readback && readback < finished);
+    assert!(
+        rows[readback + 1..finished]
+            .iter()
+            .any(|row| { row["category"] == "checked_release" && row["success"] == true })
+    );
+}
+
 fn recall_destination(
     requests: &mut Vec<(PodxtRequest, Vec<u8>)>,
     source: Location,
@@ -1231,6 +1315,7 @@ fn connected_sidebar_recall_2a_2b_2a_publishes_only_after_checked_release() {
     let mut playing_a = saved_a.clone();
     playing_a.raw[39 + 7] = 91;
     let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &playing_a, &saved_a);
+    let log = EditorLog::attach(&mut app);
     assert!(!app.podxt().live.channel_modified(a));
     let library = app.podxt().live.snapshot.library.clone();
 
@@ -1262,6 +1347,26 @@ fn connected_sidebar_recall_2a_2b_2a_publishes_only_after_checked_release() {
         assert!(!visible.contains("Live · edit buffer"));
     }
     assert_eq!(app.podxt().live.snapshot.library, library);
+    let rows = log.read(&["Saved 2A", "Saved 2B"]);
+    for (source, target) in [(a, b), (b, a)] {
+        let rows = operation_for(&rows, target);
+        let comparison = position(&rows, |row| {
+            row["reason"] == "verified" && row["evidence"] == "addressed_slot"
+        });
+        assert_eq!(rows[comparison]["source"], source.index());
+        assert!(comparison < position(&rows, program_sent));
+        if source == a {
+            assert!(rows.iter().any(|row| {
+                row["reason"] == "volatile_difference"
+                    && row["difference"]
+                        == serde_json::json!({
+                            "kind": "cc", "number": 7, "playing": 91,
+                            "saved": saved_a.cc(7), "class": "volatile"
+                        })
+            }));
+        }
+        assert_recall_checked(&rows, source);
+    }
 }
 
 #[test]
@@ -1272,12 +1377,14 @@ fn connected_sidebar_consent_survives_volatile_motion_and_second_destination() {
     let mut edited = saved_a.clone();
     edited.raw[39 + usize::from(Control::Drive.cc())] = 42;
     let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &edited, &saved_a);
+    let log = EditorLog::attach(&mut app);
     assert!(app.podxt().live.channel_modified(a));
     // Unknown bytes cannot be assumed to be a known editable parameter.
-    saved_a.raw[23] = 1;
+    saved_a.raw[23] ^= 1;
+    saved_a.raw[7] = b'X';
     let mut requests = recall_source(a, &edited);
     requests.extend([
-        (PodxtRequest::Stored(a), saved_a.raw),
+        (PodxtRequest::Stored(a), saved_a.raw.clone()),
         recall_packs(),
         recall_channel(a),
     ]);
@@ -1316,6 +1423,24 @@ fn connected_sidebar_consent_survives_volatile_motion_and_second_destination() {
     finish_action(&ctx, &mut app, &steps);
     rendered(&ctx, &mut app, &["Playing · 2B"]);
     assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&saved_b));
+    let rows = operation_for(&log.read(&["Saved 2A", "Xaved 2A", "Saved 2B"]), b);
+    let name_difference = position(&rows, |row| row["reason"] == "name_difference");
+    assert_eq!(rows[name_difference]["source"], a.index());
+    assert_eq!(rows[name_difference]["evidence"], "addressed_slot");
+    assert!(rows[name_difference]["difference"].is_null());
+    let asked = position(&rows, |row| row["reason"] == "confirmation_required");
+    let approved = position(&rows, |row| row["reason"] == "confirmed");
+    assert!(asked < approved && approved < position(&rows, program_sent));
+    assert!(rows.iter().any(|row| {
+        row["source"] == a.index()
+            && row["evidence"] == "addressed_slot"
+            && row["difference"]
+                == serde_json::json!({
+                    "kind": "cc", "number": 13, "playing": 42, "saved": saved_a.cc(13),
+                    "class": "named"
+                })
+    }));
+    assert_recall_checked(&rows, a);
 }
 
 #[test]
@@ -1330,9 +1455,10 @@ fn connected_sidebar_distinguishes_cached_and_opaque_comparisons_and_cancel_send
         if stale {
             cached.raw[39 + usize::from(Control::Drive.cc())] = 25;
         }
-        addressed.raw[23] = 1;
-        addressed.raw[38] = 2;
+        addressed.raw[23] ^= 1;
+        addressed.raw[38] ^= 2;
         let (mut app, _, steps, _) = recall_fixture(&ctx, &playing, &cached);
+        let log = EditorLog::attach(&mut app);
         assert_eq!(app.podxt().live.channel_modified(a), stale);
         if stale {
             let details = app.podxt().live.channel_comparison_text(a).unwrap();
@@ -1364,6 +1490,27 @@ fn connected_sidebar_distinguishes_cached_and_opaque_comparisons_and_cancel_send
         assert!(!app.podxt().live.editor.busy());
         assert_eq!(app.podxt().live.snapshot.library, before);
         assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&playing));
+        let rows = operation_for(&log.read(&["Saved 2A", "Saved 2B"]), b);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["reason"] == "opaque_difference")
+                .count(),
+            2
+        );
+        for (offset, changed_bits) in [(23, 1), (38, 2)] {
+            assert!(rows.iter().any(|row| {
+                row["source"] == a.index()
+                    && row["evidence"] == "addressed_slot"
+                    && row["difference"]
+                        == serde_json::json!({
+                            "kind": "opaque_bits", "offset": offset, "changed_bits": changed_bits
+                        })
+            }));
+        }
+        assert!(rows.iter().all(|row| row["reason"] != "control_difference"));
+        let cancelled = position(&rows, |row| row["reason"] == "cancelled");
+        assert_eq!(rows[cancelled - 1]["disposition"], "cancelled");
+        assert!(!rows.iter().any(program_sent));
     }
 }
 
@@ -1374,6 +1521,7 @@ fn connected_sidebar_keeps_old_highlight_after_uncertain_readback_or_release() {
         let ctx = egui::Context::default();
         let saved_a = valid_dump("Saved 2A");
         let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &saved_a, &saved_a);
+        let log = EditorLog::attach(&mut app);
         let readback = if release_failed { &saved_b } else { &saved_a };
         let mut requests = recall_source(a, &saved_a);
         requests.push((PodxtRequest::Stored(a), saved_a.raw.clone()));
@@ -1403,6 +1551,18 @@ fn connected_sidebar_keeps_old_highlight_after_uncertain_readback_or_release() {
         );
         assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&saved_a));
         assert!(app.podxt().live.editor.needs_refresh());
+        let rows = operation_for(&log.read(&["USB release failed.", "Saved 2A"]), b);
+        let sent = position(&rows, program_sent);
+        let readback = position(&rows, |row| row["evidence"] == "verified_playing");
+        let release = position(&rows, |row| row["category"] == "checked_release");
+        let finish = position(&rows, |row| row["category"] == "operation_finished");
+        assert_eq!(
+            rows[readback]["reason"],
+            if release_failed { "verified" } else { "failed" }
+        );
+        assert_eq!(rows[release]["success"], !release_failed);
+        assert_eq!(rows[finish]["success"], false);
+        assert!(sent < readback && readback < release && release < finish);
     }
 }
 
@@ -1508,6 +1668,7 @@ fn one_sidebar_click_retains_exact_startup_device_edit_before_switching() {
         let mut playing = saved.clone();
         playing.raw[39 + usize::from(Control::Drive.cc())] = 42;
         let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &playing, &saved);
+        let log = EditorLog::attach(&mut app);
         rendered(&ctx, &mut app, &["Playing · 2A", "2A !"]);
         assert!(!app.podxt().dirty());
 
@@ -1577,5 +1738,141 @@ fn one_sidebar_click_retains_exact_startup_device_edit_before_switching() {
         } else {
             rendered(&ctx, &mut app, &["Playing · 2B", "2A · Draft"]);
         }
+        let rows = operation_for(&log.read(&["Bridge of Sighs", "Saved 2B"]), b);
+        let release = position(&rows, |row| row["category"] == "checked_release");
+        let retained = position(&rows, |row| row["reason"] == "retained_draft");
+        assert_eq!(rows[release]["success"], true);
+        assert_eq!(rows[retained]["source"], a.index());
+        assert_eq!(rows[retained]["evidence"], "checked_release");
+        assert_eq!(rows[retained]["draft_origin"], "device_buffer");
+        assert!(release < retained);
+        assert!(!rows[..retained].iter().any(program_sent));
+        if drift {
+            assert!(
+                rows[retained + 1..]
+                    .iter()
+                    .any(|row| row["reason"] == "expired")
+            );
+            assert!(!rows.iter().any(program_sent));
+        } else {
+            assert_recall_checked(&rows, a);
+        }
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["category"] == "checked_release")
+                .count(),
+            2
+        );
     }
+}
+
+#[test]
+fn normal_live_drive_drag_and_amp_switch_log_one_coalesced_checked_batch() {
+    let ctx = egui::Context::default();
+    let (slot, _) = recall_pair();
+    let mut before = valid_dump("Private knob tone");
+    before.raw[39 + usize::from(Control::Drive.cc())] = 20;
+    before.raw[39 + usize::from(Control::AmpEnable.cc())] = Control::AmpEnable.switch_value(true);
+    let (mut app, _, steps, _) = recall_fixture(&ctx, &before, &before);
+    let log = EditorLog::attach(&mut app);
+    rendered(&ctx, &mut app, &["Drive"]);
+    let start = app.podxt().pod_buttons["stage-drive"].center();
+    let amp = app.podxt().pod_buttons["pod-block-amp"].left_top() + egui::vec2(11.0, 15.0);
+
+    // Hold the existing rate limiter while egui sends both drag changes and
+    // the switch click. The production queue still decides what is dispatched.
+    app.podxt_mut()
+        .live
+        .editor
+        .set_test_last_dispatch(Some(Instant::now() + Duration::from_secs(5)));
+    render_stage(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(start), pointer(start, true)],
+    );
+    let first = start - egui::vec2(0.0, 18.0);
+    let last = start - egui::vec2(0.0, 36.0);
+    for pos in [first, last] {
+        render_stage(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+    }
+    render_stage(&ctx, &mut app, vec![pointer(last, false)]);
+    click_position(&ctx, &mut app, amp);
+    assert!(app.podxt().live.editor.has_pending());
+
+    let value = 58;
+    let disabled = Control::AmpEnable.switch_value(false);
+    let mut after = before.clone();
+    after.raw[39 + usize::from(Control::Drive.cc())] = value;
+    after.raw[39 + usize::from(Control::AmpEnable.cc())] = disabled;
+    let mut requests = recall_source(slot, &before);
+    requests.extend([
+        recall_channel(slot),
+        (
+            PodxtRequest::Set(Control::Drive, podxt::Value::new(value).unwrap()),
+            vec![],
+        ),
+        (
+            PodxtRequest::Set(Control::AmpEnable, podxt::Value::new(disabled).unwrap()),
+            vec![],
+        ),
+        (PodxtRequest::EditBuffer, after.raw.clone()),
+        recall_channel(slot),
+    ]);
+    steps.lock().unwrap().push_back(ScriptedAction {
+        kind: ScriptedKind::Controls,
+        requests: requests.into(),
+        release: Box::new(|| Ok(())),
+    });
+    app.podxt_mut().live.editor.set_test_last_dispatch(None);
+    finish_action(&ctx, &mut app, &steps);
+    assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&after));
+
+    let rows = log.read(&["Private knob tone"]);
+    let operation = rows[0]["operation"].as_u64().unwrap();
+    assert!(rows.iter().all(|row| row["operation"] == operation));
+    let release = position(&rows, |row| row["category"] == "checked_release");
+    let finish = position(&rows, |row| row["category"] == "operation_finished");
+    assert_eq!(rows[release]["success"], true);
+    assert_eq!(rows[finish]["success"], true);
+    assert!(release < finish);
+    let events: Vec<_> = rows
+        .iter()
+        .filter(|row| row["control"] == "podxt_control")
+        .map(|row| (row["disposition"].as_str().unwrap(), row["action"].clone()))
+        .collect();
+    let expected = [
+        (
+            "queued",
+            serde_json::json!({"kind": "dial", "old": 20, "new": 39}),
+        ),
+        (
+            "queued",
+            serde_json::json!({"kind": "dial", "old": 39, "new": value}),
+        ),
+        (
+            "coalesced",
+            serde_json::json!({"kind": "dial", "old": 20, "new": 39}),
+        ),
+        (
+            "queued",
+            serde_json::json!({"kind": "switch", "old": true, "new": false}),
+        ),
+        (
+            "accepted",
+            serde_json::json!({"kind": "dial", "old": 39, "new": value}),
+        ),
+        (
+            "accepted",
+            serde_json::json!({"kind": "switch", "old": true, "new": false}),
+        ),
+        (
+            "applied",
+            serde_json::json!({"kind": "dial", "old": 39, "new": value}),
+        ),
+        (
+            "applied",
+            serde_json::json!({"kind": "switch", "old": true, "new": false}),
+        ),
+    ];
+    assert_eq!(events, expected);
 }
