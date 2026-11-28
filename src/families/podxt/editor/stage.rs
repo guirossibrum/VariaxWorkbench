@@ -4,7 +4,7 @@ use line6_devices::family::podxt::{BankKind, EditBuffer, Location, TonePayload};
 use pod_preset::{
     ContainerKind, PodControl, PodModelChange, PodTone, UnknownPodDefaults, pod_parameter_table,
 };
-use variax_workbench::ui::{assets, chrome, controls, knob::Knob, theme};
+use variax_workbench::ui::{assets, chrome, controls, knob::Knob, podxt_art, theme};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 enum Block {
@@ -92,16 +92,35 @@ impl Block {
         }
     }
 
-    fn skin(self, model: Option<u32>) -> Option<&'static str> {
-        Some(match (self, model) {
-            (Self::Wah, Some(33947648)) => "pod-farm/vetta-wah.png",
-            (Self::Stomp, Some(33882112)) => "pod-farm/facial-fuzz.png",
-            (Self::Mod, Some(33751044)) => "pod-farm/sine-chorus.png",
-            (Self::Delay, Some(33685506)) => "pod-farm/analog-delay.png",
-            (Self::Reverb, Some(33816578)) => "pod-farm/lux-spring.png",
-            (Self::Vol, _) => "pod-farm/volume-pedal.png",
-            _ => return None,
-        })
+    fn skin(self, model: Option<u32>, tone: &PodTone) -> Option<&'static str> {
+        use podxt_art::Block as ArtBlock;
+
+        let (block, fixed_slots): (_, &[u32]) = match self {
+            Self::Gate => (ArtBlock::Gate, &[0x0002_0000]),
+            Self::Wah => (ArtBlock::Wah, &[]),
+            Self::Stomp => (ArtBlock::Stomp, &[]),
+            Self::Amp => (ArtBlock::Amp, &[]),
+            Self::Comp => (ArtBlock::Compressor, &[0x0005_0000]),
+            Self::Eq => (ArtBlock::Eq, &[pod_preset::PODXT_EQ_SLOT]),
+            Self::Vol => (ArtBlock::Volume, &[0x0002_0001, 0x0005_0002]),
+            Self::Mod => (ArtBlock::Mod, &[]),
+            Self::Delay => (ArtBlock::Delay, &[]),
+            Self::Reverb => (ArtBlock::Reverb, &[]),
+        };
+        let id = if fixed_slots.is_empty() {
+            model
+        } else {
+            let mut models = tone
+                .models()
+                .iter()
+                .filter(|model| fixed_slots.contains(&model.slot));
+            let found = models.next()?;
+            if models.next().is_some() {
+                return None;
+            }
+            Some(found.model_id)
+        };
+        podxt_art::model_key(block, id)
     }
 
     #[cfg(test)]
@@ -480,7 +499,7 @@ impl PodxtEditor {
             if let Some((index, tone, packs)) = selected {
                 self.stage_header(ui, index, &tone);
                 let rows = tone.table_controls(packs);
-                self.stage_chain(ui, index, &rows);
+                self.stage_chain(ui, index, &tone, &rows);
                 ui.add_space(theme::SPACE_8);
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
@@ -1024,7 +1043,13 @@ impl PodxtEditor {
         });
     }
 
-    fn stage_chain(&mut self, ui: &mut egui::Ui, index: usize, rows: &[PodControl<'static>]) {
+    fn stage_chain(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        tone: &PodTone,
+        rows: &[PodControl<'static>],
+    ) {
         let is_pre = |block: Block| {
             block
                 .route()
@@ -1033,19 +1058,18 @@ impl PodxtEditor {
                 == Some(0)
         };
         let chain = ordered_blocks(is_pre);
-        let root = assets::workspace_root();
         let tiles: Vec<_> = chain
             .into_iter()
             .map(|block| {
                 let model = rows.iter().find(|row| {
                     row.parameter.block == block.group() && row.parameter.catalog.is_some()
                 });
-                let skin = block.skin(model.and_then(|row| row.bits));
+                let skin = block.skin(model.and_then(|row| row.bits), tone);
                 if let Some(path) = skin {
                     self.stage
                         .art
                         .entry(path)
-                        .or_insert_with(|| assets::load(ui.ctx(), &root, path));
+                        .or_insert_with(|| podxt_art::load(ui.ctx(), path));
                 }
                 (block, model.and_then(choice), skin)
             })
@@ -1074,8 +1098,8 @@ impl PodxtEditor {
         let stage = self
             .stage
             .art
-            .entry("pod-farm/stage-frame.png")
-            .or_insert_with(|| assets::load(ui.ctx(), &root, "pod-farm/stage-frame.png"));
+            .entry(podxt_art::FRAME_KEY)
+            .or_insert_with(|| podxt_art::load(ui.ctx(), podxt_art::FRAME_KEY));
         ui.painter()
             .rect_filled(area.expand(2.0), theme::RADIUS_PANEL, theme::BG);
         if let Some(texture) = &stage.texture {
@@ -1192,6 +1216,23 @@ impl PodxtEditor {
                     for key in ["AMP_MODEL", "CAB_MODEL", "MIC_MODEL"] {
                         if let Some(row) = get(rows, key) {
                             self.stage_control(ui, index, row);
+                            let preview = egui::vec2(48.0, 36.0);
+                            if key == "CAB_MODEL"
+                                && let Some(path) =
+                                    podxt_art::model_key(podxt_art::Block::Cab, row.bits)
+                                && ui.available_width() >= preview.x
+                            {
+                                let art = self
+                                    .stage
+                                    .art
+                                    .entry(path)
+                                    .or_insert_with(|| podxt_art::load(ui.ctx(), path));
+                                if !art.missing {
+                                    let (bounds, _) =
+                                        ui.allocate_exact_size(preview, Sense::hover());
+                                    assets::paint(ui, art, bounds);
+                                }
+                            }
                         }
                     }
                 });
