@@ -164,18 +164,70 @@ pub fn read_stored_tone<L: Link>(
     session: &mut Session<L>,
     location: Location,
 ) -> Result<Option<EditBuffer>, String> {
-    read_stored_tone_observing(session, location, || Ok(()), None, &mut false, |_, _| false)
+    read_stored_tone_observing(
+        session,
+        location,
+        || Ok(()),
+        StoredRead::Once(None),
+        &mut false,
+        |_, _| false,
+    )
 }
 
-/// The same addressed exchange with cancellation and an observer for recognized
-/// unsolicited events. The observer cannot claim a dump or block-end marker.
+#[derive(Clone, Copy)]
+pub(super) enum StoredRead {
+    Once(Option<Duration>),
+    /// The editor owns the whole library session and may retry one address.
+    Library,
+}
+
+/// An addressed exchange with cancellation and an observer for unsolicited
+/// events. Only library reads may retry after a clean missing reply.
 pub(super) fn read_stored_tone_observing<L: Link>(
+    session: &mut Session<L>,
+    location: Location,
+    check_stop: impl Fn() -> Result<(), String>,
+    mode: StoredRead,
+    outstanding: &mut bool,
+    mut observe: impl FnMut(&Event, Duration) -> bool,
+) -> Result<Option<EditBuffer>, String> {
+    let (max_attempts, deadline) = match mode {
+        StoredRead::Once(deadline) => (1, deadline),
+        StoredRead::Library => (3, None),
+    };
+    for attempt in 1..=max_attempts {
+        check_stop()?;
+        if attempt > 1 {
+            session.note(format!(
+                "Retrying PODxt stored {} {} (attempt {attempt}/{max_attempts}).",
+                location.kind().name(),
+                location.label(),
+            ));
+        }
+        let tone = read_stored_attempt(
+            session,
+            location,
+            &check_stop,
+            deadline,
+            outstanding,
+            &mut observe,
+            attempt > 1,
+        )?;
+        if tone.is_some() {
+            return Ok(tone);
+        }
+    }
+    Ok(None)
+}
+
+fn read_stored_attempt<L: Link>(
     session: &mut Session<L>,
     location: Location,
     check_stop: impl Fn() -> Result<(), String>,
     deadline: Option<Duration>,
     outstanding: &mut bool,
     mut observe: impl FnMut(&Event, Duration) -> bool,
+    retried: bool,
 ) -> Result<Option<EditBuffer>, String> {
     check_stop()?;
     if session.assembler.partial_sysex().is_some() {
@@ -236,7 +288,16 @@ pub(super) fn read_stored_tone_observing<L: Link>(
                         Ok(reply) => tone = Some(reply),
                         Err(error) => issue = Err(error),
                     }
-                    end = session.link.elapsed() + STORED_GAP;
+                    // A retried address can have more than one request in
+                    // flight. Remain on that address through the full reply
+                    // window so a second dump cannot be accepted at the next
+                    // slot. Ordinary reads still get just the settle period.
+                    let settle = if retried {
+                        STORED_WINDOW + STORED_GAP
+                    } else {
+                        STORED_GAP
+                    };
+                    end = session.link.elapsed() + settle;
                 }
                 Event::Sysex(frame)
                     if tone.is_some() && !saw_marker && frame == STORED_READ_END =>
