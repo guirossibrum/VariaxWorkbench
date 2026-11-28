@@ -1,6 +1,8 @@
 //! Passive PODxt Live input shared by Variax presence and channel Follow.
 #[cfg(any(test, feature = "usb"))]
 use line6_devices::family::podxt::Location;
+#[cfg(feature = "usb")]
+use line6_devices::family::podxt::StoredTone;
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
 use line6_devices::{
     family::podxt::save_notification,
@@ -10,7 +12,7 @@ use std::time::Instant;
 #[cfg(feature = "usb")]
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
 use variax_workbench::midi::SysexDecoder;
@@ -47,6 +49,37 @@ struct SaveState {
     slots: BTreeMap<u16, u64>,
 }
 
+// Workbench's current foreground reads leave a gap in save observation. The
+// editor can use this API once its addressed reader shares an uninterrupted
+// save observer.
+#[cfg(feature = "usb")]
+#[allow(dead_code)]
+pub(in crate::editor) struct SavedSlotRefresh {
+    ingress: Weak<PodxtSaveIngress>,
+    window: u64,
+    slot: Location,
+    last_save: Option<u64>,
+}
+
+#[cfg(feature = "usb")]
+#[allow(dead_code)]
+pub(in crate::editor) struct FreshSavedSlot {
+    refresh: SavedSlotRefresh,
+    stored: StoredTone,
+}
+
+#[cfg(feature = "usb")]
+#[allow(dead_code)]
+impl SavedSlotRefresh {
+    fn matches(&self, ingress: &PodxtSaveIngress, slot: Location) -> bool {
+        if !std::ptr::eq(ingress, self.ingress.as_ptr()) || self.slot != slot {
+            return false;
+        }
+        let state = ingress.0.lock().expect("PODxt save ingress");
+        state.observes(self.window) && state.slots.get(&slot.address()).copied() == self.last_save
+    }
+}
+
 #[cfg(feature = "usb")]
 impl PodxtSaveIngress {
     pub fn begin(self: &Arc<Self>) -> SaveListener {
@@ -81,10 +114,41 @@ impl PodxtSaveIngress {
             .values()
             .any(|&saved| saved > revision)
     }
+
+    /// Accept the result of the exact checked stored-slot request started
+    /// after capturing `refresh`. The reader must use the same verified link
+    /// and forward save notices through the reply and settle interval before
+    /// passing the result here. A failed, missing or ambiguous reply supplies
+    /// no result.
+    #[allow(dead_code)]
+    pub fn reconcile_saved_slot(
+        &self,
+        refresh: SavedSlotRefresh,
+        stored: StoredTone,
+    ) -> Option<FreshSavedSlot> {
+        refresh
+            .matches(self, stored.location)
+            .then_some(FreshSavedSlot { refresh, stored })
+    }
+
+    /// Revalidate at consumption time. Keep the proof with these exact bytes.
+    /// This check does not reserve the link or exclude subsequent saves.
+    #[allow(dead_code)]
+    pub fn fresh_saved_slot<'a>(
+        &self,
+        slot: Location,
+        fresh: &'a FreshSavedSlot,
+    ) -> Option<&'a StoredTone> {
+        fresh.refresh.matches(self, slot).then_some(&fresh.stored)
+    }
 }
 
 #[cfg(feature = "usb")]
 impl SaveState {
+    fn observes(&self, window: u64) -> bool {
+        self.listener == Some(window) && self.last_gap == window
+    }
+
     fn gap(&mut self, window: u64) {
         if window == self.last_gap {
             self.revision += 1;
@@ -103,11 +167,26 @@ pub(in crate::editor) struct SaveListener {
 impl SaveListener {
     pub fn observe(&self, slot: Location) {
         let mut state = self.ingress.0.lock().expect("PODxt save ingress");
-        if state.listener == Some(self.window) && state.last_gap == self.window {
+        if state.observes(self.window) {
             state.revision += 1;
             let revision = state.revision;
             state.slots.insert(slot.address(), revision);
         }
+    }
+
+    /// Capture the window and slot epoch before sending the addressed read.
+    /// Only call with an open, caught-up save observer on the read's verified
+    /// attachment. End the window on any coverage gap, ambiguous input or
+    /// write whose effects are not covered by save observation.
+    #[allow(dead_code)]
+    pub fn begin_saved_slot_refresh(&self, slot: Location) -> Option<SavedSlotRefresh> {
+        let state = self.ingress.0.lock().expect("PODxt save ingress");
+        state.observes(self.window).then(|| SavedSlotRefresh {
+            ingress: Arc::downgrade(&self.ingress),
+            window: self.window,
+            slot,
+            last_save: state.slots.get(&slot.address()).copied(),
+        })
     }
 
     /// A checked playing-tone result can finish after passive coverage ends,
@@ -258,6 +337,124 @@ pub(super) fn read_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "usb")]
+    fn simulated_stored(slot: Location) -> StoredTone {
+        use line6_devices::family::podxt::EditBuffer;
+
+        // The dump itself is untagged. The checked reader supplies the
+        // requested location after matching the reply to that exchange.
+        let mut bytes = vec![0; 168];
+        bytes[..6].copy_from_slice(&[0xf0, 0, 1, 12, 3, 0x74]);
+        bytes[7..15].copy_from_slice(b"New tone");
+        bytes[167] = 0xf7;
+        StoredTone {
+            location: slot,
+            tone: EditBuffer::parse(bytes).unwrap(),
+        }
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn addressed_refresh_after_a_gap_restores_only_its_exact_slot() {
+        use line6_devices::family::podxt::BankKind;
+
+        let ingress = Arc::new(PodxtSaveIngress::default());
+        let slot = Location::new(BankKind::Tones, 5).unwrap();
+        let setup = Location::new(BankKind::AmpSetups, 5).unwrap();
+        let original = ingress.begin();
+        let stale_read = original.begin_saved_slot_refresh(slot).unwrap();
+        original.gap();
+        assert!(original.begin_saved_slot_refresh(slot).is_none());
+
+        let restored = ingress.begin();
+        assert!(
+            ingress
+                .reconcile_saved_slot(stale_read, simulated_stored(slot))
+                .is_none()
+        );
+        let refresh = restored.begin_saved_slot_refresh(slot).unwrap();
+        assert!(
+            ingress
+                .reconcile_saved_slot(refresh, simulated_stored(setup))
+                .is_none()
+        );
+
+        restored.observe(slot);
+        let refresh = restored.begin_saved_slot_refresh(slot).unwrap();
+        let fresh = ingress
+            .reconcile_saved_slot(refresh, simulated_stored(slot))
+            .unwrap();
+        assert_eq!(
+            ingress.fresh_saved_slot(slot, &fresh).unwrap().tone.name(),
+            "New tone"
+        );
+        assert!(ingress.fresh_saved_slot(setup, &fresh).is_none());
+
+        drop(restored);
+        assert!(ingress.fresh_saved_slot(slot, &fresh).is_none());
+        let _reopened = ingress.begin();
+        assert!(ingress.fresh_saved_slot(slot, &fresh).is_none());
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn interleaved_save_packets_reject_same_slot_and_keep_other_bank_refresh() {
+        use line6_devices::family::podxt::BankKind;
+
+        let ingress = Arc::new(PodxtSaveIngress::default());
+        let listener = ingress.begin();
+        let slot = Location::new(BankKind::Tones, 5).unwrap();
+        let setup = Location::new(BankKind::AmpSetups, 5).unwrap();
+        let mut stream = NoticeStream::new(|saved| listener.observe(saved));
+        let mut receive = |packet| stream.receive(packet, &mut Vec::new(), |e| panic!("{e}"));
+
+        let slot_read = listener.begin_saved_slot_refresh(slot).unwrap();
+        let setup_read = listener.begin_saved_slot_refresh(setup).unwrap();
+        receive(&[0xf0, 0, 1, 12, 3, 0x24, 1]);
+        receive(&[5, 0xf7]);
+        assert!(
+            ingress
+                .reconcile_saved_slot(slot_read, simulated_stored(slot))
+                .is_none()
+        );
+        let setup_fresh = ingress
+            .reconcile_saved_slot(setup_read, simulated_stored(setup))
+            .unwrap();
+
+        let retry = listener.begin_saved_slot_refresh(slot).unwrap();
+        let fresh = ingress
+            .reconcile_saved_slot(retry, simulated_stored(slot))
+            .unwrap();
+        receive(&[0xf0, 0, 1, 12, 3, 0x24, 1, 5, 0xf7]);
+        assert!(ingress.fresh_saved_slot(slot, &fresh).is_none());
+        assert!(ingress.fresh_saved_slot(setup, &setup_fresh).is_some());
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn equal_epochs_on_different_attachments_never_match() {
+        let original = Arc::new(PodxtSaveIngress::default());
+        let replacement = Arc::new(PodxtSaveIngress::default());
+        let listener = original.begin();
+        let _replacement_listener = replacement.begin();
+        assert_eq!(original.revision(), replacement.revision());
+        let slot = Location::tone_from_label("32D").unwrap();
+        let refresh = listener.begin_saved_slot_refresh(slot).unwrap();
+        assert!(
+            replacement
+                .reconcile_saved_slot(refresh, simulated_stored(slot))
+                .is_none()
+        );
+
+        let refresh = listener.begin_saved_slot_refresh(slot).unwrap();
+        let fresh = original
+            .reconcile_saved_slot(refresh, simulated_stored(slot))
+            .unwrap();
+        assert!(replacement.fresh_saved_slot(slot, &fresh).is_none());
+        original.interrupt();
+        assert!(original.fresh_saved_slot(slot, &fresh).is_none());
+    }
 
     #[test]
     fn passive_input_reads_only_until_a_notice_or_yield() {
