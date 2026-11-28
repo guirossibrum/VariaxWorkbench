@@ -1,4 +1,4 @@
-use super::detection::{AttachmentKey, DetectedDevice, DeviceKey, DeviceSupport};
+use super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
 use super::{FileDialogs, PickRequest, Picker, PickerAction, egui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -47,7 +47,6 @@ pub(super) struct EditorServices<'a> {
     #[allow(dead_code)] // Editor-lane migration, see docs/non-blocking-pickers.md.
     pub tab: TabId,
     pub close: CloseResult,
-    pub(super) guitar_refresh: Option<&'a mut bool>,
     #[cfg(test)]
     pub prompt_buttons: &'a mut std::collections::HashMap<&'static str, egui::Rect>,
 }
@@ -79,23 +78,6 @@ impl EditorServices<'_> {
         started
     }
 
-    /// Whether the tab can ask detection to recheck its guitar connection.
-    #[allow(dead_code)] // Used when the Variax editor wires the Refresh button.
-    pub fn can_refresh_guitar(&self) -> bool {
-        self.guitar_refresh.is_some()
-    }
-
-    /// Request the existing identity refresh for this tab's attachment.
-    /// The shell dispatches the request after the editor callback returns.
-    #[allow(dead_code)] // Used when the Variax editor wires the Refresh button.
-    pub fn request_guitar_refresh(&mut self) -> bool {
-        let Some(requested) = self.guitar_refresh.take() else {
-            return false;
-        };
-        *requested = true;
-        true
-    }
-
     pub fn finish_close_if(&mut self, ready: bool) {
         if ready {
             self.close = CloseResult::Ready;
@@ -118,6 +100,7 @@ pub(super) enum SyncAdmission {
     Busy,
     Blocked(&'static str),
     Consent(&'static str),
+    Complete,
     Ready(std::num::NonZeroUsize),
     Unavailable(&'static str),
 }
@@ -145,7 +128,6 @@ pub(super) trait FamilyTab: std::any::Any {
     /// Called before polling the editor, with the tab's current device.
     /// Use `DeviceTab::verified_attachment` for attachment-scoped USB work
     /// and `DeviceTab::guitar_firmware_notice` for an unverified Variax reply.
-    /// UI actions can request an identity refresh through `EditorServices`.
     fn observe_device(&mut self, _device: Option<&DeviceTab>) {}
     fn poll(&mut self, _ctx: &egui::Context) {}
     /// One-shot device observation keyed to the attachment that produced it.
@@ -162,6 +144,11 @@ pub(super) trait FamilyTab: std::any::Any {
         None
     }
     fn cancel_connection_sync(&mut self) {}
+    /// A complete checked bank can be kept locally, even after its source
+    /// attachment ceases to be current.
+    fn has_session_library(&self) -> bool {
+        false
+    }
     fn local_prompt(&mut self, _ctx: &egui::Context, _services: &mut EditorServices<'_>) {}
     fn busy(&self) -> bool {
         false
@@ -225,11 +212,6 @@ impl DeviceTab {
         }
     }
 
-    pub(super) fn guitar_refresh_attachment(&self) -> Option<&AttachmentKey> {
-        (self.connection == Connection::Present && self.device.refresh_guitar)
-            .then_some(&self.device.key.attachment)
-    }
-
     pub fn status(&self) -> String {
         match self.connection {
             Connection::Disconnected => "Disconnected · offline editing".into(),
@@ -237,6 +219,7 @@ impl DeviceTab {
             Connection::Present => match &self.device.support {
                 DeviceSupport::IdentityPending => "USB detected · identity pending".into(),
                 DeviceSupport::UsbOnly => "USB detected · identity unverified".into(),
+                DeviceSupport::PresenceUncertain => "USB connection temporarily unverified".into(),
                 DeviceSupport::Verified(firmware) => {
                     format!("Identity verified · firmware {firmware}")
                 }
@@ -258,9 +241,14 @@ pub(super) struct TabEntry {
     pub file: Option<PathBuf>,
     pub device: Option<DeviceTab>,
     pub editor: Box<dyn FamilyTab>,
+    pub connection_library_complete: bool,
 }
 
 impl TabEntry {
+    pub fn has_session_library(&self) -> bool {
+        self.connection_library_complete || self.editor.has_session_library()
+    }
+
     pub fn title(&self) -> String {
         if let Some(device) = &self.device {
             let name = device.device.model;
@@ -300,6 +288,7 @@ pub(super) struct Tabs {
     next: TabId,
     disconnect_sequence: u64,
     dismissed: BTreeSet<DeviceKey>,
+    parked: BTreeMap<DeviceKey, TabEntry>,
 }
 
 impl Tabs {
@@ -323,8 +312,43 @@ impl Tabs {
             file,
             device: None,
             editor,
+            connection_library_complete: false,
         });
         Ok(id)
+    }
+
+    pub fn open_device(
+        &mut self,
+        device: DetectedDevice,
+        families: &[&'static dyn ProductFamily],
+        defaults: &EditorDefaults,
+    ) -> Result<(TabId, bool), String> {
+        if let Some(entry) = self.entries.iter().find(|entry| {
+            entry.device.as_ref().is_some_and(|tab| {
+                tab.device.key == device.key && tab.connection == Connection::Present
+            })
+        }) {
+            self.active = Some(entry.id);
+            return Ok((entry.id, false));
+        }
+        if let Some(mut entry) = self.parked.remove(&device.key) {
+            self.dismissed.remove(&device.key);
+            entry.device = Some(DeviceTab::present(device, false));
+            let id = entry.id;
+            self.entries.push(entry);
+            self.active = Some(id);
+            return Ok((id, false));
+        }
+        let family = families
+            .iter()
+            .copied()
+            .find(|family| family.info().id == device.key.family_id)
+            .ok_or_else(|| format!("No editor is registered for {}.", device.model))?;
+        let id = self.open(family, defaults, TabSource::New)?;
+        self.dismissed.remove(&device.key);
+        let entry = self.entries.last_mut().expect("the device tab just opened");
+        entry.device = Some(DeviceTab::present(device, false));
+        Ok((id, true))
     }
 
     pub fn index(&self, id: TabId) -> Option<usize> {
@@ -332,20 +356,24 @@ impl Tabs {
     }
 
     pub fn close(&mut self, id: TabId) {
-        if let Some(device) = self
-            .index(id)
-            .and_then(|index| self.entries[index].device.as_ref())
-        {
-            self.dismissed.insert(device.device.key.clone());
-        }
-        self.remove(id);
-    }
-
-    fn remove(&mut self, id: TabId) {
         let Some(index) = self.index(id) else {
             return;
         };
-        self.entries.remove(index);
+        let mut entry = self.entries.remove(index);
+        if let Some(device) = &entry.device {
+            let key = device.device.key.clone();
+            self.dismissed.insert(key.clone());
+            if device.connection == Connection::Present
+                && matches!(device.device.support, DeviceSupport::Verified(_))
+                && entry.has_session_library()
+                && !entry.editor.dirty()
+            {
+                // Retain document and library state, and release the route.
+                // Only the exact currently verified key may recover this tab.
+                entry.editor.observe_device(None);
+                self.parked.insert(key, entry);
+            }
+        }
         if self.active == Some(id) {
             self.active = self
                 .entries
@@ -354,6 +382,13 @@ impl Tabs {
                 .map(|entry| entry.id);
         }
     }
+
+    pub fn poll_parked(&mut self, ctx: &egui::Context) {
+        for entry in self.parked.values_mut() {
+            entry.editor.poll(ctx);
+        }
+    }
+
     pub fn mark_presence_uncertain(&mut self) {
         for entry in &mut self.entries {
             if let Some(device) = &mut entry.device
@@ -375,6 +410,7 @@ impl Tabs {
             .map(|device| (device.key.clone(), device))
             .collect();
         self.dismissed.retain(|key| remaining.contains_key(key));
+        self.parked.retain(|key, _| remaining.contains_key(key));
         for entry in &mut self.entries {
             let Some(device) = &mut entry.device else {
                 continue;
@@ -421,17 +457,9 @@ impl Tabs {
                 entry.device = Some(DeviceTab::present(device, with_edits));
                 continue;
             }
-            let Some(&family) = families
-                .iter()
-                .find(|family| family.info().id == key.family_id)
-            else {
-                continue;
-            };
             let active = self.active;
             let had_tabs = !self.entries.is_empty();
-            self.open(family, defaults, TabSource::New)?;
-            let entry = self.entries.last_mut().expect("the device tab just opened");
-            entry.device = Some(DeviceTab::present(device, false));
+            self.open_device(device, families, defaults)?;
             // Keep the current workspace selection when editors are open.
             if had_tabs {
                 self.active = active;

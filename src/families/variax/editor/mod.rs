@@ -1420,6 +1420,10 @@ impl FamilyTab for VariaxEditor {
         }
     }
     #[cfg(feature = "usb")]
+    fn has_session_library(&self) -> bool {
+        self.has_session_library()
+    }
+    #[cfg(feature = "usb")]
     fn connection_sync_admission(&self, consent: bool) -> crate::editor::tabs::SyncAdmission {
         self.connection_sync_admission(consent)
     }
@@ -1503,7 +1507,7 @@ impl FamilyTab for VariaxEditor {
         #[cfg(feature = "usb")]
         self.sync_button(ui);
         #[cfg(feature = "usb")]
-        let has_download = {
+        {
             self.open_download_button(ui);
             let ready = self.download_target_ready();
             if self.connection_status.is_some() {
@@ -1516,11 +1520,7 @@ impl FamilyTab for VariaxEditor {
                     self.string_volume_button(ui);
                 });
             }
-            ready
-        };
-        #[cfg(not(feature = "usb"))]
-        let has_download = false;
-        self.connection_controls(ui, services, has_download);
+        }
     }
 }
 

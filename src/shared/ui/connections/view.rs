@@ -232,17 +232,18 @@ fn device_row(
                     }
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width());
-                        let connected = matches!(
-                            row.status,
-                            Status::Connected
-                                | Status::Unsupported
-                                | Status::Consent(_)
-                                | Status::Skipped(_)
-                                | Status::Waiting
-                                | Status::Reading { .. }
-                                | Status::Complete
-                                | Status::Failed(_)
-                        );
+                        let connected = !row.presence_uncertain
+                            && matches!(
+                                row.status,
+                                Status::Connected
+                                    | Status::Unsupported
+                                    | Status::Consent(_)
+                                    | Status::Skipped(_)
+                                    | Status::Waiting
+                                    | Status::Reading { .. }
+                                    | Status::Complete
+                                    | Status::Failed(_)
+                            );
                         let title = if connected {
                             format!("{} Connected", row.device.name)
                         } else {
@@ -260,7 +261,7 @@ fn device_row(
             })
             .inner
     };
-    if !startup || row.status != Status::Complete {
+    if !startup || row.presence_uncertain || row.status != Status::Complete {
         return draw(ui);
     }
 
@@ -279,6 +280,10 @@ fn device_row(
 }
 
 fn row_status(ui: &mut egui::Ui, row: &Row, startup: bool) -> Option<Action> {
+    if row.presence_uncertain && row.status != Status::Disconnected {
+        ui.label("Connection temporarily unverified");
+        return None;
+    }
     match &row.status {
         Status::Checking => ui.label("Checking connection…"),
         Status::Connected => ui.label("Library sync has not started"),
@@ -301,7 +306,10 @@ fn row_status(ui: &mut egui::Ui, row: &Row, startup: bool) -> Option<Action> {
             return ui
                 .horizontal_wrapped(|ui| {
                     let download = ui.add(action_button("Download")).clicked();
-                    let skip = ui.add(action_button("Skip")).clicked();
+                    let skip = ui
+                        .add(action_button("Skip"))
+                        .on_hover_text("Skip the library download and keep the guitar connected.")
+                        .clicked();
                     if download {
                         Some(Action::AllowDownload(row.attachment))
                     } else if skip {

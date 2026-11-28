@@ -1613,16 +1613,6 @@ impl Workbench {
         result.unwrap()
     }
 
-    fn test_request_guitar_refresh(&mut self, tab: TabId) -> bool {
-        let mut requested = false;
-        self.with_tab(tab, |_, services| {
-            let available = services.can_refresh_guitar();
-            requested = services.request_guitar_refresh();
-            assert_eq!(available, requested);
-        });
-        requested
-    }
-
     fn open_dialog(&mut self) {
         let ctx = egui::Context::default();
         self.test_action(|editor: &mut VariaxEditor, services| editor.open_dialog(&ctx, services));

@@ -245,28 +245,16 @@ impl Workbench {
         action: impl FnOnce(&mut TabEntry, &mut EditorServices<'_>),
     ) -> Option<CloseResult> {
         let index = self.tabs.index(id)?;
-        let attachment = self.tabs.entries[index]
-            .device
-            .as_ref()
-            .and_then(tabs::DeviceTab::guitar_refresh_attachment)
-            .filter(|_| self.detection.is_some() && !self.has_prompt() && !self.permit_close)
-            .cloned();
-        let mut refresh_requested = false;
         let mut services = EditorServices {
             dialogs: self.dialogs.as_mut(),
             picker: &mut self.picker,
             tab: id,
             close: CloseResult::Pending,
-            guitar_refresh: attachment.as_ref().map(|_| &mut refresh_requested),
             #[cfg(test)]
             prompt_buttons: &mut self.pending_buttons,
         };
         action(&mut self.tabs.entries[index], &mut services);
-        let close = services.close;
-        if refresh_requested && let Some(attachment) = attachment {
-            self.refresh_guitar(&attachment);
-        }
-        Some(close)
+        Some(services.close)
     }
 
     fn with_active(&mut self, action: impl FnOnce(&mut TabEntry, &mut EditorServices<'_>)) {
@@ -426,6 +414,7 @@ impl Workbench {
         if self.waiting_for_hardware {
             self.advance_close(ctx);
         }
+        self.tabs.poll_parked(ctx);
         let mut device_events = Vec::new();
         for entry in &mut self.tabs.entries {
             if let Some(device) = &mut entry.device
@@ -611,7 +600,7 @@ impl Workbench {
             .frame(shell_bar(0, false))
             .show(ctx, |ui| {
                 let mut guitar_refresh = None;
-                let allow_refresh = !self.has_prompt();
+                let allow_refresh = !self.has_prompt() && !self.permit_close;
                 // The build number stays at the bottom-right. Status text
                 // wraps in the width that remains, so a device line, an
                 // error, or a long filename cannot cover it. A right-to-left
@@ -684,10 +673,6 @@ impl Workbench {
                                     && device.connection == tabs::Connection::Present
                                     && let Some(status) = device.device.guitar_status.clone()
                                 {
-                                    let attachment = device
-                                        .device
-                                        .refresh_guitar
-                                        .then(|| device.device.key.attachment.clone());
                                     let details = device.device.mac_identity_details.clone();
                                     ui.horizontal_wrapped(|ui| {
                                         status_line(ui, &status, theme::MUTED);
@@ -696,17 +681,28 @@ impl Workbench {
                                                 status_line(ui, details, theme::MUTED);
                                             });
                                         }
-                                        if let Some(attachment) = attachment
-                                            && self.refresh_guitar_button(ui, allow_refresh)
-                                        {
-                                            guitar_refresh = Some(attachment);
-                                        }
                                     });
                                 }
                             } else if !variax {
                                 chrome::status_chip(ui, chrome::LinkState::NoDevice);
                             }
-                        } else {
+                            let attachment = entry.device.as_ref().and_then(|tab| {
+                                self.connection_inventory
+                                    .guitar_retry_routes()
+                                    .find(|relay| relay.key.attachment == tab.device.key.attachment)
+                                    .map(|relay| relay.key.attachment.clone())
+                            });
+                            if let Some(attachment) = attachment
+                                && self.retry_guitar_button(ui, allow_refresh)
+                            {
+                                guitar_refresh = Some(attachment);
+                            }
+                        } else if self
+                            .connection_inventory
+                            .verified_devices()
+                            .next()
+                            .is_none()
+                        {
                             status_line(ui, "No file open", theme::MUTED);
                             chrome::status_chip(ui, chrome::LinkState::NoDevice);
                         }
@@ -856,9 +852,11 @@ impl Workbench {
         }
         if variax_active {
             self.with_active(|entry, services| {
-                let editor = (&mut *entry.editor as &mut dyn std::any::Any)
-                    .downcast_mut::<VariaxEditor>()
-                    .expect("Variax tab has a Variax editor");
+                let Some(editor) =
+                    (&mut *entry.editor as &mut dyn std::any::Any).downcast_mut::<VariaxEditor>()
+                else {
+                    return;
+                };
                 let enabled =
                     !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt();
                 let can_save = enabled && editor.has_document();
@@ -995,6 +993,7 @@ impl Workbench {
             .show(ui, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     ui.add_space(theme::SPACE_16);
+                    self.connected_home(ui);
                     if command_button(ui, "Open file…", true).clicked() {
                         self.request_open_file(ui.ctx());
                     }
@@ -1030,6 +1029,74 @@ impl Workbench {
             });
     }
 
+    fn connected_home(&mut self, ui: &mut egui::Ui) {
+        let devices: Vec<_> = self
+            .connection_inventory
+            .verified_devices()
+            .map(|device| {
+                (
+                    device.key.clone(),
+                    connection_inventory::device_name(device),
+                )
+            })
+            .collect();
+        if !devices.is_empty() {
+            ui.label(
+                egui::RichText::new("Connected devices")
+                    .size(theme::TITLE)
+                    .strong()
+                    .color(theme::TEXT),
+            );
+            for (key, name) in &devices {
+                ui.push_id(("connected", key), |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let open = toolbar_command(ui, &format!("Open {name}"), true);
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(egui::Id::new(("test-connected-open", key)), open.id);
+                        });
+                        if open.clicked() {
+                            self.open_connected_editor(key);
+                            ui.ctx().request_repaint();
+                        }
+                        if devices.iter().filter(|(_, model)| model == name).count() > 1 {
+                            ui.label(&key.attachment.path);
+                        } else if key.podxt_upstream().is_some() {
+                            ui.label("via PODxt Live");
+                        }
+                    });
+                });
+            }
+            if toolbar_command(ui, "Open connected editors", true).clicked() {
+                let mut first = None;
+                for (key, _) in devices {
+                    let opened = self.open_connected_editor(&key);
+                    first = first.or(opened);
+                }
+                self.tabs.active = first;
+                ui.ctx().request_repaint();
+            }
+            ui.add_space(theme::SPACE_16);
+        }
+        let retry_routes: Vec<_> = self
+            .connection_inventory
+            .guitar_retry_routes()
+            .map(|relay| (relay.key.attachment.clone(), relay.guitar_status.clone()))
+            .collect();
+        for (attachment, status) in retry_routes {
+            ui.push_id(("guitar-retry", &attachment), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(status) = status {
+                        status_line(ui, &status, theme::MUTED);
+                    }
+                    if self.retry_guitar_button(ui, true) {
+                        self.refresh_guitar(&attachment);
+                    }
+                });
+            });
+        }
+    }
+
     fn tab_strip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut close = None;
         ui.add_enabled_ui(!self.has_prompt(), |ui| {
@@ -1062,7 +1129,15 @@ impl Workbench {
                                     }
                                     .show(ui);
                                     #[cfg(test)]
-                                    self.tab_buttons.insert(family_id, output.response.rect);
+                                    {
+                                        self.tab_buttons.insert(family_id, output.response.rect);
+                                        ctx.data_mut(|data| {
+                                            data.insert_temp(
+                                                egui::Id::new(("test-close-tab", tab_id)),
+                                                output.close.rect,
+                                            );
+                                        });
+                                    }
                                     if output.response.clicked() {
                                         self.tabs.active = Some(tab_id);
                                     }

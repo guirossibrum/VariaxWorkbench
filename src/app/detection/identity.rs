@@ -381,7 +381,7 @@ mod live {
             Ok(VariaxDriverBinding::Expected) => {}
             Ok(VariaxDriverBinding::Unbound) if kind != JobKind::ReattachGuitarDriver => {
                 return Guitar::DriverUnbound(
-                    "The expected guitar interface driver is unavailable. Use Refresh guitar to reattach it.".into(),
+                    "The expected guitar interface driver is unavailable. Use Retry guitar connection to reattach it.".into(),
                 );
             }
             Ok(VariaxDriverBinding::Unbound) => {
@@ -420,7 +420,7 @@ mod live {
             }
             Err(IdentifyError::Failed(stop)) if stop.cleanup.is_some() => {
                 if matches!(binding(), Ok(VariaxDriverBinding::Unbound)) {
-                    Guitar::DriverUnbound("USB cleanup left the guitar interface driver unbound. Use Refresh guitar to reattach it, or replug PODxt Live USB as a last resort.".into())
+                    Guitar::DriverUnbound("USB cleanup left the guitar interface driver unbound. Use Retry guitar connection to reattach it, or replug PODxt Live USB as a last resort.".into())
                 } else {
                     Guitar::CleanupFailed
                 }

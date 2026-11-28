@@ -667,3 +667,29 @@ fn hidden_background_progress_surfaces_failure_and_disconnect() {
         assert!(connections.visible);
     }
 }
+
+#[test]
+fn same_attachment_download_recovery_preserves_generation_and_rejects_old_results() {
+    let mut connections = Connections::default();
+    connections.detection(Detection::Complete);
+    connections.arrived(POD, pod());
+    connections.verified(POD, Verification::Verified);
+    let first = started(&mut connections, POD, 128);
+    assert!(!connections.request_download(POD));
+    connections.finished(first, Ok(()));
+
+    connections.presence_uncertain(POD);
+    assert!(!connections.is_complete(POD));
+    assert!(!connections.request_download(POD));
+    connections.verified(POD, Verification::Verified);
+    assert!(connections.is_complete(POD));
+
+    assert!(connections.request_download(POD));
+    let next = started(&mut connections, POD, 128);
+    assert_ne!(first, next);
+    connections.finished(first, Err("late result".into()));
+    assert!(matches!(status(&connections, POD), Status::Reading { read, .. } if *read == next));
+    assert!(!connections.rows[0].reconnected);
+    connections.finished(next, Ok(()));
+    assert!(connections.is_complete(POD));
+}

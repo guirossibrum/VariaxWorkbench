@@ -670,7 +670,7 @@ fn refresh_button_waits_while_the_rig_is_busy_and_opens_only_after_verification(
         .borrow_mut()
         .results
         .insert(attachment.clone(), SimulatedOutcome::OtherProcessBusy);
-    detection_button(&ctx, &mut app, "refresh-guitar");
+    detection_button(&ctx, &mut app, "retry-guitar");
     assert_eq!(entries(&app).len(), 1);
     let pod = entries(&app)[0].2;
     assert_eq!(
@@ -997,7 +997,6 @@ fn unverified_guitar_firmware_warns_on_the_pod_and_opens_an_offline_guitar_tab()
     assert_eq!(connected[0].2.device.guitar_warning, Some(warning));
     assert!(connected[0].2.guitar_firmware_notice().is_none());
     assert!(offline.verified_attachment().is_none());
-    assert!(offline.guitar_refresh_attachment().is_none());
     assert!(app.verified_backup_guitar().is_none());
     assert!(app.backup_firmware_blocked(BackupChoice::Variax));
     assert!(!app.backup_firmware_blocked(BackupChoice::Podxt));
@@ -1246,46 +1245,6 @@ fn full_backup_refuses_a_guitar_replaced_while_the_folder_picker_is_open() {
 }
 
 #[test]
-fn editor_refresh_uses_its_current_attachment_even_when_another_tab_is_active() {
-    let (ctx, mut app, source) = fixture();
-    source.usb(true, false);
-    tick(&ctx, &mut app);
-    let old = entries(&app)[0].2.device.key.attachment.clone();
-    source.guitar(old.clone());
-    tick(&ctx, &mut app);
-    let guitar = entries(&app)[1].1;
-
-    app.new_tab(registry::LEGACY_STARTUP);
-    let offline = app.tabs.active.unwrap();
-    assert!(!app.test_request_guitar_refresh(offline));
-    assert!(app.test_request_guitar_refresh(guitar));
-    assert_eq!(app.tabs.active, Some(offline));
-    assert_eq!(
-        entries(&app)[1].2.device.support,
-        DeviceSupport::Refreshing("3.10")
-    );
-    assert!(!app.test_request_guitar_refresh(guitar));
-
-    source.guitar(old.clone());
-    tick(&ctx, &mut app);
-    assert_eq!(source.0.borrow().completed.last().unwrap().attachment, old);
-    source.usb(false, false);
-    tick(&ctx, &mut app);
-    assert!(!app.test_request_guitar_refresh(guitar));
-
-    source.usb_paths(&["8-4.1"], false);
-    tick(&ctx, &mut app);
-    let new = app.detection.as_ref().unwrap().attachment_key("8-4.1");
-    source.guitar(new.clone());
-    tick(&ctx, &mut app);
-    assert_eq!(entries(&app)[1].1, guitar);
-    assert!(app.test_request_guitar_refresh(guitar));
-    source.guitar(new.clone());
-    tick(&ctx, &mut app);
-    assert_eq!(source.0.borrow().completed.last().unwrap().attachment, new);
-}
-
-#[test]
 fn follow_disconnect_keeps_the_tab_and_reattaches_only_after_reconnect_identity() {
     let (ctx, mut app, source) = fixture();
     source.usb(true, false);
@@ -1381,7 +1340,7 @@ fn unbound_driver_at_start_requires_consent_before_repair_and_identity() {
     tick(&ctx, &mut app);
     assert_eq!(source.0.borrow().completed.len(), 1);
 
-    detection_button(&ctx, &mut app, "refresh-guitar");
+    detection_button(&ctx, &mut app, "retry-guitar");
     assert!(matches!(
         app.detect_confirmation,
         Some(DetectConfirmation::Reattach { .. })
@@ -1401,7 +1360,7 @@ fn unbound_driver_at_start_requires_consent_before_repair_and_identity() {
     assert_eq!(source.0.borrow().completed.len(), 1);
     assert_eq!(entries(&app).len(), 1);
 
-    detection_button(&ctx, &mut app, "refresh-guitar");
+    detection_button(&ctx, &mut app, "retry-guitar");
     detection_button(&ctx, &mut app, "yes");
     assert!(app.detect_confirmation.is_none());
     let completed = &source.0.borrow().completed;
@@ -1424,7 +1383,7 @@ fn driver_repair_consent_does_not_carry_over_to_a_new_usb_address() {
         SimulatedGuitar::DriverUnbound("driver unbound".into()),
     );
     tick(&ctx, &mut app);
-    detection_button(&ctx, &mut app, "refresh-guitar");
+    detection_button(&ctx, &mut app, "retry-guitar");
 
     source.0.borrow_mut().address = Some(11);
     source.guitar(parent);
@@ -1534,10 +1493,12 @@ fn mac_discovery_retries_at_cadence_until_the_two_identities_verify() {
             guitar_retry + Duration::from_secs(21),
         )
         .unwrap();
+    assert_eq!(devices.len(), 2);
+    assert!(devices.iter().any(|device| device.key == guitar_key));
     assert!(
         devices
             .iter()
-            .all(|device| device.support == DeviceSupport::UsbOnly)
+            .all(|device| device.support == DeviceSupport::PresenceUncertain)
     );
     source.0.borrow_mut().interfaces_unavailable = false;
     let devices = service
@@ -1856,7 +1817,11 @@ fn connection_window_scopes_disconnect_and_reconnect_to_the_current_generation()
     tick(&ctx, &mut app);
     let failed = frame(&ctx, &mut app, vec![]);
     assert!(has_label(&failed.shapes, "Device check failed"));
-    assert!(has_label(&failed.shapes, "PODxt Live Connected"));
+    assert!(!has_label(&failed.shapes, "PODxt Live Connected"));
+    assert!(has_label(
+        &failed.shapes,
+        "Connection temporarily unverified"
+    ));
 
     source.0.borrow_mut().fail = false;
     source.usb(false, true);
@@ -1928,7 +1893,13 @@ impl FamilyTab for SyncEditor {
     fn dirty(&self) -> bool {
         self.state.borrow().gain != 0
     }
-    fn close_prompt(&mut self, _: &egui::Context, _: &mut EditorServices<'_>) {}
+    fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        egui::Modal::new(egui::Id::new("keep-test-edits")).show(ctx, |ui| {
+            if ui.button("Keep test edits").clicked() {
+                services.close = CloseResult::Cancelled;
+            }
+        });
+    }
     fn status(&self) -> (&str, Option<&str>) {
         ("", None)
     }
@@ -2071,7 +2042,7 @@ fn startup_sync_queues_the_guitar_until_checked_release_while_independent_work_c
     assert!(has_label(&cancelled.shapes, "Download cancelled."));
 }
 
-fn click_sync_label(ctx: &egui::Context, app: &mut Workbench, label: &str) -> egui::FullOutput {
+fn visible_label_position(view: &egui::FullOutput, label: &str) -> Option<Pos2> {
     fn position(shape: &egui::Shape, label: &str) -> Option<Pos2> {
         match shape {
             egui::Shape::Text(text) if text.galley.text() == label => {
@@ -2081,14 +2052,18 @@ fn click_sync_label(ctx: &egui::Context, app: &mut Workbench, label: &str) -> eg
             _ => None,
         }
     }
-    let view = frame(ctx, app, vec![]);
-    let pos = view
-        .shapes
+    view.shapes
         .iter()
-        .find_map(|shape| {
+        .filter_map(|shape| {
             position(&shape.shape, label).filter(|pos| shape.clip_rect.contains(*pos))
         })
-        .unwrap_or_else(|| panic!("{label} is not visible"));
+        .max_by(|a, b| a.y.total_cmp(&b.y))
+}
+
+fn click_sync_label(ctx: &egui::Context, app: &mut Workbench, label: &str) -> egui::FullOutput {
+    let view = frame(ctx, app, vec![]);
+    let pos =
+        visible_label_position(&view, label).unwrap_or_else(|| panic!("{label} is not visible"));
     let pointer = |pressed| egui::Event::PointerButton {
         pos,
         button: egui::PointerButton::Primary,
@@ -2467,4 +2442,430 @@ fn first_guitar_verified_after_opening_the_startup_pod_syncs_but_a_return_asks()
     assert!(has_label(&returned.shapes, "Temporarily switch presets?"));
     assert_eq!(replacement.borrow().starts, 0);
     assert_eq!(pod.borrow().starts, 1);
+}
+
+fn click_tab_close(ctx: &egui::Context, app: &mut Workbench, tab: TabId) {
+    frame(ctx, app, vec![]);
+    let pos = ctx.data(|data| {
+        data.get_temp::<Rect>(egui::Id::new(("test-close-tab", tab)))
+            .expect("visible tab close button")
+            .center()
+    });
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    frame(ctx, app, vec![egui::Event::PointerMoved(pos), press(true)]);
+    frame(ctx, app, vec![press(false)]);
+}
+
+fn completed_startup_rig() -> StartupRig {
+    let mut rig = startup_rig_with_fake_downloads();
+    rig.pod.borrow_mut().update = Some(tabs::SyncUpdate::Finished(Ok(())));
+    frame(&rig.ctx, &mut rig.app, vec![]);
+    frame(&rig.ctx, &mut rig.app, vec![]);
+    assert_eq!(rig.guitar.borrow().starts, 1);
+    rig.guitar.borrow_mut().update = Some(tabs::SyncUpdate::Finished(Ok(())));
+    frame(&rig.ctx, &mut rig.app, vec![]);
+    click_sync_label(&rig.ctx, &mut rig.app, "PODxt Live Connected");
+    rig.app.connections.dismiss();
+    rig
+}
+
+#[test]
+fn home_opens_exact_live_editors_and_keeps_offline_editors_separate() {
+    let StartupRig {
+        ctx,
+        mut app,
+        pod,
+        guitar,
+        ..
+    } = completed_startup_rig();
+    let live_pod = entries(&app)[0].1;
+    let live_guitar = entries(&app)[1].1;
+    let open_guitar = "Open Variax 300/600";
+
+    click_sync_label(&ctx, &mut app, "Home");
+    let home = frame(&ctx, &mut app, vec![]);
+    let visible = |label| has_label(&home.shapes, label);
+    assert!(visible("Open connected editors"));
+    assert!(visible("Open PODxt Live"));
+    assert!(visible(open_guitar));
+    assert!(visible("Edit offline"));
+    let y = |label| visible_label_position(&home, label).unwrap().y;
+    assert!(y("Open PODxt Live") < y(open_guitar));
+    assert!(y(open_guitar) < y("Open connected editors"));
+    assert!(y("Open connected editors") < y("Edit offline"));
+    assert!(!visible("Refresh guitar"));
+    assert!(!visible("Retry guitar connection"));
+
+    click_sync_label(&ctx, &mut app, "PODxt Live");
+    let offline_pod = app.tabs.active.unwrap();
+    let offline_index = app.tabs.index(offline_pod).unwrap();
+    assert!(app.tabs.entries[offline_index].device.is_none());
+    assert_ne!(offline_pod, live_pod);
+    click_sync_label(&ctx, &mut app, "Home");
+    click_sync_label(&ctx, &mut app, "Variax");
+    let offline_guitar = app.tabs.active.unwrap();
+    assert!(
+        app.tabs.entries[app.tabs.index(offline_guitar).unwrap()]
+            .device
+            .is_none()
+    );
+
+    for (label, expected) in [
+        ("Open PODxt Live", live_pod),
+        (open_guitar, live_guitar),
+        ("Open connected editors", live_pod),
+    ] {
+        click_sync_label(&ctx, &mut app, "Home");
+        click_sync_label(&ctx, &mut app, label);
+        assert_eq!(app.tabs.active, Some(expected));
+        assert_eq!(app.tabs.entries.len(), 4);
+    }
+    assert_eq!(pod.borrow().starts, 1);
+    assert_eq!(guitar.borrow().starts, 1);
+}
+
+#[test]
+fn home_reopens_clean_complete_editors_without_a_read_and_preserves_dirty_close() {
+    let StartupRig {
+        ctx,
+        mut app,
+        source,
+        pod,
+        guitar,
+    } = completed_startup_rig();
+    let attached: Vec<_> = entries(&app)
+        .into_iter()
+        .map(|(_, id, tab)| (id, tab.device.key.clone()))
+        .collect();
+    let (pod_tab, _) = &attached[0];
+    let (guitar_tab, _) = &attached[1];
+
+    click_tab_close(&ctx, &mut app, *pod_tab);
+    assert_eq!(app.tabs.active, Some(*guitar_tab));
+    click_tab_close(&ctx, &mut app, *guitar_tab);
+    assert!(app.tabs.entries.is_empty());
+    tick(&ctx, &mut app);
+    assert!(
+        app.tabs.entries.is_empty(),
+        "detection must respect dismissal"
+    );
+
+    click_sync_label(&ctx, &mut app, "Open connected editors");
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.tabs.active, Some(*pod_tab));
+    for (id, key) in &attached {
+        let device = &app.tabs.entries[app.tabs.index(*id).unwrap()].device;
+        assert_eq!(device.as_ref().unwrap().device.key, *key);
+        assert!(device.as_ref().unwrap().verified_attachment().is_some());
+    }
+    assert_eq!(pod.borrow().starts, 1);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    let reopened = frame(&ctx, &mut app, vec![]);
+    assert!(!has_label(&reopened.shapes, "Reconnected after disconnect"));
+    assert!(!has_label(&reopened.shapes, "Download"));
+
+    click_sync_label(&ctx, &mut app, "Increase test gain");
+    click_tab_close(&ctx, &mut app, *pod_tab);
+    assert_eq!(app.closing_tab, Some(*pod_tab));
+    click_sync_label(&ctx, &mut app, "Keep test edits");
+    assert!(app.closing_tab.is_none());
+    assert_eq!(app.tabs.active, Some(*pod_tab));
+    assert_eq!(pod.borrow().gain, 1);
+}
+
+#[test]
+fn home_excludes_unsupported_pending_and_temporarily_uncertain_devices() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(false, true);
+    tick(&ctx, &mut app);
+    assert!(!has_label(
+        &frame(&ctx, &mut app, vec![]).shapes,
+        "Connected devices"
+    ));
+    source.usb(true, true);
+    tick(&ctx, &mut app);
+    click_sync_label(&ctx, &mut app, "Home");
+    assert!(!has_label(
+        &frame(&ctx, &mut app, vec![]).shapes,
+        "Connected devices"
+    ));
+
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(attachment, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    app.connections.dismiss();
+    let healthy_pod = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&healthy_pod.shapes, "Open PODxt Live"));
+    assert!(has_label(&healthy_pod.shapes, "Retry guitar connection"));
+
+    source.0.borrow_mut().fail = true;
+    tick(&ctx, &mut app);
+    let uncertain = frame(&ctx, &mut app, vec![]);
+    assert!(!has_label(&uncertain.shapes, "Open connected editors"));
+    assert!(!has_label(&uncertain.shapes, "Retry guitar connection"));
+    assert!(has_label(&uncertain.shapes, "Edit offline"));
+}
+
+#[test]
+fn readiness_and_metadata_uncertainty_preserve_both_completed_attachments() {
+    let StartupRig {
+        ctx,
+        mut app,
+        source,
+        pod,
+        guitar,
+    } = completed_startup_rig();
+    let pod_attachment = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "podxt");
+    let guitar_attachment = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "variax");
+    let initial: Vec<_> = entries(&app)
+        .into_iter()
+        .map(|(_, id, tab)| (id, tab.device.key.clone()))
+        .collect();
+    click_sync_label(&ctx, &mut app, "Home");
+
+    for set_uncertain in [
+        (|snapshot: &mut FakeSnapshot, on| snapshot.fail = on) as fn(&mut FakeSnapshot, bool),
+        |snapshot: &mut FakeSnapshot, on| snapshot.interfaces_unavailable = on,
+    ] {
+        set_uncertain(&mut source.0.borrow_mut(), true);
+        tick(&ctx, &mut app);
+        assert!(
+            entries(&app)
+                .iter()
+                .all(|entry| entry.2.verified_attachment().is_none())
+        );
+        assert!(!has_label(
+            &frame(&ctx, &mut app, vec![]).shapes,
+            "Open connected editors"
+        ));
+
+        set_uncertain(&mut source.0.borrow_mut(), false);
+        tick(&ctx, &mut app);
+        let restored = frame(&ctx, &mut app, vec![]);
+        assert!(has_label(&restored.shapes, "Open connected editors"));
+        assert!(!has_label(&restored.shapes, "Reconnected after disconnect"));
+        assert!(app.connections.is_complete(pod_attachment));
+        assert!(app.connections.is_complete(guitar_attachment));
+        for ((_, id, current), (old_id, old_key)) in entries(&app).into_iter().zip(&initial) {
+            assert_eq!(id, *old_id);
+            assert_eq!(current.device.key, *old_key);
+        }
+    }
+    assert_eq!(pod.borrow().starts, 1);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert_eq!(source.0.borrow().completed.len(), 1);
+}
+
+#[test]
+fn replacement_requires_live_verification_but_preserves_dirty_editors_and_local_banks() {
+    let StartupRig {
+        ctx,
+        mut app,
+        source,
+        pod,
+        guitar,
+    } = completed_startup_rig();
+    let pod_tab = entries(&app)[0].1;
+    let guitar_tab = entries(&app)[1].1;
+    let old_parent = entries(&app)[0].2.device.key.attachment.clone();
+    let old_guitar = entries(&app)[1].2.device.key.clone();
+    let old_pod_row = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "podxt");
+    let old_guitar_row = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "variax");
+    click_sync_label(&ctx, &mut app, "Increase test gain");
+    click_sync_label(&ctx, &mut app, "Home");
+    click_sync_label(&ctx, &mut app, "Open Variax 300/600");
+    click_sync_label(&ctx, &mut app, "Increase test gain");
+    let selected = app.tabs.active;
+
+    // Identical coordinates can be occupied by a new relay and guitar.
+    source.usb(false, false);
+    tick(&ctx, &mut app);
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let new_parent = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    assert_ne!(old_parent, new_parent);
+    assert!(
+        entries(&app)
+            .iter()
+            .all(|entry| entry.2.verified_attachment().is_none())
+    );
+
+    source.finish(new_parent.clone(), unverified_guitar(b"0309"));
+    tick(&ctx, &mut app);
+    assert!(entries(&app)[0].2.verified_attachment().is_some());
+    assert!(entries(&app)[1].2.verified_attachment().is_none());
+    assert!(!app.connections.is_complete(old_pod_row));
+    assert!(!app.connections.is_complete(old_guitar_row));
+
+    source.guitar(new_parent.clone());
+    app.refresh_guitar(&new_parent);
+    let returned = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&returned.shapes, "Reconnected after disconnect"));
+    assert!(!has_label(&returned.shapes, "Download"));
+    assert_eq!(app.tabs.active, selected);
+    assert_eq!(entries(&app)[0].1, pod_tab);
+    assert_eq!(entries(&app)[1].1, guitar_tab);
+    assert_ne!(entries(&app)[1].2.device.key, old_guitar);
+    for (_, _, tab) in entries(&app) {
+        assert!(tab.verified_attachment().is_some());
+        assert_eq!(tab.device.key.attachment, new_parent);
+    }
+    assert!(
+        !app.connections.is_complete(
+            app.connection_inventory
+                .attachment_for_test("8-2.1", "podxt")
+        )
+    );
+    assert!(
+        !app.connections.is_complete(
+            app.connection_inventory
+                .attachment_for_test("8-2.1", "variax")
+        )
+    );
+    for state in [&pod, &guitar] {
+        assert_eq!(state.borrow().starts, 1);
+        assert_eq!(state.borrow().gain, 1);
+    }
+}
+
+#[test]
+fn narrow_home_connected_actions_accept_tab_shift_tab_enter_and_space() {
+    let StartupRig { ctx, mut app, .. } = completed_startup_rig();
+    let live_pod = entries(&app)[0].1;
+    let live_guitar = entries(&app)[1].1;
+    let pod_key = entries(&app)[0].2.device.key.clone();
+    let guitar_key = entries(&app)[1].2.device.key.clone();
+    click_sync_label(&ctx, &mut app, "Home");
+
+    let draw = |app: &mut Workbench, events, modifiers| {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(375.0, 820.0))),
+                modifiers,
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        )
+    };
+    let press = |app: &mut Workbench, key, modifiers| {
+        for pressed in [true, false] {
+            draw(
+                app,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+        }
+    };
+    let narrow = draw(&mut app, vec![], egui::Modifiers::NONE);
+    let action_id = |key: &super::super::detection::DeviceKey, label| {
+        let id = ctx
+            .data(|data| data.get_temp::<egui::Id>(egui::Id::new(("test-connected-open", key))))
+            .unwrap();
+        let position = visible_label_position(&narrow, label).unwrap();
+        assert!(
+            ctx.read_response(id)
+                .unwrap()
+                .rect
+                .expand(2.0)
+                .contains(position)
+        );
+        id
+    };
+    let open_pod = action_id(&pod_key, "Open PODxt Live");
+    let open_guitar = action_id(&guitar_key, "Open Variax 300/600");
+    let focused = |id| ctx.memory(|memory| memory.focused() == Some(id));
+    let find_focus = |app: &mut Workbench, id, modifiers| {
+        for _ in 0..36 {
+            if focused(id) {
+                break;
+            }
+            press(app, egui::Key::Tab, modifiers);
+        }
+        assert!(focused(id), "Connected action must be keyboard focusable");
+    };
+
+    find_focus(&mut app, open_guitar, egui::Modifiers::NONE);
+    find_focus(&mut app, open_pod, egui::Modifiers::SHIFT);
+    press(&mut app, egui::Key::Space, egui::Modifiers::NONE);
+    assert_eq!(app.tabs.active, Some(live_pod));
+
+    press(&mut app, egui::Key::Tab, egui::Modifiers::NONE);
+    for _ in 0..36 {
+        let Some(response) = ctx
+            .memory(|memory| memory.focused())
+            .and_then(|id| ctx.read_response(id))
+        else {
+            press(&mut app, egui::Key::Tab, egui::Modifiers::NONE);
+            continue;
+        };
+        if response.rect == app.tab_buttons["home"] {
+            break;
+        }
+        press(&mut app, egui::Key::Tab, egui::Modifiers::NONE);
+    }
+    let home = ctx.memory(|memory| memory.focused()).unwrap();
+    assert_eq!(
+        ctx.read_response(home).unwrap().rect,
+        app.tab_buttons["home"]
+    );
+    press(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(app.tabs.active.is_none());
+    find_focus(&mut app, open_guitar, egui::Modifiers::NONE);
+    press(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(app.tabs.active, Some(live_guitar));
+}
+
+#[test]
+fn closed_incomplete_editor_recovers_through_a_new_checked_read_on_home() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let original = entries(&app)[0].1;
+    let parent = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(parent, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    app.connections.dismiss();
+    click_tab_close(&ctx, &mut app, original);
+    assert!(app.tabs.entries.is_empty());
+
+    click_sync_label(&ctx, &mut app, "Open PODxt Live");
+    let (.., reopened, tab) = entries(&app)[0];
+    assert_ne!(reopened, original);
+    assert!(tab.verified_attachment().is_some());
+    let state = Rc::new(RefCell::new(FakeSync::default()));
+    app.tabs.entries[0].editor = Box::new(SyncEditor {
+        state: state.clone(),
+        total: 128.try_into().unwrap(),
+        consent: false,
+    });
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(state.borrow().starts, 1);
+    state.borrow_mut().update = Some(tabs::SyncUpdate::Finished(Ok(())));
+    let completed = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&completed.shapes, "Model Sync Complete"));
+    assert!(!has_label(
+        &completed.shapes,
+        "Reconnected after disconnect"
+    ));
 }

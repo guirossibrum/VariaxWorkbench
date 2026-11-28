@@ -82,6 +82,7 @@ struct Row {
     attachment: Attachment,
     device: Device,
     status: Status,
+    presence_uncertain: bool,
     wait_reason: Option<&'static str>,
     reconnected: bool,
     shown: bool,
@@ -154,6 +155,7 @@ impl Connections {
             attachment,
             device,
             status: Status::Checking,
+            presence_uncertain: false,
             wait_reason: None,
             reconnected: existing.is_some(),
             shown: true,
@@ -166,6 +168,15 @@ impl Connections {
         self.close_at = None;
     }
 
+    /// Suspend presentation of verified actions while a current attachment's
+    /// availability is uncertain. Keep its library result and generation.
+    pub fn presence_uncertain(&mut self, attachment: Attachment) {
+        if let Some(row) = self.row_mut(attachment) {
+            row.presence_uncertain = true;
+            self.close_at = None;
+        }
+    }
+
     pub fn verified(&mut self, attachment: Attachment, verification: Verification) {
         let Some(row) = self.row_mut(attachment) else {
             return;
@@ -173,6 +184,7 @@ impl Connections {
         if row.status == Status::Disconnected {
             return;
         }
+        row.presence_uncertain = false;
         // A positive snapshot can repeat during an active read or after it
         // finishes. Only loss of verification should invalidate that state.
         if matches!(verification, Verification::Verified)
@@ -258,6 +270,23 @@ impl Connections {
         }
     }
 
+    /// An editor can restore an exact, checked library without a new read.
+    pub fn library_restored(&mut self, attachment: Attachment) {
+        let Some(row) = self.row_mut(attachment) else {
+            return;
+        };
+        if !row.presence_uncertain
+            && matches!(
+                row.status,
+                Status::Connected | Status::Waiting | Status::Consent(_)
+            )
+        {
+            row.status = Status::Complete;
+            row.wait_reason = None;
+            self.completed_read |= self.visible;
+        }
+    }
+
     pub fn waiting_for_rig(&mut self, read: Read, resource: &'static str) {
         if let Some(row) = self.reading_mut(read) {
             row.wait_reason = Some(resource);
@@ -267,10 +296,13 @@ impl Connections {
     /// Call only when an existing authorized reader starts. The total is the
     /// selected reader scope, including setup entries if those are being read.
     pub fn started(&mut self, attachment: Attachment, total: NonZeroUsize) -> Option<Read> {
-        if !matches!(
-            self.row_mut(attachment)?.status,
-            Status::Waiting | Status::Connected | Status::Consent(_)
-        ) {
+        let row = self.row_mut(attachment)?;
+        if row.presence_uncertain
+            || !matches!(
+                row.status,
+                Status::Waiting | Status::Connected | Status::Consent(_)
+            )
+        {
             return None;
         }
         self.read_sequence += 1;
@@ -316,13 +348,39 @@ impl Connections {
         }
     }
 
+    /// Queue a download on the same verified attachment when its editor
+    /// needs to recover its library. The caller still checks admission.
+    pub fn request_download(&mut self, attachment: Attachment) -> bool {
+        let Some(row) = self.row_mut(attachment) else {
+            return false;
+        };
+        if row.presence_uncertain
+            || !matches!(
+                row.status,
+                Status::Connected
+                    | Status::Waiting
+                    | Status::Consent(_)
+                    | Status::Skipped(_)
+                    | Status::Complete
+                    | Status::Failed(_)
+            )
+        {
+            return false;
+        }
+        row.status = Status::Waiting;
+        row.wait_reason = None;
+        self.open();
+        self.close_at = None;
+        true
+    }
+
     /// A UI request has no read authority. The caller accepts it after
     /// validating the current attachment and existing consent, then queues it.
     pub fn accept_retry(&mut self, attachment: Attachment) -> bool {
         let Some(row) = self.row_mut(attachment) else {
             return false;
         };
-        if matches!(row.status, Status::Failed(_)) {
+        if !row.presence_uncertain && matches!(row.status, Status::Failed(_)) {
             row.wait_reason = None;
             row.status = Status::Waiting;
             true
@@ -366,9 +424,10 @@ impl Connections {
             || self.manual_close
             || self.detection != Detection::Complete
             || !self.completed_read
-            || !self
-                .shown_rows()
-                .all(|row| matches!(row.status, Status::Complete | Status::Unsupported))
+            || !self.shown_rows().all(|row| {
+                !row.presence_uncertain
+                    && matches!(row.status, Status::Complete | Status::Unsupported)
+            })
         {
             self.close_at = None;
             return None;
@@ -402,9 +461,11 @@ impl Connections {
     }
 
     pub fn is_complete(&self, attachment: Attachment) -> bool {
-        self.rows
-            .iter()
-            .any(|row| row.attachment == attachment && row.status == Status::Complete)
+        self.rows.iter().any(|row| {
+            row.attachment == attachment
+                && !row.presence_uncertain
+                && row.status == Status::Complete
+        })
     }
 
     pub fn continue_in_background(&mut self) {
