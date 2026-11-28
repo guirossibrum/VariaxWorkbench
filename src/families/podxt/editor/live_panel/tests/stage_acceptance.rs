@@ -347,6 +347,70 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
 }
 
 #[test]
+fn retained_draft_status_survives_file_preview_and_warns_before_close() {
+    let ctx = egui::Context::default();
+    let (mut app, presence) = current_fixture(&ctx);
+    let slot = Location::tone_from_label("1A").unwrap();
+    let saved = app.podxt().live.stored_tone(slot).unwrap().clone();
+    let before = podxt::EditorBuffer {
+        channel: slot,
+        tone: valid_dump("Playing Tone"),
+        packs: Packs(4),
+    };
+    let mut draft = before.clone();
+    draft.tone.raw[39 + usize::from(Control::Drive.cc())] ^= 0x3f;
+    {
+        let panel = &mut app.podxt_mut().live;
+        panel.editor.publish_test_edit(
+            panel.device.as_ref().unwrap(),
+            before.clone(),
+            draft.clone(),
+        );
+        panel.update_playing(draft.clone());
+    }
+    rendered(
+        &ctx,
+        &mut app,
+        &["Session draft · playing", "1A · Draft", "Saved Channel"],
+    );
+    assert_eq!(app.podxt().live.stored_tone(slot), Some(&saved));
+    assert!(app.podxt().dirty());
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = local_tone(directory.path());
+    app.podxt_mut()
+        .open_stage_document(std::fs::read(path).unwrap());
+    rendered(&ctx, &mut app, &["Local Document", "1A · Draft"]);
+    assert_eq!(app.podxt().live.snapshot.tone, Some(draft.tone));
+    assert_eq!(app.podxt().live.draft_counts(), (1, 0));
+    click_text(&ctx, &mut app, "Back to playing tone");
+    assert!(app.podxt().stage_is_current());
+
+    let requests = app.podxt().live.device_requests;
+    presence.attached.set(false);
+    app.next_detection = Instant::now();
+    let visible = rendered(&ctx, &mut app, &["Drafts from a previous PODxt connection"]);
+    assert!(!visible.contains("1A · Draft"));
+    assert_eq!(app.podxt().live.draft_counts(), (0, 1));
+
+    app.request_close(&ctx);
+    rendered(
+        &ctx,
+        &mut app,
+        &["Closing discards one retained PODxt channel draft."],
+    );
+    click_text(&ctx, &mut app, "Keep drafts");
+    assert!(!app.permit_close);
+    assert_eq!(app.podxt().live.draft_counts(), (0, 1));
+    assert_eq!(app.podxt().live.device_requests, requests);
+
+    app.request_close(&ctx);
+    click_text(&ctx, &mut app, "Discard drafts and close");
+    assert!(app.permit_close);
+    assert_eq!(app.podxt().live.draft_counts(), (0, 0));
+}
+
+#[test]
 fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
     let ctx = egui::Context::default();
     let (mut app, _) = current_fixture(&ctx);

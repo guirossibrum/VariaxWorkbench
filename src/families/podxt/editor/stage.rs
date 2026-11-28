@@ -439,6 +439,13 @@ impl PodxtEditor {
             ui.set_style(theme::style());
             self.stage_toolbar(ui, services);
             #[cfg(feature = "usb")]
+            {
+                let (_, previous) = self.live.draft_counts();
+                if previous > 0 {
+                    ui.label("Drafts from a previous PODxt connection stay in this tab and cannot play on this connection.");
+                }
+            }
+            #[cfg(feature = "usb")]
             if self.stage_is_current() {
                 self.live.recall_controls(ui);
             }
@@ -689,7 +696,9 @@ impl PodxtEditor {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(tone.name());
                 #[cfg(feature = "usb")]
-                if self
+                if let Some(status) = self.live.playing_draft_status() {
+                    ui.label(status);
+                } else if self
                     .live
                     .playing_channel()
                     .is_some_and(|slot| self.live.channel_modified(slot))
@@ -810,8 +819,16 @@ impl PodxtEditor {
                 .flatten();
             #[cfg(not(feature = "usb"))]
             let previous = None;
-            if let Some(dump) = device.or(backup).or(previous) {
-                rows.push((slot, dump.clone()));
+            #[cfg(feature = "usb")]
+            let draft = self.live.channel_draft(slot);
+            #[cfg(not(feature = "usb"))]
+            let draft: Option<&TonePayload> = None;
+            let dump = device.or(backup).or(previous);
+            if let Some(name) = dump
+                .map(EditBuffer::name)
+                .or_else(|| draft.map(TonePayload::name))
+            {
+                rows.push((slot, dump.cloned(), name, draft.is_some()));
             }
         }
         if rows.is_empty() && self.stage.backup.is_none() && !can_show_current {
@@ -833,9 +850,9 @@ impl PodxtEditor {
             let mut selected = None;
             let mut file_copy = None;
             egui::ScrollArea::vertical().id_salt("saved-tones").max_height(330.0).show(ui, |ui| {
-                for (slot, dump) in &rows {
+                for (slot, dump, name, draft) in &rows {
                     #[cfg(feature = "usb")]
-                    let playing = on_device && current && playing_channel == Some(*slot);
+                    let playing = current && playing_channel == Some(*slot);
                     #[cfg(not(feature = "usb"))]
                     let playing = false;
                     let browsing = matches!(
@@ -846,10 +863,12 @@ impl PodxtEditor {
                     #[cfg(not(feature = "usb"))]
                     let unsynchronized = false;
                     let unsaved = browsing && self.pod_selected.is_some_and(|index| self.pod_library.is_dirty(index));
-                    let suffix = if unsaved || unsynchronized { " !" } else { "" };
+                    let suffix = if *draft { " · Draft" } else if unsaved || unsynchronized { " !" } else { "" };
                     let response = ui.add(
-                        egui::Button::selectable(playing || browsing, format!("{}{suffix}  {}", slot.slot_name(), dump.name())).truncate()
-                    ).on_hover_text(if unsynchronized {
+                        egui::Button::selectable(playing || browsing, format!("{}{suffix}  {name}", slot.slot_name())).truncate()
+                    ).on_hover_text(if *draft {
+                        "Session draft retained on this computer. Channel switches use the saved POD tone."
+                    } else if unsynchronized {
                         "Unsynchronized with the saved POD slot"
                     } else if unsaved {
                         "Unsaved file edits"
@@ -859,33 +878,36 @@ impl PodxtEditor {
                         "Select a channel in Live to recall it, or right-click to open a file copy."
                     } else { "" });
                     #[cfg(feature = "usb")]
-                    if playing && on_device && self.live.live_editing && self.stage.library_highlight != Some(*slot) {
+                    if playing && self.live.live_editing && self.stage.library_highlight != Some(*slot) {
                         response.scroll_to_me(Some(egui::Align::Center));
                         self.stage.library_highlight = Some(*slot);
                     }
                     response.context_menu(|ui| {
-                        if ui.button("Open as file copy").clicked() {
+                        if let Some(dump) = dump
+                            && ui.button("Open as file copy").clicked()
+                        {
                             file_copy = Some((*slot, dump));
                             ui.close();
                         }
                     });
                     if response.clicked() {
-                        selected = Some((*slot, dump));
+                        selected = Some((*slot, dump.as_ref(), *draft));
                     }
                 }
             });
             #[cfg(feature = "usb")]
-            if let Some((slot, _)) = selected
-                && on_device
+            if let Some((slot, _, draft)) = selected
+                && (on_device || draft)
                 && self.live.live_editing
             {
                 self.live.recall(slot, ui.ctx());
                 self.stage.view_current = true;
                 return;
             }
-            if let Some((slot, dump)) =
-                file_copy.or_else(|| (!current || historical).then_some(selected).flatten())
-            {
+            if let Some((slot, dump)) = file_copy.or_else(|| {
+                selected
+                    .and_then(|(slot, dump, _)| (!current || historical).then_some((slot, dump?)))
+            }) {
                 if let Some(tone) = decode_tone(dump, bank) {
                     self.open_stage_copy(
                         tone,

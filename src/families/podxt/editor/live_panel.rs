@@ -748,6 +748,9 @@ impl LivePanel {
             } else {
                 Err(())
             };
+            if let Ok(stored) = &result {
+                self.editor.reconcile_stored(stored);
+            }
             self.locker
                 .result(result, &mut self.snapshot, &mut self.store);
         }
@@ -878,6 +881,22 @@ impl LivePanel {
 
     pub(super) fn has_library_bank(&self, bank: BankKind) -> bool {
         Location::all(&[bank]).any(|slot| self.stored_tone(slot).is_some())
+    }
+
+    pub(super) fn draft_counts(&self) -> (usize, usize) {
+        self.editor.draft_counts()
+    }
+
+    pub(super) fn discard_drafts(&mut self) {
+        self.editor.discard_drafts();
+    }
+
+    pub(super) fn channel_draft(&self, slot: Location) -> Option<&podxt::TonePayload> {
+        self.editor.draft(slot)
+    }
+
+    pub(super) fn playing_draft_status(&self) -> Option<&'static str> {
+        self.editor.playing_draft_status(self.playing_channel()?)
     }
 
     pub(super) fn channel_modified(&self, slot: Location) -> bool {

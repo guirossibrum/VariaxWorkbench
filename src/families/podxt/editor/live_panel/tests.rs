@@ -377,7 +377,7 @@ pub(super) fn valid_dump(name: &str) -> EditBuffer {
     EditBuffer::parse(raw).unwrap()
 }
 
-fn complete_backup(root: &std::path::Path, active: &str, saved: &str) -> PathBuf {
+pub(super) fn complete_backup(root: &std::path::Path, active: &str, saved: &str) -> PathBuf {
     let mut folder = line6_devices::backup::BackupFolder::create(root, "podxt").unwrap();
     folder.record("PODxt Live library backup at 2024-01-01 00:00:00 UTC.".into());
     folder

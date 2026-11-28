@@ -1,3 +1,5 @@
+mod drafts;
+
 use super::super::tests::{FakeLink, FakeLock};
 use super::*;
 use podxt::{Global, PodxtRequest, Value};
@@ -1006,10 +1008,13 @@ fn undo_discards_unsent_live_targets_without_sending_or_applying_staged_edits() 
 fn queued_undo_runs_once_after_the_control_readback_and_checked_release() {
     let mut fixture = UndoFixture::new(ControlResult::Verified);
     fixture.queue_undo_while_controls_run();
+    assert_eq!(fixture.editor.draft_counts(), (0, 0));
     fixture.release.send(()).unwrap();
     fixture.poll_finished();
+    assert_eq!(fixture.editor.draft_counts(), (1, 0));
     assert!(fixture.editor.worker.as_ref().unwrap().action == Action::Undo);
     fixture.poll_finished();
+    assert_eq!(fixture.editor.draft_counts(), (0, 0));
     assert_eq!(
         fixture.editor.status_text(),
         Some("Original snapshot verified byte for byte.")
