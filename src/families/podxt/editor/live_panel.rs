@@ -33,6 +33,7 @@ pub(super) struct LivePanel {
     tuner: tuner::Tuner,
     editor: edit::LiveEditor,
     follow: follow::Follow,
+    save_ingress: Arc<detection::PodxtSaveIngress>,
     resume_live: bool,
     reveal_playing: bool,
     live_since: Option<Instant>,
@@ -100,6 +101,7 @@ struct Snapshot {
     tone: Option<EditBuffer>,
     library: std::collections::BTreeMap<u16, EditBuffer>,
     library_count: Option<usize>,
+    library_save_baseline: u64,
     packs: Option<Packs>,
     globals: Option<GlobalValues>,
     tuner: Option<tuner::Sample>,
@@ -475,6 +477,8 @@ impl LivePanel {
         self.follow.reset();
         self.store.detach();
         self.locker.detach(&mut self.store);
+        self.save_ingress =
+            verified.map_or_else(Arc::default, |tab| Arc::clone(&tab.device.podxt_saves));
         if let Some(tab) = verified {
             self.editor.reply_pending = Arc::clone(&tab.device.podxt_reply_pending);
         }
@@ -561,6 +565,7 @@ impl LivePanel {
         previous.tuner_mode = false;
         if requires_library(command) {
             previous.library_count = None;
+            previous.library_save_baseline = self.save_ingress.revision();
         }
         let snapshot = Arc::new(Mutex::new(previous));
         let stop = Arc::new(AtomicBool::new(false));
@@ -727,6 +732,7 @@ impl LivePanel {
         }
         match self.follow.poll(
             self.device.as_ref().filter(|_| eligible),
+            &self.save_ingress,
             &self.editor.reply_pending,
             ctx,
         ) {
@@ -813,6 +819,14 @@ impl LivePanel {
                     return Err(format!("PODxt library read ended after {count} entries."));
                 }
                 let mut captured = worker.snapshot.lock().expect("snapshot mutex");
+                if self
+                    .save_ingress
+                    .saved_since(captured.library_save_baseline)
+                {
+                    return Err(
+                        "A PODxt save superseded this library read. Read the library again.".into(),
+                    );
+                }
                 if command == ReadCommand::Library {
                     self.snapshot.library.clear();
                 }

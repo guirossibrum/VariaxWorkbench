@@ -59,13 +59,18 @@ fn notice(event: &Event) -> Option<Notice> {
                 Some(Notice::Controller(*number, *value))
             }
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0f, 0xf7] => Some(Notice::Clip),
-            [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x24, bank, slot, 0xf7] => {
-                let bank = BankKind::ALL.get(usize::from(bank.checked_sub(1)?))?;
-                Location::new(*bank, u16::from(*slot)).map(Notice::Save)
-            }
-            _ => None,
+            _ => save_notification(frame).map(Notice::Save),
         },
     }
+}
+
+/// Decode the addressed PODxt save notification for any supported bank.
+pub fn save_notification(frame: &[u8]) -> Option<Location> {
+    let [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x24, bank, slot, 0xf7] = frame else {
+        return None;
+    };
+    let bank = BankKind::ALL.get(usize::from(bank.checked_sub(1)?))?;
+    Location::new(*bank, u16::from(*slot))
 }
 
 /// Decode a physical controller notification using the editor's Follow parser.

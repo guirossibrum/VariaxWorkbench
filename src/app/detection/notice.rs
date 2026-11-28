@@ -1,7 +1,17 @@
 //! Passive PODxt Live input shared by Variax presence and channel Follow.
+#[cfg(any(test, feature = "usb"))]
+use line6_devices::family::podxt::Location;
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
-use line6_devices::midi::{Assembler, Event};
+use line6_devices::{
+    family::podxt::save_notification,
+    midi::{Assembler, Event},
+};
 use std::time::Instant;
+#[cfg(feature = "usb")]
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
 use variax_workbench::midi::SysexDecoder;
 
@@ -20,6 +30,106 @@ pub(in crate::editor) enum Notice {
     Connected,
     Disconnected,
     PodxtProgram(PodxtProgram),
+}
+
+/// Save evidence is shared by the listener and the editor for one USB
+/// attachment. A replacement attachment always gets a new instance.
+#[cfg(feature = "usb")]
+#[derive(Debug, Default)]
+pub(in crate::editor) struct PodxtSaveIngress(Mutex<SaveState>);
+
+#[cfg(feature = "usb")]
+#[derive(Debug, Default)]
+struct SaveState {
+    revision: u64,
+    last_gap: u64,
+    listener: Option<u64>,
+    slots: BTreeMap<u16, u64>,
+}
+
+#[cfg(feature = "usb")]
+impl PodxtSaveIngress {
+    pub fn begin(self: &Arc<Self>) -> SaveListener {
+        let mut state = self.0.lock().expect("PODxt save ingress");
+        state.revision += 1;
+        state.last_gap = state.revision;
+        state.listener = Some(state.last_gap);
+        SaveListener {
+            ingress: Arc::clone(self),
+            window: state.last_gap,
+        }
+    }
+
+    pub fn interrupt(&self) {
+        let mut state = self.0.lock().expect("PODxt save ingress");
+        if let Some(window) = state.listener.take() {
+            state.gap(window);
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.0.lock().expect("PODxt save ingress").revision
+    }
+
+    /// An observed save can supersede a download even when that download
+    /// closes cleanly. A quiet interval supplies no positive freshness proof.
+    pub fn saved_since(&self, revision: u64) -> bool {
+        self.0
+            .lock()
+            .expect("PODxt save ingress")
+            .slots
+            .values()
+            .any(|&saved| saved > revision)
+    }
+}
+
+#[cfg(feature = "usb")]
+impl SaveState {
+    fn gap(&mut self, window: u64) {
+        if window == self.last_gap {
+            self.revision += 1;
+            self.last_gap = self.revision;
+        }
+    }
+}
+
+#[cfg(feature = "usb")]
+pub(in crate::editor) struct SaveListener {
+    ingress: Arc<PodxtSaveIngress>,
+    window: u64,
+}
+
+#[cfg(feature = "usb")]
+impl SaveListener {
+    pub fn observe(&self, slot: Location) {
+        let mut state = self.ingress.0.lock().expect("PODxt save ingress");
+        if state.listener == Some(self.window) && state.last_gap == self.window {
+            state.revision += 1;
+            let revision = state.revision;
+            state.slots.insert(slot.address(), revision);
+        }
+    }
+
+    /// A checked playing-tone result can finish after passive coverage ends,
+    /// but must be discarded after the attachment observation is revoked.
+    pub fn is_current(&self) -> bool {
+        self.ingress.0.lock().expect("PODxt save ingress").listener == Some(self.window)
+    }
+
+    pub fn gap(&self) {
+        self.ingress
+            .0
+            .lock()
+            .expect("PODxt save ingress")
+            .gap(self.window);
+    }
+}
+
+#[cfg(feature = "usb")]
+impl Drop for SaveListener {
+    fn drop(&mut self) {
+        self.gap();
+    }
 }
 
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
@@ -50,22 +160,36 @@ fn decode(frame: &[u8]) -> Option<Result<Notice, &'static str>> {
 }
 
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
-#[derive(Default)]
-pub(super) struct NoticeStream {
+struct NoticeStream<F> {
     sysex: SysexDecoder,
     midi: Assembler,
+    save: F,
 }
 
 #[cfg(any(test, all(feature = "usb", target_os = "linux")))]
-impl NoticeStream {
-    pub fn receive(&mut self, packet: &[u8], notices: &mut Vec<Notice>, mut log: impl FnMut(&str)) {
+impl<F: FnMut(Location)> NoticeStream<F> {
+    fn new(save: F) -> Self {
+        Self {
+            sysex: SysexDecoder::default(),
+            midi: Assembler::default(),
+            save,
+        }
+    }
+
+    fn receive(&mut self, packet: &[u8], notices: &mut Vec<Notice>, mut log: impl FnMut(&str)) {
         // Keep the Variax decoder's existing malformed-packet handling.
-        // Assemble short MIDI in parallel from the same passive input.
+        // Assemble PODxt program changes and addressed saves from the same bytes.
         if let Ok(events) = self.midi.feed(packet) {
             let observed_at = Instant::now();
             notices.extend(events.into_iter().filter_map(|event| {
-                let Event::Short(message) = event else {
-                    return None;
+                let message = match event {
+                    Event::Short(message) => message,
+                    Event::Sysex(frame) => {
+                        if let Some(slot) = save_notification(&frame) {
+                            (self.save)(slot);
+                        }
+                        return None;
+                    }
                 };
                 match message.as_slice() {
                     [status, channel] if status & 0xf0 == 0xc0 => {
@@ -103,7 +227,7 @@ impl NoticeStream {
         }
     }
 
-    pub fn finish(self, mut log: impl FnMut(&str)) {
+    fn finish(self, mut log: impl FnMut(&str)) {
         if known_prefix(self.sysex.unfinished()) {
             log("unfinished notice");
         }
@@ -115,9 +239,10 @@ impl NoticeStream {
 pub(super) fn read_notices(
     mut read_input: impl FnMut(std::time::Duration) -> Result<Option<Vec<u8>>, String>,
     mut stopping: impl FnMut() -> bool,
+    save: impl FnMut(Location),
     mut log: impl FnMut(&str),
 ) -> Vec<Notice> {
-    let mut stream = NoticeStream::default();
+    let mut stream = NoticeStream::new(save);
     let mut notices = Vec::new();
     while notices.is_empty() && !stopping() {
         match read_input(std::time::Duration::from_millis(20)) {
@@ -149,9 +274,22 @@ mod tests {
                 .map(Some)
                 .ok_or_else(|| "end of fake input".into())
         };
-        assert!(read_notices(&mut read, || true, |_| panic!("yield before reading")).is_empty());
+        assert!(
+            read_notices(
+                &mut read,
+                || true,
+                |_| panic!("yield before save"),
+                |_| panic!("yield before reading")
+            )
+            .is_empty()
+        );
         assert_eq!(
-            read_notices(read, || false, |line| logged.push(line.to_owned())),
+            read_notices(
+                read,
+                || false,
+                |_| panic!("unexpected save"),
+                |line| logged.push(line.to_owned())
+            ),
             [Notice::Connected]
         );
         assert_eq!(logged, ["unknown 03 notice opcode"]);
@@ -166,6 +304,7 @@ mod tests {
         let result = read_notices(
             |_| Ok(packets.pop_front()),
             || false,
+            |_| panic!("unexpected save"),
             |error| panic!("{error}"),
         );
         let [
@@ -182,9 +321,72 @@ mod tests {
     }
 
     #[test]
+    fn linux_save_ingress_keeps_all_addresses_and_occurrences_in_order() {
+        use line6_devices::family::podxt::BankKind;
+
+        let save = |bank, slot| vec![0xf0, 0, 1, 12, 3, 0x24, bank, slot, 0xf7];
+        let tone = save(1, 127);
+        let mut next = tone[7..].to_vec();
+        next.extend(save(2, 106));
+        next.extend(save(3, 63));
+        next.extend(save(2, 107)); // outside the amp bank
+        next.extend(save(0, 0)); // invalid bank
+        next.extend(save(3, 64)); // outside the FX bank
+        next.extend(save(1, 127)); // a second save to the same address
+        next.extend([0xc0, 127]);
+        let mut packets = std::collections::VecDeque::from([tone[..7].to_vec(), next]);
+        let mut saved = Vec::new();
+        let result = read_notices(
+            |_| Ok(packets.pop_front()),
+            || false,
+            |slot| saved.push((slot.kind(), slot.index())),
+            |error| panic!("{error}"),
+        );
+        assert!(matches!(result.as_slice(), [Notice::PodxtProgram(_)]));
+        assert_eq!(
+            saved,
+            [
+                (BankKind::Tones, 127),
+                (BankKind::AmpSetups, 106),
+                (BankKind::FxSetups, 63),
+                (BankKind::Tones, 127),
+            ]
+        );
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn ending_a_listener_records_a_gap_and_rejects_late_notices() {
+        use line6_devices::family::podxt::BankKind;
+
+        let ingress = Arc::new(PodxtSaveIngress::default());
+        let slot = Location::new(BankKind::Tones, 5).unwrap();
+        let old = ingress.begin();
+        let before_gap = ingress.revision();
+        old.gap();
+        let after_gap = ingress.revision();
+        assert!(after_gap > before_gap);
+        assert!(!ingress.saved_since(before_gap));
+        old.observe(slot);
+        assert_eq!(ingress.revision(), after_gap);
+
+        let new = ingress.begin();
+        let baseline = ingress.revision();
+        assert!(!old.is_current());
+        drop(old);
+        assert_eq!(ingress.revision(), baseline);
+        new.observe(slot);
+        assert!(ingress.saved_since(baseline));
+
+        ingress.interrupt();
+        assert!(!new.is_current());
+        assert!(!ingress.saved_since(ingress.revision()));
+    }
+
+    #[test]
     fn fragmented_notices_keep_the_latest_state_and_ignore_malformed_or_unknown_frames() {
         let connected = [0xf0, 0, 1, 12, 3, 0x11, 0, 0, 0, 7, 0xf7];
-        let mut input = NoticeStream::default();
+        let mut input = NoticeStream::new(|_| panic!("unexpected save"));
         let mut notices = Vec::new();
         let mut messages = Vec::new();
         input.receive(&connected[..6], &mut notices, |error| {
