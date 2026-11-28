@@ -5,7 +5,7 @@ Record the selected guitar model before starting. Use a preset whose saved
 settings uniquely identify it in the library so the read can verify the
 switch back.
 
-1. Open a file in that tab, make an unsaved edit, then choose **Refresh from
+1. Open a file in that tab, make an unsaved edit, then choose **Download from
    guitar…**. Choose **Keep editing** and verify the original edit remains.
 2. Choose **Download from guitar…** again, choose **Download and replace**, and
    watch the progress count. The existing file view remains in place until all
@@ -96,6 +96,50 @@ Note whether the open file, unsaved edit and last complete download were
 still available. Keep screenshots and any existing logs or test files
 private under the ignored `backups/` area.
 
-Track the automatic Home/Device connections startup window separately.
+The steps above apply to the explicit-download build identified in that
+section. For the automatic startup check, use the build described below.
 Windows download still needs a verified native transport and a live-capable
 package. [#310 roadmap](../../../../docs/roadmap.md#pending-implementation-or-validation)
+
+## Linux and macOS automatic startup smoke (#310)
+
+Run once per OS with a private USB build containing `0a8d29f`. Use the same
+rig, uniquely identifiable starting preset, and current backup described
+above. Have a disposable local PODxt tone file ready. Record the build
+number, source SHA, profile, OS version, architecture and USB route.
+
+1. Launch with the rig already connected. On **Device connections**, look
+   for **PODxt Live Connected** and **Variax 300/600 Connected**. While the
+   PODxt is syncing, expect **Waiting to sync · the PODxt Live connection**
+   on the guitar card. Once the PODxt reader finishes and releases the
+   route, expect automatic progress on the guitar card, for example
+   **Model Sync 1 of 60**. Leave any **Download** button untouched. If
+   guitar verification arrives after the PODxt finishes, record the queue
+   as unobserved and check that the guitar still starts automatically.
+2. As soon as the PODxt card shows **Model Sync Complete**, click its title
+   to open the connected PODxt editor. **Device connections** should carry
+   the pending or active guitar sync into the workspace. Choose **Hide
+   progress**, use **Open tone or bank…** to open the disposable file, and
+   make an unsaved edit in **File editor · nothing is sent**.
+   While the guitar is still syncing, choose **Show sync progress** in the
+   footer. Confirm the same read continued and the local edit is still
+   visible. If it finished before you could reopen progress, record that
+   part as unobserved.
+3. Look for **Model Sync Complete** on the guitar card. **Model Sync 60 of
+   60** only counts presets. Completion also requires all 12 bank names,
+   verified return to the starting preset, and checked USB release. After
+   successful sync, the progress window closes on its own and the PODxt
+   file and edit stay open. Check the physical starting preset and compare
+   the connected guitar library's 12 banks of five presets with the backup.
+
+If a check fails, capture the device card, exact status and detail, last
+count, and whether progress was hidden. Record any **Device check failed**,
+**USB identity unverified** or **Unverified firmware** before sync,
+**Sync failed** during the read or final checks, and **Disconnected** if the
+route is lost. For a read failure, record any open or claim error, missing
+preset or bank name, return or read-back warning, and USB release warning.
+A sync failure or disconnect should surface **Device connections** even
+when progress was hidden. Check that the app withholds an incomplete or
+stale guitar result and preserves the open file and edit. Stop on a return
+or release warning and record the actual final guitar model. Keep evidence
+private under `backups/`.
