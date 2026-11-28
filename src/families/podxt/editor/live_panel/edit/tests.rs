@@ -19,6 +19,51 @@ fn drive(value: u8) -> LiveTarget {
     LiveTarget::Basic(Control::Drive, Target::Value(Value::new(value).unwrap()))
 }
 
+pub(super) fn fake_get(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, String> {
+    assert!(job.action == Action::Get);
+    let held = Cell::new(false);
+    let writes = Cell::new(0);
+    let channel = (
+        PodxtRequest::QueryGlobal(Global::CurrentChannel),
+        vec![0xf0, 0, 1, 0x0c, 3, 0x56, 17, 0, 0, 1, 1, 0xf7],
+    );
+    let result = edit_transaction(
+        job,
+        stop,
+        || {
+            assert!(!held.replace(true));
+            Ok(FakeLock(&held))
+        },
+        |_, run| {
+            run(&mut FakeLink {
+                held: &held,
+                script: VecDeque::from([
+                    (
+                        PodxtRequest::Identity,
+                        variax_workbench::identity_stage::bridge_reply(),
+                    ),
+                    channel.clone(),
+                    (
+                        PodxtRequest::EditBuffer,
+                        super::super::tests::valid_dump("Read Live Tone").raw,
+                    ),
+                    (
+                        PodxtRequest::InstalledPacks,
+                        vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7],
+                    ),
+                    channel,
+                ]),
+                reply: None,
+                time: &Cell::new(Duration::ZERO),
+                writes: &writes,
+            })
+        },
+    );
+    assert_eq!(writes.get(), 5);
+    assert!(!held.get());
+    result
+}
+
 #[test]
 fn queued_drag_edits_keep_the_latest_value_and_honor_the_dispatch_interval() {
     let now = Instant::now();
@@ -429,7 +474,12 @@ fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
     let text = super::super::tests::stage_frame(&ctx, &mut app);
     assert!(text.contains("Keep playing tone"), "{text}");
     assert!(text.contains("Discard and recall 1B"), "{text}");
-    assert!(!text.contains("Refresh playing tone"), "{text}");
+    assert_eq!(
+        text.lines()
+            .filter(|line| *line == "Read playing tone")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -520,6 +570,11 @@ fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
     panel.live_editing = true;
     panel.startup = None;
     let text = super::super::tests::stage_frame(&ctx, &mut app);
-    assert!(text.contains("Refresh playing tone"), "{text}");
+    assert_eq!(
+        text.lines()
+            .filter(|line| *line == "Read playing tone")
+            .count(),
+        1
+    );
     assert!(!text.contains("Discard and recall"), "{text}");
 }

@@ -510,9 +510,6 @@ impl PodxtEditor {
         #[cfg(feature = "usb")]
         let mut tuner_controls = None;
         ui.horizontal_wrapped(|ui| {
-            if self.pod_button(ui, "open-stage-document", "Open tone or bank…") {
-                self.open_dialog(ui.ctx(), services);
-            }
             ui.menu_button("File actions", |ui| {
                 if ui.button("Open file editor").clicked() {
                     self.show_file_stage();
@@ -553,12 +550,17 @@ impl PodxtEditor {
                     self.open_stage_document(sample.bytes());
                     ui.close();
                 }
-                if self.pod_button_enabled(
-                    ui,
-                    "save-pod",
-                    "Save copy…",
-                    self.pod_selected.is_some(),
-                ) {
+                let save_copy = ui
+                    .add_enabled(
+                        self.pod_selected.is_some(),
+                        egui::Button::new("Save copy (disk)…"),
+                    )
+                    .on_hover_text(
+                        "Write the selected file tone, bank, or collection to a new disk file.",
+                    );
+                #[cfg(test)]
+                self.pod_buttons.insert("save-pod", save_copy.rect);
+                if save_copy.clicked() {
                     self.save_pod_tone(services);
                     ui.close();
                 }

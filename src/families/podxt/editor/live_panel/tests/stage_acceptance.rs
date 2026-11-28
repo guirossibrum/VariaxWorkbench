@@ -119,6 +119,147 @@ fn rendered(ctx: &egui::Context, app: &mut Workbench, labels: &[&str]) -> String
     visible
 }
 
+fn key_event(key: egui::Key, pressed: bool) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn finish_playing_read(ctx: &egui::Context, app: &mut Workbench, requests: usize) {
+    assert_eq!(app.podxt().live.device_requests, requests);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.podxt().busy() {
+        assert!(
+            Instant::now() < deadline,
+            "fake playing-tone read did not finish"
+        );
+        std::thread::yield_now();
+        render_stage(ctx, app, vec![]);
+    }
+    assert_eq!(
+        app.podxt().live.snapshot.tone.as_ref().unwrap().name(),
+        "Read Live Tone"
+    );
+    assert!(!app.podxt().live.editor.needs_refresh());
+    assert!(app.podxt().stage_is_current());
+}
+
+#[test]
+fn playing_tone_read_uses_one_command_for_pointer_recovery_and_keyboard_read() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let live = &mut app.podxt_mut().live;
+    live.startup = None;
+    live.resume_live = false;
+    live.editor.use_fake_get();
+    assert!(live.editor.needs_refresh());
+    let requests = live.device_requests;
+
+    let label = "Read playing tone";
+    let visible = rendered(
+        &ctx,
+        &mut app,
+        &[label, "Apply to playing tone", "Store to POD…"],
+    );
+    assert_eq!(visible.lines().filter(|line| *line == label).count(), 1);
+    assert!(!visible.contains("Open tone or bank…"));
+    click_text(&ctx, &mut app, label);
+    assert!(app.podxt().busy());
+    assert!(!app.podxt().live.can_refresh_current());
+    finish_playing_read(&ctx, &mut app, requests + 1);
+
+    let frame = render_stage(&ctx, &mut app, vec![]);
+    let pos = visible_text(&frame, label).expect("visible Read playing tone");
+    assert!(
+        (0..50).any(|_| {
+            render_stage(&ctx, &mut app, vec![key_event(egui::Key::Tab, true)]);
+            render_stage(&ctx, &mut app, vec![key_event(egui::Key::Tab, false)]);
+            ctx.memory(|m| m.focused())
+                .and_then(|id| ctx.read_response(id))
+                .is_some_and(|response| response.rect.center().distance(pos) < 3.0)
+        }),
+        "Read playing tone is keyboard focusable"
+    );
+    render_stage(&ctx, &mut app, vec![key_event(egui::Key::Enter, true)]);
+    render_stage(&ctx, &mut app, vec![key_event(egui::Key::Enter, false)]);
+    finish_playing_read(&ctx, &mut app, requests + 2);
+    click_text(&ctx, &mut app, "File actions");
+    rendered(&ctx, &mut app, &["Save copy (disk)…"]);
+}
+
+#[test]
+fn playing_tone_read_refuses_unavailable_route_staged_edits_and_pending_reply() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let live = &mut app.podxt_mut().live;
+    live.startup = None;
+    live.resume_live = false;
+    assert!(!live.can_refresh_current());
+    let requests = live.device_requests;
+    click_text(&ctx, &mut app, "Read playing tone");
+    assert_eq!(app.podxt().live.device_requests, requests);
+
+    let live = &mut app.podxt_mut().live;
+    live.editor.use_fake_get();
+    assert!(live.can_refresh_current());
+    live.editor.stage_test_target(podxt::LiveTarget::Basic(
+        Control::Drive,
+        podxt::Target::Value(podxt::Value::new(73).unwrap()),
+    ));
+    assert!(!live.can_refresh_current());
+    click_text(&ctx, &mut app, "Read playing tone");
+    let live = &mut app.podxt_mut().live;
+    assert_eq!(live.device_requests, requests);
+    assert!(live.has_staged_edits());
+    live.editor.discard_staged();
+
+    live.editor.reply_pending.store(true, Ordering::Release);
+    assert!(!live.can_refresh_current());
+    click_text(&ctx, &mut app, "Read playing tone");
+    let live = &app.podxt().live;
+    assert_eq!(live.device_requests, requests);
+    assert!(!live.busy());
+    assert_eq!(live.snapshot.tone.as_ref().unwrap().name(), "Stage Current");
+}
+
+#[test]
+fn shell_open_keeps_a_dirty_podxt_document_when_the_prompt_is_cancelled() {
+    let ctx = egui::Context::default();
+    let mut app = startup_app(&ctx, None);
+    app.new_tab(&super::super::super::FAMILY);
+    app.podxt_mut().table_view_in_test = true;
+    let directory = tempfile::tempdir().unwrap();
+    let path = local_tone(directory.path());
+    let bytes = std::fs::read(&path).unwrap();
+    let next = directory.path().join("next.l6t");
+    std::fs::write(&next, &bytes).unwrap();
+    app.dialogs = Box::new(FakeDialogs {
+        pod_open: [Some(path.clone()), Some(next)].into(),
+        ..Default::default()
+    });
+    click_text(&ctx, &mut app, "Open…");
+    let tab = app.tabs.active;
+    let editor = app.podxt_mut();
+    editor.pod_name = "Edited File".into();
+    editor.apply_pod_name();
+    assert!(editor.dirty());
+    click_text(&ctx, &mut app, "Open…");
+    assert!(app.podxt().stage_has_pending_document());
+    stage_frame(&ctx, &mut app);
+    click_text(&ctx, &mut app, "Cancel");
+
+    assert!(!app.podxt().stage_has_pending_document());
+    assert!(app.podxt().dirty());
+    assert_eq!(app.podxt().source_path(), Some(path.as_path()));
+    assert_eq!(app.tabs.active, tab);
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
 #[test]
 fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_disconnect() {
     let ctx = egui::Context::default();
@@ -141,7 +282,7 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
     assert!(app.podxt().stage_is_current());
     assert_eq!(app.podxt().live.device_requests, requests);
 
-    click_text(&ctx, &mut app, "Open tone or bank…");
+    click_text(&ctx, &mut app, "Open…");
     rendered(
         &ctx,
         &mut app,
@@ -243,7 +384,7 @@ fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
     assert_eq!(panel.playing_channel(), Some(slot));
     assert_eq!(
         panel.message.as_deref(),
-        Some("Refresh the playing tone before selecting a channel.")
+        Some("Use Read playing tone before selecting a channel.")
     );
 }
 
@@ -288,7 +429,7 @@ fn offline_startup_imports_full_backup_and_browses_only_channels_in_stage() {
     click_text(&ctx, &mut app, "1A  Backup Tone");
     rendered(&ctx, &mut app, &["Backup Tone", "Library backup · offline"]);
     assert!(!app.podxt().stage_is_current());
-    click_text(&ctx, &mut app, "Open tone or bank…");
+    click_text(&ctx, &mut app, "Open…");
     rendered(&ctx, &mut app, &["Local Document", "File editor"]);
 
     let visible = rendered(&ctx, &mut app, &["Tone channels", "1A  Backup Tone"]);
@@ -332,7 +473,7 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
         pod_open: [Some(path.clone())].into(),
         ..Default::default()
     });
-    click_text(&ctx, &mut app, "Open tone or bank…");
+    click_text(&ctx, &mut app, "Open…");
     let editor = app.podxt_mut();
     editor.pod_name = "Edited File".into();
     editor.apply_pod_name();
