@@ -1,5 +1,8 @@
 use super::{EditorDocument, FamilyTab, VariaxEditor, egui, live_attachment::Attachment};
-use crate::editor::tabs::{DeviceEvent, DeviceTab};
+use crate::editor::{
+    detection::DeviceKey,
+    tabs::{DeviceEvent, DeviceTab},
+};
 use line6_devices::family::variax::{FollowUpdate, Preset};
 use std::{
     sync::{
@@ -142,7 +145,7 @@ struct Worker {
 
 #[derive(Default)]
 pub(super) struct Follow {
-    device_tab: bool,
+    device_key: Option<DeviceKey>,
     attachment: Option<Attachment>,
     worker: Option<Worker>,
     opted_out: bool,
@@ -212,14 +215,19 @@ impl Follow {
     }
 
     pub(super) fn observe(&mut self, device: Option<&DeviceTab>) {
-        self.device_tab = device.is_some();
+        let device_key = device.map(|device| device.device.key.clone());
         let attachment = device.and_then(Attachment::verified);
-        if self.attachment != attachment {
+        if self.device_key != device_key || self.attachment != attachment {
             self.stop();
-            self.error = None;
-            if attachment.is_some() {
+            // The shell can invalidate the attachment before the disconnected
+            // worker finishes releasing it. Keep that tab's diagnostic visible.
+            if self.device_key != device_key || attachment.is_some() || !self.disconnected() {
+                self.error = None;
+            }
+            if device_key.is_some() && (self.device_key != device_key || attachment.is_some()) {
                 self.notice = None;
             }
+            self.device_key = device_key;
             self.attachment = attachment;
         }
     }
@@ -458,6 +466,13 @@ impl Follow {
                 .unwrap_or_else(|_| Err("The Variax Follow worker stopped unexpectedly.".into()));
             let cancelled = worker.stop.load(Ordering::Relaxed);
             if self.attachment.as_ref() != Some(&worker.attachment) {
+                if self.attachment.is_none()
+                    && self.disconnected()
+                    && self.device_key.as_ref() == Some(&worker.attachment.key)
+                    && let Err(error) = result
+                {
+                    self.error = Some(error);
+                }
                 return;
             }
             match result {
@@ -561,8 +576,17 @@ impl Follow {
         Some((bank, slot))
     }
 
+    fn starting(&self) -> bool {
+        self.worker.as_ref().is_some_and(|worker| {
+            worker
+                .progress
+                .lock()
+                .is_ok_and(|progress| matches!(progress.state, ListenProgress::Starting))
+        })
+    }
+
     fn show(&mut self, ui: &mut egui::Ui, available: bool, now: Instant) {
-        if !self.device_tab {
+        if self.device_key.is_none() {
             return;
         }
         let stopping = self
@@ -573,7 +597,12 @@ impl Follow {
         ui.horizontal(|ui| {
             let enabled = following || (!stopping && available && self.can_follow());
             if ui
-                .add_enabled(enabled, egui::Checkbox::new(&mut following, "Follow"))
+                .add_enabled(
+                    enabled,
+                    egui::Checkbox::new(&mut following, "Follow selector"),
+                )
+                .on_hover_text("Show the model selected on the guitar.")
+                .on_disabled_hover_text("Show the model selected on the guitar.")
                 .changed()
             {
                 self.set_following(following);
@@ -602,18 +631,38 @@ impl Follow {
                     }
                     remaining.is_zero()
                 });
-                self.live_status(ui.ctx(), now, pause)
+                self.live_status(ui.ctx(), now, pause, paused_since.is_some())
             } else {
                 return;
             };
 
             // Keep the toolbar at one line at every width. egui exposes
             // the full text on hover when it has to truncate the label.
-            let mut label = egui::RichText::new(message);
+            let mut label = egui::RichText::new(&message);
             if let Some(color) = color {
                 label = label.color(color);
             }
-            ui.add(egui::Label::new(label).truncate());
+            let label = egui::Label::new(label).truncate();
+            if self.error.is_some() {
+                let response = ui
+                    .add(
+                        label
+                            .selectable(false)
+                            .sense(egui::Sense::click())
+                            .show_tooltip_when_elided(false),
+                    )
+                    .on_hover_text(&message)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                egui::Popup::menu(&response).show(|ui| {
+                    ui.set_max_width(420.0);
+                    ui.add(egui::Label::new(&message).wrap().selectable(true));
+                    if ui.button("Copy Follow error").clicked() {
+                        ui.ctx().copy_text(message);
+                    }
+                });
+            } else {
+                ui.add(label);
+            }
         });
     }
 
@@ -622,11 +671,12 @@ impl Follow {
         ctx: &egui::Context,
         now: Instant,
         paused: bool,
+        waiting_for_rig: bool,
     ) -> (String, Option<egui::Color32>) {
         let snapshot = self.snapshot;
         let mut fields = vec![
-            control_position("Volume", snapshot.volume),
-            control_position("Live tone", snapshot.tone),
+            control_position("Observed volume", snapshot.volume),
+            control_position("Observed tone", snapshot.tone),
         ];
         if let Some((preset, _)) = snapshot.program {
             fields.push(format!(
@@ -634,11 +684,15 @@ impl Follow {
                 preset.bank_name(),
                 preset.slot() + 1
             ));
-        } else if !paused {
-            fields.push("Waiting for a guitar preset change".into());
         }
         if paused {
             fields.push("Follow paused while the rig is in use.".into());
+        } else if waiting_for_rig {
+            fields.push("Waiting for the rig".into());
+        } else if self.starting() {
+            fields.push("Starting the guitar listener…".into());
+        } else if snapshot.program.is_none() {
+            fields.push("Waiting for a guitar preset change".into());
         }
         if self.notice == Some(ConnectionNotice::Connected) {
             fields.push("Guitar connected via PODxt Live.".into());
@@ -730,6 +784,68 @@ impl VariaxEditor {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+struct ListenerLog<'a> {
+    ready: &'a mut dyn FnMut(),
+    listening: bool,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl line6_devices::session::Log for ListenerLog<'_> {
+    fn line(&mut self, line: String) {
+        // The family emits this after identity, bridge enable and session on.
+        // Keep the readiness marker covered by a fake family-session test.
+        if line.ends_with(" Listening window open for Variax Follow.") {
+            self.listening = true;
+            (self.ready)();
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn report_session(
+    result: Result<(), String>,
+    listening: bool,
+    packets: usize,
+    started_setup: bool,
+    session_cleanup_failed: bool,
+    usb_release: Result<(), String>,
+) -> Result<(), String> {
+    let session_error = result.err().map(|error| {
+        let release_only = session_cleanup_failed
+            && (error.starts_with("Session off failed:")
+                || error.starts_with("PODxt Variax-messages release failed:"));
+        let stage = if release_only {
+            "Session or relay release"
+        } else if listening {
+            "Listener read"
+        } else if started_setup || session_cleanup_failed {
+            "Listener setup"
+        } else if error == "No reply to the identity request: nothing arrived from the guitar." {
+            return if packets == 0 {
+                format!("Identity silence: {error}")
+            } else {
+                format!("Identity: received {packets} packets without a valid reply. {error}")
+            };
+        } else {
+            "Identity"
+        };
+        if session_cleanup_failed && !release_only {
+            format!("{stage}: {error}\nSession or relay release also failed.")
+        } else {
+            format!("{stage}: {error}")
+        }
+    });
+    let usb_error = usb_release
+        .err()
+        .map(|error| format!("USB release (interface 1): {error}"));
+    match (session_error, usb_error) {
+        (Some(error), Some(release)) => Err(format!("{error}\n{release}")),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (None, None) => Ok(()),
+    }
+}
+
 #[cfg(all(target_os = "linux", not(test)))]
 fn read_updates(
     attachment: &Attachment,
@@ -742,7 +858,7 @@ fn read_updates(
         device_lock::{FollowDeviceLock, LockError},
         family::variax::follow_reporting_cleanup,
         gate::{GatePolicy, Operation},
-        session::{Quiet, Session},
+        session::Session,
     };
     use std::cell::Cell;
     use variax_workbench::hardware_gates::{Gate, is_locked, run_if_unlocked};
@@ -767,7 +883,7 @@ fn read_updates(
         let lease = match FollowDeviceLock::acquire() {
             Ok(lease) => lease,
             Err(LockError::Busy | LockError::BusyHere) => return Ok(ListenEnd::Busy),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(format!("Rig lock: {error}")),
         };
         let yielded = Cell::new(false);
         let cancelled = || {
@@ -790,10 +906,13 @@ fn read_updates(
             let link = variax_workbench::usb::open_variax_bridge_borrowed(
                 lease.rig(),
                 (&attachment.path, attachment.address),
-            )?;
+            )
+            .map_err(|error| format!("USB open (interface 1): {error}"))?;
             cleanup_uncertain.set(false);
-            ready();
-            let mut log = Quiet;
+            let mut log = ListenerLog {
+                ready,
+                listening: false,
+            };
             let mut session = Session::new(link, &Policy, &mut log);
             session.log_packets = false;
             let result = follow_reporting_cleanup(
@@ -803,15 +922,27 @@ fn read_updates(
                 |update| publish(update, Instant::now()),
                 || cleanup_uncertain.set(true),
             );
+            let packets = session.packets_in;
+            // Any successful send after the identity exchange belongs to
+            // listener setup or release. This includes a successful relay-off
+            // after a failed relay-on.
+            let started_setup = session
+                .sent
+                .iter()
+                .any(|packet| packet.as_slice() != line6_devices::identity::REQUEST);
             let release = session.link.finish();
+            let session_cleanup_failed = cleanup_uncertain.get();
             if release.is_err() {
                 cleanup_uncertain.set(true);
             }
-            match (result, release) {
-                (Err(error), Err(release)) => Err(format!("{error} {release}")),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Ok(()), Ok(())) => Ok(()),
-            }
+            report_session(
+                result,
+                log.listening,
+                packets,
+                started_setup,
+                session_cleanup_failed,
+                release,
+            )
         })();
         continuous.store(false, Ordering::Release);
         match result {
@@ -834,6 +965,168 @@ mod tests {
     use crate::editor::registry::DEVICE_PROFILES;
     use crate::editor::tests::app;
     use variax_workbench::{bundle::BundleFile, edit::WIRING};
+
+    #[test]
+    fn fake_family_session_distinguishes_identity_silence_setup_and_listener_read() {
+        use line6_devices::{
+            family::variax::{VariaxRequest, follow_window},
+            gate::{GatePolicy, Operation},
+            session::{Link, Path, Request, Session},
+        };
+
+        struct ReadPolicy;
+        impl GatePolicy for ReadPolicy {
+            fn allows(&self, operation: Operation) -> bool {
+                matches!(operation, Operation::VariaxIdentity | Operation::VariaxRead)
+            }
+        }
+
+        enum Scenario {
+            Silent,
+            UnrelatedPacket,
+            SetupError,
+            ReadError,
+        }
+
+        struct FakeLink {
+            scenario: Scenario,
+            elapsed: Duration,
+            writes: Vec<Vec<u8>>,
+            reads: usize,
+        }
+
+        impl Link for FakeLink {
+            fn path(&self) -> Path {
+                Path::VariaxViaPodxt
+            }
+
+            fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+                self.writes.push(bytes.to_vec());
+                if matches!(self.scenario, Scenario::SetupError)
+                    && bytes == VariaxRequest::SessionOn.bytes()
+                {
+                    return Err("fake session-on failure".into());
+                }
+                Ok(())
+            }
+
+            fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+                self.elapsed += wait;
+                self.reads += 1;
+                match (&self.scenario, self.reads) {
+                    (Scenario::Silent, _) => Ok(None),
+                    (Scenario::UnrelatedPacket, 1) => Ok(Some(vec![0xb0, 7, 10])),
+                    (Scenario::UnrelatedPacket, _) => Ok(None),
+                    (_, 1) => Ok(Some(vec![
+                        0xf0, 0x7e, 0x7f, 0x06, 0x02, 0, 1, 0x0c, 7, 0, 4, 0, b'0', b'3', b'1',
+                        b'0', 0xf7,
+                    ])),
+                    (Scenario::ReadError, _) => Err("fake interrupt transfer failure".into()),
+                    (Scenario::SetupError, _) => panic!("setup failed before listening"),
+                }
+            }
+
+            fn elapsed(&self) -> Duration {
+                self.elapsed
+            }
+
+            fn pause(&mut self, duration: Duration) {
+                self.elapsed += duration;
+            }
+        }
+
+        for (scenario, expected, expected_writes, ready_expected) in [
+            (Scenario::Silent, "Identity silence:", 1, false),
+            (Scenario::UnrelatedPacket, "Identity:", 1, false),
+            (
+                Scenario::SetupError,
+                "Listener setup: fake session-on failure",
+                5,
+                false,
+            ),
+            (
+                Scenario::ReadError,
+                "Listener read: fake interrupt transfer failure",
+                5,
+                true,
+            ),
+        ] {
+            let mut ready = false;
+            let mut mark_ready = || ready = true;
+            let mut log = ListenerLog {
+                ready: &mut mark_ready,
+                listening: false,
+            };
+            let link = FakeLink {
+                scenario,
+                elapsed: Duration::ZERO,
+                writes: Vec::new(),
+                reads: 0,
+            };
+            let mut session = Session::new(link, &ReadPolicy, &mut log);
+            session.log_packets = false;
+            let result = follow_window(
+                &mut session,
+                Duration::from_secs(1),
+                false,
+                || false,
+                |_| {
+                    panic!("no Follow updates expected");
+                },
+            );
+            let packets = session.packets_in;
+            let started_setup = session
+                .sent
+                .iter()
+                .any(|packet| packet.as_slice() != line6_devices::identity::REQUEST);
+            assert_eq!(session.link.writes.len(), expected_writes);
+            let error =
+                report_session(result, log.listening, packets, started_setup, false, Ok(()))
+                    .unwrap_err();
+            assert!(error.starts_with(expected), "{error}");
+            assert_eq!(ready, ready_expected);
+        }
+    }
+
+    #[test]
+    fn follow_keeps_listener_and_cleanup_errors_in_the_same_diagnostic() {
+        let error = report_session(
+            Err("interrupt read failed. Session off also failed: I/O".into()),
+            true,
+            1,
+            true,
+            true,
+            Err("release interface: busy. reattach kernel driver: I/O".into()),
+        )
+        .unwrap_err();
+        assert!(error.starts_with("Listener read: interrupt read failed."));
+        assert!(error.contains("Session off also failed: I/O"));
+        assert!(error.contains(
+            "USB release (interface 1): release interface: busy. reattach kernel driver: I/O"
+        ));
+        assert_eq!(
+            report_session(
+                Err("Session off failed: I/O".into()),
+                true,
+                1,
+                true,
+                true,
+                Ok(())
+            ),
+            Err("Session or relay release: Session off failed: I/O".into()),
+        );
+        assert_eq!(
+            report_session(
+                Ok(()),
+                true,
+                1,
+                true,
+                false,
+                Err("reattach kernel driver: I/O".into())
+            ),
+            Err("USB release (interface 1): reattach kernel driver: I/O".into()),
+        );
+    }
 
     fn fake_source(
         attachment: &Attachment,
@@ -895,7 +1188,7 @@ mod tests {
 
         fn checkbox_center(shape: &egui::Shape) -> Option<egui::Pos2> {
             match shape {
-                egui::Shape::Text(text) if text.galley.text() == "Follow" => {
+                egui::Shape::Text(text) if text.galley.text() == "Follow selector" => {
                     Some(text.pos + text.galley.rect.center().to_vec2())
                 }
                 egui::Shape::Vec(shapes) => shapes.iter().find_map(checkbox_center),
@@ -991,8 +1284,8 @@ mod tests {
         assert_eq!(snapshot.tone, Some(127));
         assert!(snapshot.clip_until.is_some() && snapshot.dsp_overload);
         assert_eq!(
-            control_position("Live tone", snapshot.tone),
-            "Live tone 100%"
+            control_position("Observed tone", snapshot.tone),
+            "Observed tone 100%"
         );
         let document = editor.document.as_ref().unwrap();
         assert_eq!(document.selection(), Some((4, 2)));
@@ -1322,6 +1615,9 @@ mod tests {
                     editor.follow.resume = Some(Instant::now());
                     poll_follow(editor, &ctx);
                     assert!(shows_pause(&ctx, &mut editor.follow));
+                    let (status, _) = editor.follow.live_status(&ctx, Instant::now(), true, true);
+                    assert!(status.contains("Observed volume 28%"));
+                    assert!(status.contains("Observed tone 35%"));
                     assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
                     finish.send(()).unwrap();
                     let started = Instant::now();
@@ -1370,21 +1666,26 @@ mod tests {
 
     #[test]
     fn follow_status_changes_keep_the_real_editor_workspace_in_place() {
-        fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
-            fn contains(shape: &egui::Shape, expected: &str) -> bool {
+        fn text_center(output: &egui::FullOutput, expected: &str) -> Option<egui::Pos2> {
+            fn find(shape: &egui::Shape, expected: &str) -> Option<egui::Pos2> {
                 match shape {
-                    egui::Shape::Text(text) => text.galley.text().contains(expected),
-                    egui::Shape::Vec(shapes) => {
-                        shapes.iter().any(|shape| contains(shape, expected))
+                    egui::Shape::Text(text) if text.galley.text().contains(expected) => {
+                        Some(text.pos + text.galley.rect.center().to_vec2())
                     }
-                    _ => false,
+                    egui::Shape::Vec(shapes) => {
+                        shapes.iter().find_map(|shape| find(shape, expected))
+                    }
+                    _ => None,
                 }
             }
             output
                 .shapes
                 .iter()
-                .any(|item| contains(&item.shape, expected))
+                .find_map(|item| find(&item.shape, expected))
         }
+
+        let has_text =
+            |output: &egui::FullOutput, expected| text_center(output, expected).is_some();
 
         for (width, density) in [(960.0, 1.0), (1120.0, 2.0)] {
             let (ctx, mut app) = app();
@@ -1399,12 +1700,13 @@ mod tests {
 
             let now = Instant::now();
             editor.follow.resume = Some(now + Duration::from_secs(10));
-            let frame = |app: &mut crate::editor::Workbench| {
+            let frame_with_events = |app: &mut crate::editor::Workbench, events| {
                 let mut input = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(width, 760.0),
                     )),
+                    events,
                     ..Default::default()
                 };
                 input
@@ -1413,6 +1715,25 @@ mod tests {
                     .unwrap()
                     .native_pixels_per_point = Some(density);
                 ctx.run(input, |ctx| app.render(ctx))
+            };
+            let frame = |app: &mut crate::editor::Workbench| frame_with_events(app, vec![]);
+            let click = |app: &mut crate::editor::Workbench, pos| {
+                let _ = frame_with_events(app, vec![egui::Event::PointerMoved(pos)]);
+                for pressed in [true, false] {
+                    let output = frame_with_events(
+                        app,
+                        vec![egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                    );
+                    if !pressed {
+                        return output;
+                    }
+                }
+                unreachable!()
             };
             let layout = |app: &crate::editor::Workbench| {
                 let editor = app.variax();
@@ -1440,9 +1761,13 @@ mod tests {
                 follow.snapshot.program = Some((Preset::new(3, 2).unwrap(), now - SLOT_SETTLE));
                 follow.snapshot.clip_until = Some(now + Duration::from_secs(10));
                 let output = frame(&mut app);
-                assert!(has_text(&output, "Volume 28%"));
-                assert!(has_text(&output, "Live tone 35%"));
+                assert!(has_text(&output, "Observed volume 28%"));
+                assert!(has_text(&output, "Observed tone 35%"));
                 assert!(has_text(&output, "Guitar preset"));
+                assert_eq!(
+                    has_text(&output, "Waiting for the rig"),
+                    time_paused == Some(Duration::ZERO),
+                );
                 assert_eq!(
                     has_text(&output, "Follow paused while the rig is in use."),
                     should_show_pause,
@@ -1451,12 +1776,26 @@ mod tests {
                 assert_eq!(app.variax().tuning_widgets, tuning_widgets);
             }
 
-            app.variax_mut().follow.error = Some("Injected transport failure ".repeat(20));
+            let error = format!(
+                "USB open (interface 1): {}\nComplete driver error.",
+                "Injected transport failure ".repeat(20)
+            );
+            app.variax_mut().follow.error = Some(error.clone());
             let failed = frame(&mut app);
-            assert!(has_text(
-                &failed,
-                "Follow failed. Injected transport failure"
-            ));
+            let status = text_center(&failed, "Follow failed. USB open").unwrap();
+            let _ = click(&mut app, status);
+            let details = frame(&mut app);
+            assert!(has_text(&details, "Complete driver error."));
+            let copy = text_center(&details, "Copy Follow error").unwrap();
+            let copied = click(&mut app, copy);
+            assert!(
+                copied
+                    .platform_output
+                    .commands
+                    .contains(&egui::OutputCommand::CopyText(format!(
+                        "Follow failed. {error}"
+                    )))
+            );
             assert_eq!(layout(&app), original);
         }
     }
@@ -1499,6 +1838,42 @@ mod tests {
         assert!(!editor.follow.disconnected());
         assert!(!editor.follow.busy());
         assert_eq!(editor.document.as_ref().unwrap().as_bytes(), before);
+    }
+
+    #[test]
+    fn release_error_survives_invalidation_of_the_disconnected_attachment() {
+        use crate::editor::detection::DeviceSupport;
+
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let mut tab = refresh_tests::verified_tab();
+        editor.observe_device(Some(&tab));
+        editor
+            .follow
+            .start(
+                |_, stop, _, ready, publish| {
+                    ready();
+                    publish(FollowUpdate::Disconnected, Instant::now());
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::yield_now();
+                    }
+                    Err("USB release (interface 1): driver return failed".into())
+                },
+                &ctx,
+            )
+            .unwrap();
+        poll_until(editor, &ctx, Follow::disconnected);
+        assert!(editor.follow.busy());
+        let verified = std::mem::replace(&mut tab.device.support, DeviceSupport::UsbOnly);
+        editor.observe_device(Some(&tab));
+        poll_until(editor, &ctx, |follow| !follow.busy());
+        assert_eq!(
+            editor.follow.error.as_deref(),
+            Some("USB release (interface 1): driver return failed"),
+        );
+        tab.device.support = verified;
+        editor.observe_device(Some(&tab));
+        assert!(editor.follow.error.is_none());
     }
 
     #[test]

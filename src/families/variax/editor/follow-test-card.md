@@ -11,17 +11,19 @@ that you can browse and edit offline. Save any edits you want to keep before
 replacing it with a fresh download. Make a local edit in the current download
 to verify that Follow preserves it.
 
-1. After identity verification, confirm **Follow** starts automatically.
+1. After identity verification, confirm **Follow selector** starts automatically.
    Move the model knob and pickup selector. Compare the
    guitar preset indicator and the selected bank and slot. The indicator waits
    for the first preset message, and the editor selects a clean slot after about
    300 ms or an edited slot after about one second.
 2. Move the volume and tone knobs after the slot settles. Compare the knob
-   movements and the live percentages. Check that the saved tone position,
-   **Save tone-knob position** setting, and local edit remain as before.
+   movements with **Observed volume** and **Observed tone**. Check that the
+   saved tone position, **Save tone-knob position** setting, and local edit
+   remain as before. In a build approved for live editing, repeat with **Live
+   editing** enabled.
 3. Record any **Clip**, **DSP overload**, or **MIDI queue overflow** notice
    that occurs during normal playing.
-4. Turn **Follow** off and check that further knob movements leave the editor
+4. Turn **Follow selector** off and check that further knob movements leave the editor
    view alone. Turn Follow back on before the disconnect check.
 5. Note the selected slot, then unplug the VDI cable while the PODxt stays
    connected. Record whether the editor reports the disconnect and stops
@@ -32,7 +34,7 @@ to verify that Follow preserves it.
    Confirm that the earlier library is labelled **Saved guitar download**,
    with the same selected slot and local edit. Move the selector and then the
    tone knob after the preset settles. The guitar preset indicator and
-   **Live tone** should report the new guitar values while the historical
+   **Observed tone** should report the new guitar values while the historical
    library keeps its offline selection and saved tone settings. Save any
    edits you want to keep, then use **Download from guitar…** again. Confirm
    **Downloaded on this connection** and repeat steps 1 and 2 with this download.
@@ -49,6 +51,20 @@ to verify that Follow preserves it.
 
 Follow opens the verified attachment for a G3 read session. It sends no
 preset changes, preset edits or store commands.
+
+## Build 554 failure evidence
+
+The Linux journal records interface detach and reattach during a normal
+handoff too. Those entries alone leave the failing Follow stage unresolved.
+
+If the failure recurs, click the Follow error and use **Copy Follow error**.
+Record the complete text, the build and time, what you were doing just before
+it appeared, whether **Live editing** was enabled, and any simultaneous rig
+operation. Note whether the strip was starting the listener, waiting for the
+rig or for a preset change, or paused. If the listener stays open but the
+selector does not track, record whether the guitar preset indicator, slot
+selection, and observed knobs each updated after the selector moved. Include
+the matching journal interval if available.
 
 ## Linux shared rig lease
 
