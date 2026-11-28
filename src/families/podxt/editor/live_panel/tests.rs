@@ -625,3 +625,58 @@ fn disconnected_stage_loads_backup_and_no_backup_shows_labelled_default() {
 mod stage_acceptance;
 
 pub(super) mod read_recovery;
+
+#[test]
+fn tone_locker_keeps_staged_destination_without_device_requests() {
+    use crate::editor::podxt_panel::locker::tests::HeadlessLocker;
+
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let locker = HeadlessLocker::new(&ctx);
+    let slot = Location::tone_from_label("5B").unwrap();
+    let (requests, library, playing) = {
+        let live = &app.podxt().live;
+        (
+            live.device_requests,
+            live.snapshot.library.clone(),
+            live.snapshot.tone.clone(),
+        )
+    };
+
+    locker.click(&ctx, &mut app, false, "Tone Locker");
+    assert!(locker.labels().contains(&"Amp Setups · Not loaded".into()));
+    assert!(locker.labels().contains(&"FX Setups · Not loaded".into()));
+    locker.click(&ctx, &mut app, true, "Tones · 1/128 loaded");
+    let labels = locker.labels();
+    let row = labels
+        .iter()
+        .find(|label| label.starts_with("5B · Saved 5B"))
+        .unwrap_or_else(|| panic!("{labels:?}"));
+    locker.click(&ctx, &mut app, true, row);
+    locker.click(&ctx, &mut app, true, "Stage file editor tone → 5B");
+    assert!(app.podxt().live.locker_dirty());
+    locker.click(&ctx, &mut app, true, "Close");
+    locker.click(&ctx, &mut app, false, "Tone Locker");
+
+    let labels = locker.labels();
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.starts_with("PODxt Live slot: 5B"))
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.contains("1 device slots staged"))
+    );
+    assert_eq!(app.podxt().live.device_requests, requests);
+    assert_eq!(app.podxt().live.snapshot.library, library);
+    assert_eq!(app.podxt().live.snapshot.tone, playing);
+    assert_eq!(app.podxt().live.playing_channel(), Some(slot));
+
+    // A fake attachment can populate the editor, while the test build keeps
+    // the real platform read unavailable.
+    locker.click(&ctx, &mut app, true, "Read full library");
+    assert_eq!(app.podxt().live.device_requests, requests);
+    assert!(app.podxt().live.locker_dirty());
+}

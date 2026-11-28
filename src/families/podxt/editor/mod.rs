@@ -3,6 +3,7 @@ use variax_workbench::pod_preset::Library;
 
 #[cfg(feature = "usb")]
 mod live_panel;
+mod locker;
 mod parameter_panel;
 mod stage;
 use parameter_panel::ParameterPanel;
@@ -287,6 +288,7 @@ fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
 pub(super) struct PodxtEditor {
     #[cfg(feature = "usb")]
     live: live_panel::LivePanel,
+    locker: locker::LockerWindow,
     parameter_panel: ParameterPanel,
     stage: stage::Stage,
     #[cfg(test)]
@@ -400,6 +402,7 @@ impl PodxtEditor {
         Self {
             #[cfg(feature = "usb")]
             live: live_panel::LivePanel::default(),
+            locker: locker::LockerWindow::default(),
             parameter_panel: ParameterPanel::default(),
             stage: stage::Stage::default(),
             #[cfg(test)]
@@ -3877,15 +3880,25 @@ impl FamilyTab for PodxtEditor {
                 .show(ui, |ui| {
                     self.show_stage(ui, services);
                     #[cfg(feature = "usb")]
-                    {
-                        let file_tone = self
-                            .pod_selected
-                            .and_then(|index| self.pod_library.tone(index));
-                        if let Some(bytes) = self.live.panels(ui, services, file_tone) {
-                            self.open_stage_document(bytes);
-                        }
-                    }
+                    self.live.show_store_panel(ui, services);
                 });
+            let document_pending = self.stage_has_pending_document();
+            if let Some(document) = self.locker.show(
+                ui,
+                services,
+                #[cfg(feature = "usb")]
+                &mut self.live,
+                self.stage.backup.as_ref(),
+                #[cfg(feature = "usb")]
+                self.pod_selected
+                    .and_then(|index| self.pod_library.tone(index)),
+                document_pending,
+            ) {
+                self.open_locker_document(document);
+                if self.stage_has_pending_document() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
         }
     }
     fn source_path(&self) -> Option<&Path> {
@@ -4015,9 +4028,9 @@ impl ProductFamily for Family {
         if let TabSource::File(path, bytes) = source {
             editor.import_pod_document(bytes);
             editor.stage.path = Some(path);
-            #[cfg(feature = "usb")]
             editor
-                .live
+                .locker
+                .files
                 .use_document_directory(editor.stage.path.as_deref());
             if editor.pod_library.is_empty() {
                 return Err(editor.pod_message);

@@ -55,7 +55,6 @@ pub(super) struct LivePanel {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StagePanel {
-    Locker,
     Store,
 }
 
@@ -848,10 +847,6 @@ impl LivePanel {
         Ok(Some((tone, self.snapshot.packs.map_or(0, |packs| packs.0))))
     }
 
-    pub(super) fn use_document_directory(&mut self, path: Option<&std::path::Path>) {
-        self.locker.use_document_directory(path);
-    }
-
     pub(super) fn stage_footer(&self) -> &str {
         self.editor
             .status_text()
@@ -1046,41 +1041,22 @@ impl LivePanel {
                 }
             }
         }
-        for (panel, label, enabled) in [
-            (StagePanel::Locker, "Tone Locker · Librarian", true),
-            (
-                StagePanel::Store,
-                "Store to POD…",
-                *current
-                    && connected
-                    && idle
-                    && !self.locker.syncing()
-                    && !self.editor.has_pending()
-                    && self.snapshot.channel.is_some(),
-            ),
-        ] {
-            if panel != StagePanel::Locker && !self.visible()
-                || panel == StagePanel::Store && !*current
-            {
-                continue;
-            }
-            let selected = self.panel == Some(panel);
+        if self.visible() && *current {
+            let selected = self.panel == Some(StagePanel::Store);
+            let enabled = connected
+                && idle
+                && !self.locker.syncing()
+                && !self.editor.has_pending()
+                && self.snapshot.channel.is_some();
             if ui
                 .add_enabled(
                     enabled || selected,
-                    egui::Button::selectable(selected, label),
+                    egui::Button::selectable(selected, "Store to POD…"),
                 )
-                .on_hover_text(if panel == StagePanel::Locker {
-                    "Browse local files and PODxt banks. CustomTone was a separate online service."
-                } else {
-                    ""
-                })
                 .clicked()
             {
-                if self.panel == Some(StagePanel::Store) || panel == StagePanel::Store {
-                    self.store.clear_preparation();
-                }
-                self.panel = (!selected).then_some(panel);
+                self.store.clear_preparation();
+                self.panel = (!selected).then_some(StagePanel::Store);
                 self.scroll_to_panel = self.panel.is_some();
             }
         }
@@ -1119,54 +1095,76 @@ impl LivePanel {
         }
     }
 
-    pub(super) fn panels(
+    pub(super) fn show_store_panel(
         &mut self,
         ui: &mut egui::Ui,
         services: &mut EditorServices<'_>,
-        file_tone: Option<&pod_preset::PodTone>,
-    ) -> Option<Vec<u8>> {
-        let panel = self.panel?;
-        let ready = self.device_ready();
-        let view = ui.scope(|ui| match panel {
-            StagePanel::Locker => {
-                let idle = !self.busy() && !self.editor.has_pending();
-                let actions = self.locker.show(
-                    ui,
-                    services,
-                    locker::View {
-                        snapshot: &self.snapshot,
-                        idle,
-                        can_get: idle
-                            && self.device_ready()
-                            && Self::admitted(ReadCommand::Library),
-                        editor_tone: file_tone,
-                    },
-                    &mut self.store,
-                );
-                if actions.get {
-                    self.start(ReadCommand::Library, ui.ctx());
-                }
-                if self.locker.syncing() {
-                    self.store.show(
-                        ui,
-                        services,
-                        self.device.as_ref().filter(|_| ready),
-                        &self.editor.reply_pending,
-                        idle,
-                        store::StoreView::Sync,
-                    );
-                }
-                actions.open
+    ) {
+        if self.panel == Some(StagePanel::Store) {
+            let view = ui.scope(|ui| self.show_current_store(ui, services));
+            if std::mem::take(&mut self.scroll_to_panel) {
+                view.response.scroll_to_me(Some(egui::Align::Min));
             }
-            StagePanel::Store => {
-                self.show_current_store(ui, services);
-                None
-            }
-        });
-        if std::mem::take(&mut self.scroll_to_panel) {
-            view.response.scroll_to_me(Some(egui::Align::Min));
         }
-        view.inner
+    }
+
+    pub(super) fn show_locker(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
+        files: &mut super::locker::FileBrowser,
+        editor_tone: Option<&pod_preset::PodTone>,
+    ) -> Option<super::locker::Document> {
+        let ready = self.device_ready();
+        let idle = !self.busy() && !self.editor.has_pending();
+        let actions = self.locker.show(
+            ui,
+            services,
+            locker::View {
+                snapshot: &self.snapshot,
+                idle: idle && self.panel != Some(StagePanel::Store),
+                can_get: idle && ready && Self::admitted(ReadCommand::Library),
+                editor_tone,
+            },
+            &mut self.store,
+            files,
+        );
+        if actions.get {
+            self.start(ReadCommand::Library, ui.ctx());
+        }
+        if self.locker.syncing() {
+            self.store.show(
+                ui,
+                services,
+                self.device.as_ref().filter(|_| ready),
+                &self.editor.reply_pending,
+                idle,
+                store::StoreView::Sync,
+            );
+        }
+        if let Some(worker) = &self.worker
+            && worker.command == ReadCommand::Library
+        {
+            let count = worker.library_progress().unwrap_or(0);
+            let total = library_total(worker.command);
+            ui.weak(format!("Reading full library · {count}/{total}"));
+            if ui
+                .add_enabled(
+                    !worker.stop.load(Ordering::Acquire),
+                    egui::Button::new("Cancel library read"),
+                )
+                .clicked()
+            {
+                worker.stop.store(true, Ordering::Release);
+            }
+        }
+        if let Some(message) = &self.message {
+            ui.weak(message);
+        }
+        if let Some(message) = self.pending_reply_message() {
+            ui.weak(message);
+        }
+        actions.open
     }
 
     fn show_current_store(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
