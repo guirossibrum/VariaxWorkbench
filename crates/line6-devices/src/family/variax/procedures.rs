@@ -1,5 +1,44 @@
 //! Shared Variax 300/600 firmware 3.10 procedures for an already-open link.
 //! The caller owns the rig lock, session policy, and device/driver cleanup.
+//!
+//! # Explicit model selection
+//!
+//! Workbench 1.75's `L6PatchManager.SendEditBufferOrPC` chooses a program
+//! change for a synchronized device slot and a full working-buffer upload
+//! for an edited model. For the same two branches, use:
+//!
+//! - [`read_unmodified`] with a bounds-checked [`Preset`], then
+//!   [`compare_image`] against the exact device image associated with the
+//!   synchronized slot. This uses `VariaxPresetSwitch` and `VariaxRead`.
+//! - [`send_buffer_verified`] with [`BufferEdit::Full`] and a validated,
+//!   reference-checked [`Program`]. This uses `VariaxEditBufferWrite` and
+//!   `VariaxRead`. The upload leaves slot selection alone. Both paths
+//!   operate on the active buffer and leave stored presets intact.
+//!
+//! Admit the action under its caller-specific gate. Hold the rig lock from
+//! before opening through checked release of the same native link. Serialize
+//! with Follow, verify the selected relay and guitar, and recheck attachment
+//! generation and any assumed current slot before acting or publishing a
+//! result. Slot evidence must come from the current attachment. An active
+//! buffer read gives contents only, and two slots can have identical images.
+//! Require independent slot evidence wherever slot identity matters, and
+//! reject stale or unknown evidence. The caller owns this check and the
+//! distinction between explicit selection and incoming Follow events.
+//!
+//! Cancellation can stop a read between spans or an upload between chunks.
+//! A pending cancellation lets the in-flight span receive complete or time
+//! out. A partial upload attempts SysEx termination. Session and bridge cleanup are
+//! attempted even after an error. Check cancellation and continuity again
+//! after the last reply and checked release before publishing success.
+//!
+//! A successful action leaves the requested sound active. After a send may
+//! have started, errors and cancellation can leave the active state unknown.
+//! These procedures do not automatically resend the selection or return to
+//! the original slot. If separately admitted, [`return_to_preset`] can
+//! reload and compare a known-clean starting slot and its exact snapshot on
+//! the same verified attachment, even after cancellation. A recall would
+//! discard dirty starting edits. With an unverified attachment or no clean
+//! starting snapshot, report the unknown state and avoid an automatic recall.
 
 use super::{
     CurrentPreset, Identified, Preset, PresetMetadata, identify_retrying_silence,
@@ -15,6 +54,8 @@ use crate::{
 use std::time::Duration;
 
 mod save_identity;
+#[cfg(test)]
+mod selection_tests;
 pub use save_identity::{
     SAVE_PREFLIGHT_NO_IDENTITY, SAVE_PREFLIGHT_REOPEN_EXHAUSTED, SaveIdentity,
     identify_after_save_preflight_reopen, identify_for_save_preflight,
