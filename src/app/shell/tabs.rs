@@ -166,6 +166,9 @@ pub(super) trait FamilyTab: std::any::Any {
     fn busy(&self) -> bool {
         false
     }
+    fn shows_operation_progress(&self) -> bool {
+        self.busy()
+    }
     fn cancel_operation(&mut self) {}
     fn blocking_prompt(&self) -> bool {
         false

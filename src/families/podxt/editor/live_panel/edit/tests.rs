@@ -703,3 +703,37 @@ fn edit_lock_retries_only_busy_and_stops_before_open_on_cancel() {
     assert_eq!(attempts.get(), 1);
     assert!(result.unwrap_err().contains("cancelled"));
 }
+
+#[test]
+fn automatic_edits_hide_progress_and_success_but_keep_errors_visible() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = super::super::tests::connected_fixture(&ctx);
+    let panel = &mut app.podxt_mut().live;
+    panel.editor.set_live(true);
+    panel.editor.pending.set(drive(23));
+    assert!(panel.busy());
+    assert!(!panel.shows_operation_progress());
+
+    let editor = &mut panel.editor;
+    editor.pending.0.clear();
+    for (action, expected) in [
+        (Action::Controls, None),
+        (Action::Get, Some("Read playing tone")),
+        (Action::Send, Some("Send edit buffer")),
+    ] {
+        editor.worker = Some(EditWorker {
+            action,
+            device: None,
+            stop: Arc::default(),
+            targets: Vec::new(),
+            thread: None,
+        });
+        assert_eq!(editor.status_text(), expected);
+        assert_eq!(editor.progress_label().is_some(), expected.is_some());
+    }
+    editor.worker = None;
+    editor.completed(Action::Controls, Ok(sample(23, 0)));
+    assert_eq!(editor.status_text(), None);
+    editor.completed(Action::Controls, Err("Device update failed.".into()));
+    assert_eq!(editor.status_text(), Some("Device update failed."));
+}

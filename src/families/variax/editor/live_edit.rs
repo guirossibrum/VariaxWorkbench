@@ -144,6 +144,12 @@ impl LiveEdit {
         self.worker.is_some()
     }
 
+    pub(super) fn shows_operation_progress(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|work| !matches!(work.action, Action::Automatic))
+    }
+
     pub(super) fn selecting(&self) -> bool {
         self.worker
             .as_ref()
@@ -496,12 +502,14 @@ impl VariaxEditor {
         match self.live_edit.start(action, model, recall) {
             Ok(()) => {
                 self.error = None;
-                self.status = match action {
-                    Action::Get => "Reading guitar working buffer…",
-                    Action::Recall => "Recalling saved guitar model…",
-                    _ => "Updating guitar working buffer…",
+                if !matches!(action, Action::Automatic) {
+                    self.status = match action {
+                        Action::Get => "Reading guitar working buffer…",
+                        Action::Recall => "Recalling saved guitar model…",
+                        _ => "Updating guitar working buffer…",
+                    }
+                    .into();
                 }
-                .into();
             }
             Err(error) => {
                 self.live_edit.stop();
@@ -628,12 +636,14 @@ impl VariaxEditor {
                 Ok(Reply::Verified(image)),
             ) => {
                 self.live_edit.verified = work.model.map(|model| (model, image));
-                self.status = if matches!(work.action, Action::Recall) {
-                    "Saved guitar model recalled and verified."
-                } else {
-                    "Guitar working buffer verified."
+                if !matches!(work.action, Action::Automatic) {
+                    self.status = if matches!(work.action, Action::Recall) {
+                        "Saved guitar model recalled and verified."
+                    } else {
+                        "Guitar working buffer verified."
+                    }
+                    .into();
                 }
-                .into();
             }
             (Action::Get, Ok(Reply::Current(preset, image))) if preset.is_legacy_electric() => {
                 let current = self.live_model();

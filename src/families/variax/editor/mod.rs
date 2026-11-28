@@ -1465,6 +1465,13 @@ impl FamilyTab for VariaxEditor {
         }
         self.is_reading()
     }
+    fn shows_operation_progress(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if self.live_edit.shows_operation_progress() {
+            return true;
+        }
+        self.is_reading()
+    }
     fn cancel_operation(&mut self) {
         self.cancel_read();
         #[cfg(feature = "usb")]

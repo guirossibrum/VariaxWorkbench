@@ -512,6 +512,10 @@ impl LivePanel {
         self.worker.is_some() || self.editor.busy() || self.store.busy()
     }
 
+    pub(super) fn shows_operation_progress(&self) -> bool {
+        self.worker.is_some() || self.editor.progress_label().is_some() || self.store.busy()
+    }
+
     pub(super) fn cancel(&mut self) {
         self.startup = None;
         self.resume_live = false;

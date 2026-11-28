@@ -91,6 +91,10 @@ enum Action {
 }
 
 impl Action {
+    fn progress_label(self) -> Option<&'static str> {
+        (self != Self::Controls).then(|| self.label())
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Get => "Read playing tone",
@@ -607,16 +611,18 @@ impl LiveEditor {
                 }
                 active.current = buffer;
                 self.needs_get = false;
-                self.message = Some(Ok(match action {
-                    Action::Get => {
-                        format!("Edit buffer read from {}.", active.current.channel.label())
-                    }
-                    Action::Undo => "Original snapshot verified byte for byte.".into(),
-                    Action::Recall(slot) => format!("Playing {}.", slot.label()),
-                    Action::Send => "Edit buffer sent and read back.".into(),
-                    Action::ResendWholeTone => "Whole tone sent and read back.".into(),
-                    Action::Controls => "Live edit read back.".into(),
-                }));
+                self.message = match action {
+                    Action::Controls => None,
+                    Action::Get => Some(format!(
+                        "Edit buffer read from {}.",
+                        active.current.channel.label()
+                    )),
+                    Action::Undo => Some("Original snapshot verified byte for byte.".into()),
+                    Action::Recall(slot) => Some(format!("Playing {}.", slot.label())),
+                    Action::Send => Some("Edit buffer sent and read back.".into()),
+                    Action::ResendWholeTone => Some("Whole tone sent and read back.".into()),
+                }
+                .map(Ok);
                 Some(&active.current)
             }
             Err(error) => {
@@ -958,20 +964,23 @@ impl LiveEditor {
         }
     }
 
-    pub(super) fn status_text(&self) -> Option<&str> {
+    pub(super) fn progress_label(&self) -> Option<&'static str> {
         self.worker
             .as_ref()
-            .map(|worker| worker.action.label())
-            .or_else(|| {
-                self.message.as_ref().map(|result| match result {
-                    Ok(message) | Err(message) => message.as_str(),
-                })
+            .and_then(|worker| worker.action.progress_label())
+    }
+
+    pub(super) fn status_text(&self) -> Option<&str> {
+        self.progress_label().or_else(|| {
+            self.message.as_ref().map(|result| match result {
+                Ok(message) | Err(message) => message.as_str(),
             })
+        })
     }
 
     pub(super) fn status(&self, ui: &mut egui::Ui) {
-        if let Some(worker) = &self.worker {
-            ui.weak(format!("{}…", worker.action.label()));
+        if let Some(label) = self.progress_label() {
+            ui.weak(format!("{label}…"));
         } else if let Some(message) = &self.message {
             match message {
                 Ok(text) => {
@@ -1086,8 +1095,8 @@ impl LiveEditor {
         if !snapshot {
             ui.weak("Reading the edit buffer establishes the undo snapshot.");
         }
-        if let Some(worker) = &self.worker {
-            ui.label(format!("{} in progress…", worker.action.label()));
+        if let Some(label) = self.progress_label() {
+            ui.label(format!("{label} in progress…"));
         }
         if let Some(message) = &self.message {
             match message {

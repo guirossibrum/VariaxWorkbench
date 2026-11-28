@@ -639,7 +639,7 @@ impl Workbench {
                             self.connections.show_progress();
                         }
                         self.with_active(|entry, _| {
-                            if entry.editor.busy() {
+                            if entry.editor.shows_operation_progress() {
                                 ui.spinner();
                                 status_line(ui, "Reading model settings…", theme::TEXT);
                                 if command_button(ui, "Cancel read", true).clicked() {

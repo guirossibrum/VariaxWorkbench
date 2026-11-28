@@ -3959,6 +3959,10 @@ impl FamilyTab for PodxtEditor {
         self.live.busy()
     }
     #[cfg(feature = "usb")]
+    fn shows_operation_progress(&self) -> bool {
+        self.live.shows_operation_progress()
+    }
+    #[cfg(feature = "usb")]
     fn cancel_operation(&mut self) {
         self.live.cancel();
     }
