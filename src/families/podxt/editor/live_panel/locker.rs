@@ -1,3 +1,6 @@
+use super::super::locker::{
+    Document, Drag, FileBrowser, bank_group, list_height, read_file, read_library_button,
+};
 use super::*;
 use podxt::{StoredTone, TonePayload};
 use std::collections::{BTreeMap, VecDeque};
@@ -9,10 +12,6 @@ use variax_workbench::pod_preset::{
 #[derive(Default)]
 pub(super) struct Locker {
     selected: Option<Location>,
-    directory: Option<PathBuf>,
-    files: Vec<PathBuf>,
-    file: Option<PathBuf>,
-    clipboard: Option<PodTone>,
     staged: BTreeMap<u16, StagedTone>,
     queue: VecDeque<Location>,
     backup: Option<PathBuf>,
@@ -28,16 +27,10 @@ struct StagedTone {
     candidate: TonePayload,
 }
 
-#[derive(Clone)]
-enum Drag {
-    Device(Location),
-    File(PathBuf),
-}
-
 #[derive(Default)]
 pub(super) struct Actions {
     pub(super) get: bool,
-    pub(super) open: Option<Vec<u8>>,
+    pub(super) open: Option<Document>,
 }
 
 pub(super) struct View<'a> {
@@ -53,21 +46,6 @@ fn kind(bank: BankKind) -> ContainerKind {
         BankKind::AmpSetups => ContainerKind::L6as,
         BankKind::FxSetups => ContainerKind::L6fs,
     }
-}
-
-fn read_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    pod_preset::read_regular_bundle(pod_preset::path_facts(path), || {
-        let file = fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        Ok((
-            pod_preset::PathFacts {
-                regular_file: metadata.is_file(),
-                len: metadata.len(),
-            },
-            file,
-        ))
-    })
-    .map_err(|error| error.detail())
 }
 
 fn decode(payload: &TonePayload, location: Location) -> Result<PodTone, String> {
@@ -157,10 +135,6 @@ fn changed_payload(
         original,
         candidate: target,
     }))
-}
-
-fn write_file_name(slot: Location) -> String {
-    format!("{}.l6t", slot.slot_name().replace(' ', "-"))
 }
 
 fn link_warning(snapshot: &Snapshot, slot: Location) -> Option<String> {
@@ -274,39 +248,6 @@ impl Locker {
         Ok(())
     }
 
-    pub(super) fn use_document_directory(&mut self, path: Option<&std::path::Path>) {
-        if self.directory.is_none()
-            && let Some(directory) = path.and_then(std::path::Path::parent)
-        {
-            self.directory = Some(directory.to_path_buf());
-            if let Err(error) = self.refresh_files() {
-                self.status = error;
-            }
-        }
-    }
-
-    fn refresh_files(&mut self) -> Result<(), String> {
-        let Some(directory) = &self.directory else {
-            return Ok(());
-        };
-        self.files = fs::read_dir(directory)
-            .map_err(|error| error.to_string())?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        ["l6t", "l6a", "l6f", "l6b", "l6c", "vwb"]
-                            .iter()
-                            .any(|kind| ext.eq_ignore_ascii_case(kind))
-                    })
-            })
-            .collect();
-        self.files.sort();
-        Ok(())
-    }
-
     fn remember(&mut self, result: Result<(), String>, success: &str) {
         self.status = match result {
             Ok(()) => success.to_owned(),
@@ -320,6 +261,7 @@ impl Locker {
         services: &mut EditorServices<'_>,
         view: View<'_>,
         store: &mut store::StorePanel,
+        files: &mut FileBrowser,
     ) -> Actions {
         let View {
             snapshot,
@@ -329,7 +271,6 @@ impl Locker {
         } = view;
         let mut action = Actions::default();
         ui.group(|ui| {
-            ui.heading("Tone Locker · Librarian");
             self.toolbar(
                 ui,
                 services,
@@ -338,10 +279,21 @@ impl Locker {
                 &mut action,
             );
             ui.columns(2, |columns| {
-                self.device_tree(&mut columns[0], snapshot);
-                self.file_browser(&mut columns[1], services, snapshot, &mut action);
+                action.open = files.show(
+                    &mut columns[0],
+                    services,
+                    Some(&|slot| decode(&self.payload(slot, snapshot)?, slot)),
+                );
+                columns[1].strong("PODxt Live");
+                if !BankKind::ALL.into_iter().all(|bank| {
+                    Location::all(&[bank])
+                        .all(|slot| snapshot.library.contains_key(&slot.address()))
+                }) {
+                    columns[1].weak("Use Read full library (Get bundle) to load all three banks.");
+                }
+                self.device_tree(&mut columns[1], snapshot);
             });
-            self.selection(ui, snapshot, editor_tone, &mut action);
+            self.selection(ui, snapshot, editor_tone, files, &mut action);
             self.sync(ui, services, snapshot, store, idle);
             if !self.status.is_empty() {
                 ui.label(&self.status);
@@ -359,11 +311,9 @@ impl Locker {
         action: &mut Actions,
     ) {
         ui.horizontal_wrapped(|ui| {
-            action.get = ui
-                .add_enabled(idle, egui::Button::new("Get bundle"))
-                .clicked();
+            action.get = read_library_button(ui, idle);
             let complete = snapshot.library.len() == 299;
-            if ui.add_enabled(complete, egui::Button::new("Save backup bundle")).clicked() {
+            if ui.add_enabled(complete, egui::Button::new("Save PODxt backup to file…")).clicked() {
                 let snapshot = snapshot.clone();
                 services.request_picker::<PodxtEditor>(ui.ctx(), PickRequest::SaveTone {
                     name: "PODxt Live Backup.l6b".into(),
@@ -375,7 +325,7 @@ impl Locker {
                     }
                 });
             }
-            if ui.add_enabled(complete && !self.dirty() && !self.syncing(), egui::Button::new("Send bundle…")).clicked() {
+            if ui.add_enabled(complete && !self.dirty() && !self.syncing(), egui::Button::new("Stage bundle to PODxt Live…")).clicked() {
                 let original = snapshot.library.clone();
                 services.request_picker::<PodxtEditor>(ui.ctx(), PickRequest::OpenTone, move |editor, path, _| {
                     let Some(path) = path else { return; };
@@ -414,13 +364,15 @@ impl Locker {
     }
 
     fn device_tree(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        ui.strong("Device library");
         egui::ScrollArea::vertical()
             .id_salt("locker-device")
-            .max_height(230.0)
+            .max_height(list_height(ui))
             .show(ui, |ui| {
                 for bank in BankKind::ALL {
-                    ui.collapsing(format!("{} ({})", bank.name(), bank.size()), |ui| {
+                    let loaded = Location::all(&[bank])
+                        .filter(|slot| snapshot.library.contains_key(&slot.address()))
+                        .count();
+                    bank_group(ui, bank, loaded, |ui| {
                         for slot in Location::all(&[bank]) {
                             let Some(raw) = snapshot.library.get(&slot.address()) else {
                                 continue;
@@ -445,7 +397,12 @@ impl Locker {
                                 },
                             );
                             let response = ui.selectable_label(self.selected == Some(slot), label);
-                            let response = response.interact(egui::Sense::click_and_drag());
+                            let response = response
+                                .interact(egui::Sense::click_and_drag())
+                                .on_hover_text(format!(
+                                    "Drop here to stage changes for {}.",
+                                    slot.slot_name()
+                                ));
                             response.dnd_set_drag_payload(Drag::Device(slot));
                             if response.clicked() {
                                 self.selected = Some(slot);
@@ -464,7 +421,10 @@ impl Locker {
                                 };
                                 let result =
                                     source.and_then(|tone| self.revise(slot, &tone, snapshot));
-                                self.remember(result, "Slot staged for Sync.");
+                                self.remember(
+                                    result,
+                                    &format!("Changes staged for {}.", slot.slot_name()),
+                                );
                             }
                         }
                     });
@@ -472,127 +432,12 @@ impl Locker {
             });
     }
 
-    fn file_browser(
-        &mut self,
-        ui: &mut egui::Ui,
-        services: &mut EditorServices<'_>,
-        snapshot: &Snapshot,
-        action: &mut Actions,
-    ) {
-        ui.horizontal(|ui| {
-            ui.strong("Files");
-            if ui.button("Choose folder…").clicked() {
-                services.request_picker::<PodxtEditor>(
-                    ui.ctx(),
-                    PickRequest::Folder,
-                    |editor, path, _| {
-                        if let Some(path) = path {
-                            let locker = &mut editor.live.locker;
-                            locker.directory = Some(path);
-                            locker.file = None;
-                            let result = locker.refresh_files();
-                            locker.remember(result, "");
-                        }
-                    },
-                );
-            }
-        });
-        if let Some(dir) = &self.directory {
-            ui.label(dir.display().to_string())
-                .on_hover_text("Drop a device tone here to save a new file.");
-        }
-        let area = egui::ScrollArea::vertical()
-            .id_salt("locker-files")
-            .max_height(190.0)
-            .show(ui, |ui| {
-                for path in &self.files {
-                    let response = ui.selectable_label(
-                        self.file.as_ref() == Some(path),
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                    );
-                    let response = response.interact(egui::Sense::click_and_drag());
-                    response.dnd_set_drag_payload(Drag::File(path.clone()));
-                    if response.clicked() {
-                        self.file = Some(path.clone());
-                    }
-                }
-                ui.label("Drop a device tone to save a copy");
-            });
-        if ui
-            .interact(
-                area.inner_rect,
-                ui.id().with("locker-file-drop"),
-                egui::Sense::hover(),
-            )
-            .dnd_release_payload::<Drag>()
-            .is_some_and(|drag| {
-                let Drag::Device(slot) = drag.as_ref() else {
-                    return false;
-                };
-                let result = (|| {
-                    let dir = self.directory.as_ref().ok_or("Choose a folder first.")?;
-                    decode(&self.payload(*slot, snapshot)?, *slot)?
-                        .save_copy(&dir.join(write_file_name(*slot)))
-                        .map_err(|error| error.detail())?;
-                    self.refresh_files()
-                })();
-                self.remember(result, "Saved tone copy.");
-                true
-            })
-        {
-            ui.ctx().request_repaint();
-        }
-        ui.horizontal(|ui| {
-            if let Some(path) = &self.file {
-                let open = ui.button("Open file").clicked();
-                let copy = ui.button("Copy file tone").clicked();
-                if open {
-                    match read_file(path) {
-                        Ok(bytes) => action.open = Some(bytes),
-                        Err(error) => self.status = error,
-                    }
-                }
-                if copy {
-                    match read_file(path)
-                        .and_then(|bytes| PodTone::parse(bytes).map_err(|error| error.detail()))
-                    {
-                        Ok(tone) => self.clipboard = Some(tone),
-                        Err(error) => self.status = error,
-                    }
-                }
-            }
-            if let Some(tone) = &self.clipboard
-                && ui.button("Paste new file…").clicked()
-            {
-                let name = match tone.container() {
-                    ContainerKind::L6pa => "Tone copy.l6t",
-                    ContainerKind::L6as => "Amp Setup copy.l6t",
-                    ContainerKind::L6fs => "FX Setup copy.l6t",
-                };
-                let tone = tone.clone();
-                services.request_picker::<PodxtEditor>(
-                    ui.ctx(),
-                    PickRequest::SaveTone { name: name.into() },
-                    move |editor, path, _| {
-                        if let Some(path) = path {
-                            let locker = &mut editor.live.locker;
-                            let result = tone
-                                .save_copy(&path)
-                                .map_err(|error| error.detail())
-                                .and_then(|()| locker.refresh_files());
-                            locker.remember(result, "Saved tone copy.");
-                        }
-                    },
-                );
-            }
-        });
-    }
-
     fn selection(
         &mut self,
         ui: &mut egui::Ui,
         snapshot: &Snapshot,
         editor_tone: Option<&PodTone>,
+        files: &mut FileBrowser,
         action: &mut Actions,
     ) {
         let Some(slot) = self.selected else {
@@ -602,38 +447,41 @@ impl Locker {
             return;
         };
         ui.label(format!(
-            "{} · {} · {}",
+            "PODxt Live slot: {} · {} · {}",
             slot.slot_name(),
             payload.name(),
             pod_variax_link(payload.as_bytes()).label
         ));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Load into file editor").clicked() {
+            if ui.button("Open PODxt copy in editor").clicked() {
                 match decode(&payload, slot) {
-                    Ok(tone) => action.open = Some(tone.into_bytes()),
+                    Ok(tone) => action.open = Some(Document::Device(slot, tone)),
                     Err(error) => self.status = error,
                 }
             }
             if ui.button("Copy device tone").clicked() {
                 match decode(&payload, slot) {
-                    Ok(tone) => self.clipboard = Some(tone),
+                    Ok(tone) => files.clipboard = Some(tone),
                     Err(error) => self.status = error,
                 }
             }
             if ui
                 .add_enabled(
-                    self.clipboard.is_some() && !self.syncing(),
-                    egui::Button::new("Paste to slot"),
+                    files.clipboard.is_some() && !self.syncing(),
+                    egui::Button::new(format!("Stage clipboard → {}", slot.slot_name())),
                 )
                 .clicked()
             {
-                let tone = self.clipboard.clone().expect("clipboard available");
+                let tone = files.clipboard.clone().expect("clipboard available");
                 let result = self.revise(slot, &tone, snapshot);
-                self.remember(result, "Slot staged for Sync.");
+                self.remember(result, &format!("Changes staged for {}.", slot.slot_name()));
             }
             if let Some(tone) = editor_tone
                 && ui
-                    .add_enabled(!self.syncing(), egui::Button::new("Stage file editor tone"))
+                    .add_enabled(
+                        !self.syncing(),
+                        egui::Button::new(format!("Stage file editor tone → {}", slot.slot_name())),
+                    )
                     .clicked()
             {
                 let result = self.revise(slot, tone, snapshot);
@@ -696,6 +544,7 @@ impl Locker {
                 )
                 .clicked()
             {
+                store.clear_preparation();
                 self.queue = Location::all(&BankKind::ALL)
                     .filter(|slot| self.staged.contains_key(&slot.address()))
                     .collect();
@@ -708,6 +557,7 @@ impl Locker {
                     .add_enabled(idle, egui::Button::new("Write selected slot"))
                     .clicked()
                 {
+                    store.clear_preparation();
                     self.queue.push_back(slot);
                 }
                 if ui

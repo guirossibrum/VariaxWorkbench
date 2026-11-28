@@ -167,7 +167,7 @@ impl StageDocument {
     }
 }
 
-fn decode_tone(dump: &EditBuffer, kind: BankKind) -> Option<PodTone> {
+pub(super) fn decode_tone(dump: &EditBuffer, kind: BankKind) -> Option<PodTone> {
     let kind = match kind {
         BankKind::Tones => ContainerKind::L6pa,
         BankKind::AmpSetups => ContainerKind::L6as,
@@ -183,7 +183,7 @@ pub(super) struct Stage {
     art: HashMap<&'static str, assets::UiImage>,
     tap: Option<(usize, Instant)>,
     preferences: Option<PathBuf>,
-    backup: Option<LoadedPodxt>,
+    pub(super) backup: Option<LoadedPodxt>,
     source: StageSource,
     pub(super) path: Option<PathBuf>,
     pending_document: Option<StageDocument>,
@@ -308,6 +308,21 @@ impl PodxtEditor {
         self.request_stage_document(bytes, StageSource::File, None);
     }
 
+    pub(super) fn open_locker_document(&mut self, document: locker::Document) {
+        match document {
+            locker::Document::File(path, bytes) => {
+                self.request_stage_document(bytes, StageSource::File, Some(path));
+            }
+            locker::Document::Backup(slot, tone) => {
+                self.open_stage_copy(tone, StageSource::Backup(Some(slot)));
+            }
+            #[cfg(feature = "usb")]
+            locker::Document::Device(slot, tone) => {
+                self.open_stage_copy(tone, StageSource::DeviceCopy(slot));
+            }
+        }
+    }
+
     fn request_stage_document(
         &mut self,
         bytes: Vec<u8>,
@@ -350,8 +365,9 @@ impl PodxtEditor {
         }
         self.stage.source = document.source;
         self.stage.path = document.path;
-        #[cfg(feature = "usb")]
-        self.live.use_document_directory(self.stage.path.as_deref());
+        self.locker
+            .files
+            .use_document_directory(self.stage.path.as_deref());
         self.pod_message = self
             .stage
             .path
@@ -559,6 +575,7 @@ impl PodxtEditor {
             ) {
                 self.table_history(true);
             }
+            self.locker.toolbar(ui);
             #[cfg(feature = "usb")]
             self.live.toolbar(ui, &mut self.stage.view_current);
             #[cfg(feature = "usb")]
