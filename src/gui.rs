@@ -1396,9 +1396,9 @@ fn platform_data_root(absolute_env: impl Fn(&str) -> Option<PathBuf>) -> PathBuf
     std::env::temp_dir().join("variax-workbench")
 }
 
-pub(crate) fn run(title: &str) -> eframe::Result {
-    let arguments: Vec<_> = std::env::args()
-        .skip(1)
+pub(crate) fn run(title: &str, arguments: impl IntoIterator<Item = String>) -> eframe::Result {
+    let arguments: Vec<_> = arguments
+        .into_iter()
         .filter(|arg| !cfg!(target_os = "macos") || !arg.starts_with("-psn_"))
         .collect();
     if arguments == ["--version"] {

@@ -12,6 +12,8 @@ name = "variax_workbench"
 [[bin]]
 name = "variax-workbench"
 path = "src/main.rs"
+# The shared desktop code has its unit suite in the GUI binary. CLI tests invoke this binary.
+test = false
 
 [[bin]]
 name = "variax-workbench-gui"

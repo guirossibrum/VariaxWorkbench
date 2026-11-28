@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] [#316](https://github.com/guirossibrum/VariaxWorkbench/issues/316) tracks comprehensive CLI capability declarations and the device-onboarding coverage check. Preset help lists offline file support using the core product profiles. The shared mapping from GUI and device operations to CLI commands or exemptions is pending.
+
 - [ ] Spider V30 tab [#311](https://github.com/guirossibrum/VariaxWorkbench/issues/311). The [offline audit and integration plan](research/spider-v30-tab-plan.md) document desktop discovery, the first identity exchange, shared preset resources and the feature gaps. The librarian command trace covers read, select and store. The [preset format checkpoint](research/spider-v30-preset-format.md) traces the desktop binary and JSON formats. Authentic V30 current and numbered payloads, saved-file parity, full editor field-to-wire mappings, physical endpoint binding and owner verification remain open.
 
 - [ ] Validate the [#310 startup splash and reconnect popup](design/home-connection-window.md) on the owner's rig after integration. Cover automatic PODxt and linked Variax downloads, opening a completed device editor while syncing, hide and reopen, cancellation, and reconnect with open edits.
