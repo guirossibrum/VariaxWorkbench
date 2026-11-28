@@ -93,7 +93,15 @@ pub fn load(ctx: &egui::Context, root: &Path, relative: &str) -> UiImage {
     let Some(image) = image else {
         return UiImage::missing(relative);
     };
-    let rgba = image.to_rgba8();
+    from_decoded(ctx, relative, image)
+}
+
+pub(super) fn from_decoded(
+    ctx: &egui::Context,
+    relative: &str,
+    image: image::DynamicImage,
+) -> UiImage {
+    let rgba = image.into_rgba8();
     let pixels = [rgba.width() as usize, rgba.height() as usize];
     if pixels[0] == 0 || pixels[1] == 0 {
         return UiImage::missing(relative);

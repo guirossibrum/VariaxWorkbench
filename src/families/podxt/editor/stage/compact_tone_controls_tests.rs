@@ -486,3 +486,130 @@ fn drive_drag_emits_values_before_release_only_for_live_streaming() {
         }
     }
 }
+
+#[test]
+fn podxt_artwork_is_painted_in_the_stage_and_beside_the_cab_selector() {
+    let mut tone = PodTone::new_podxt_tone("Artwork").unwrap();
+    for (key, id) in [
+        ("AMP_MODEL", 0x0002_0014),
+        ("CAB_MODEL", 0x0102_0007),
+        ("STOMP_MODEL", 0x020a_000e),
+        ("WAH_MODEL", 0x0206_0003),
+        ("MOD_MODEL", 0x0203_0005),
+        ("DELAY_MODEL", 0x0202_0007),
+        ("REVERB_MODEL", 0x0204_0010),
+    ] {
+        tone.set_table_model(key, id, 4, false, &UnknownPodDefaults)
+            .unwrap();
+    }
+    tone.set_table_parameter("STOMP_ENABLE", 0).unwrap();
+    let original = tone.as_bytes().to_vec();
+    let mut gui = StageGui::new(VIEWPORTS[0], vec![tone]);
+    let editor = gui.app.podxt();
+    let stage = &editor.stage;
+
+    let meshes: Vec<_> = gui
+        .output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) => Some(mesh.as_ref()),
+            _ => None,
+        })
+        .collect();
+    let mesh_for = |key| {
+        let id = stage.art[key].texture.as_ref().unwrap().id();
+        meshes
+            .iter()
+            .copied()
+            .find(|mesh| mesh.texture_id == id)
+            .unwrap_or_else(|| panic!("{key} did not paint"))
+    };
+    for (block, key) in [
+        (Block::Amp, "pod-farm/amp-blackface-lux.png"),
+        (Block::Comp, "pod-farm/compressor.png"),
+        (Block::Eq, "pod-farm/eq.png"),
+        (Block::Gate, "pod-farm/gate.png"),
+        (Block::Stomp, "pod-farm/stomp-bender.png"),
+        (Block::Vol, "pod-farm/volume.png"),
+        (Block::Wah, "pod-farm/wah-fassel.png"),
+        (Block::Mod, "pod-farm/mod-analog-chorus.png"),
+        (Block::Delay, "pod-farm/delay-digital-delay.png"),
+        (Block::Reverb, "pod-farm/reverb-rack.png"),
+    ] {
+        let tile = editor.pod_buttons[block.test_id()];
+        assert!(tile.contains_rect(mesh_for(key).calc_bounds()), "{key}");
+    }
+    let frame = mesh_for(podxt_art::FRAME_KEY);
+    assert!(
+        frame
+            .calc_bounds()
+            .contains_rect(editor.pod_buttons[Block::Vol.test_id()])
+    );
+    for (key, tint) in [
+        ("pod-farm/volume.png", Color32::WHITE),
+        ("pod-farm/stomp-bender.png", Color32::from_gray(145)),
+    ] {
+        assert!(
+            mesh_for(key)
+                .vertices
+                .iter()
+                .all(|vertex| vertex.color == tint)
+        );
+    }
+    let cab = mesh_for("pod-farm/cab-1x12-blackface.png");
+    let selector = gui.label("1x12 Blackface").unwrap();
+    assert!(cab.calc_bounds().left() > selector.right());
+    assert!(cab.calc_bounds().y_range().intersects(selector.y_range()));
+    assert_eq!(gui.tone(0).as_bytes(), original);
+
+    let cab_id = cab.texture_id;
+    gui.click("1x12 Blackface");
+    gui.click("No Cab");
+    assert_eq!(gui.bits(0, "CAB_MODEL"), Some(0x0102_0000));
+    assert!(gui.label("No Cab").is_some());
+    assert!(
+        !gui.output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == cab_id)
+        )
+    );
+}
+
+#[test]
+fn podxt_artwork_keeps_glyphs_for_missing_slots_and_unmapped_imports() {
+    let tone = PodTone::new_podxt_tone("Unmapped import").unwrap();
+    let mut bytes = tone.into_bytes();
+    // Leave the model in the file but move it outside the stage's Gate slot.
+    for (id, slot, replacement) in [
+        (0x020b_0000_u32, 0x0002_0000_u32, 0x0005_00ff_u32),
+        (0x0206_0000, 0x0002_0002, 0x0206_000a),
+    ] {
+        let minf = [id.to_be_bytes(), slot.to_be_bytes()].concat();
+        let start = bytes
+            .windows(minf.len())
+            .position(|word| word == minf)
+            .unwrap();
+        let offset = if id == 0x020b_0000 { 4 } else { 0 };
+        bytes[start + offset..start + offset + 4].copy_from_slice(&replacement.to_be_bytes());
+    }
+    let tone = PodTone::parse(bytes.clone()).unwrap();
+    let gui = StageGui::new(VIEWPORTS[2], vec![tone]);
+    let editor = gui.app.podxt();
+    for block in [Block::Gate, Block::Wah] {
+        let tile = editor.pod_buttons[block.test_id()];
+        let center = tile.center() + egui::vec2(0.0, 2.5);
+        assert!(
+            gui.output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect)
+                if (rect.rect.center() - center).length() < 0.01
+                    && rect.rect.height() == 27.0
+                    && rect.stroke.width == 1.5)
+            }),
+            "{block:?} glyph did not paint"
+        );
+    }
+    assert_eq!(gui.bits(0, "WAH_MODEL"), Some(0x0206_000a));
+    assert!(!editor.stage.art.contains_key("pod-farm/gate.png"));
+    assert!(!editor.stage.art.contains_key("pod-farm/vetta-wah.png"));
+    assert_eq!(gui.tone(0).as_bytes(), bytes);
+}
