@@ -162,7 +162,9 @@ impl Workbench {
             let admission = entry
                 .editor
                 .connection_sync_admission(row.startup || matches!(row.sync, Sync::Approved));
-            if entry.has_session_library() && !matches!(admission, SyncAdmission::Complete) {
+            if entry.has_session_library()
+                && !matches!(admission, SyncAdmission::Busy | SyncAdmission::Complete)
+            {
                 self.connections.skip(
                     row.attachment,
                     "Session library kept locally. Use the editor’s download action to refresh it.",

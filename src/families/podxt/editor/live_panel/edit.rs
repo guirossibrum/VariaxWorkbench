@@ -530,6 +530,11 @@ impl LiveEditor {
     }
 
     #[cfg(test)]
+    pub(super) fn use_fake_recall_after_current_read(&mut self) {
+        self.fake_recall = Some(tests::FakeRecall::AfterCurrentRead);
+    }
+
+    #[cfg(test)]
     pub(super) fn use_fake_recall_with_changed_source(&mut self) {
         self.fake_recall = Some(tests::FakeRecall::ChangedSource);
     }

@@ -72,6 +72,7 @@ pub(super) fn fake_get(job: &Job, stop: &AtomicBool) -> Result<EditOutcome, Stri
 #[derive(Clone, Copy)]
 pub(super) enum FakeRecall {
     Clean,
+    AfterCurrentRead,
     ChangedSource,
 }
 
@@ -83,7 +84,12 @@ pub(super) fn fake_recall(
     let Action::Recall(target) = job.action else {
         unreachable!("the fixture only handles recall");
     };
-    let before = Location::tone_from_label("32D").unwrap();
+    let (before, tone_name) = if matches!(scenario, FakeRecall::AfterCurrentRead) {
+        ("5B", "Read Live Tone")
+    } else {
+        ("32D", "Before recall")
+    };
+    let before = Location::tone_from_label(before).unwrap();
     let channel = |slot: Location| {
         let index = slot.index() as u8;
         (
@@ -106,7 +112,7 @@ pub(super) fn fake_recall(
     };
     let before_tone = (
         PodxtRequest::EditBuffer,
-        super::super::tests::valid_dump("Before recall").raw,
+        super::super::tests::valid_dump(tone_name).raw,
     );
     let packs = (
         PodxtRequest::InstalledPacks,
@@ -115,11 +121,17 @@ pub(super) fn fake_recall(
     let mut saved_source = before_tone.1.clone();
     let after = super::super::tests::valid_dump("Recalled tone").raw;
     let writes_after_source = match scenario {
-        FakeRecall::Clean => {
-            assert!(
-                job.current.is_none(),
-                "initial recall must work without a verified buffer"
-            );
+        FakeRecall::Clean | FakeRecall::AfterCurrentRead => {
+            if matches!(scenario, FakeRecall::AfterCurrentRead) {
+                let current = job.current.as_ref().expect("verified playing buffer");
+                assert_eq!(current.channel, before);
+                assert_eq!(current.tone.raw, before_tone.1);
+            } else {
+                assert!(
+                    job.current.is_none(),
+                    "initial recall must work without a verified buffer"
+                );
+            }
             vec![
                 (PodxtRequest::Stored(target), after.clone()),
                 packs,
