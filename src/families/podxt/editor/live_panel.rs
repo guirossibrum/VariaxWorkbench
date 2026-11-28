@@ -1086,7 +1086,7 @@ impl LivePanel {
         &mut self,
         ctx: &egui::Context,
         button: Option<&egui::Response>,
-        heading: &egui::Response,
+        fallback: &egui::Response,
     ) {
         self.tuner.show(
             ctx,
@@ -1095,7 +1095,7 @@ impl LivePanel {
                 .filter(|worker| worker.command == ReadCommand::Tuner),
             button
                 .filter(|response| response.enabled())
-                .unwrap_or(heading),
+                .unwrap_or(fallback),
         );
     }
 

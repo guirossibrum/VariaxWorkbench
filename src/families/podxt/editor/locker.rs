@@ -27,7 +27,7 @@ pub(super) struct LockerWindow {
 }
 
 impl LockerWindow {
-    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let button = ui.button(TITLE).on_hover_text(
             "Browse local files and PODxt Live banks. CustomTone was a separate online service.",
         );
@@ -36,6 +36,7 @@ impl LockerWindow {
             self.open = true;
             self.focus = true;
         }
+        button
     }
 
     pub(super) fn show(

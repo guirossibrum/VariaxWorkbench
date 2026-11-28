@@ -175,12 +175,12 @@ fn tuner_pairs_use_receipt_time_and_escape_waits_for_worker_release() {
     let output = render_stage(&ctx, &mut app, vec![]);
     let fallback = ctx
         .memory(|memory| memory.focused())
-        .expect("restore stage heading focus");
+        .expect("restore Tone Locker focus");
     let response = ctx.read_response(fallback).unwrap();
-    let headings = text_centers(&output, "PODxt Live");
+    let tone_locker = text_centers(&output, "Tone Locker");
     assert!(
-        headings.iter().any(|pos| response.rect.contains(*pos)),
-        "restored {:?}, headings {headings:?}",
+        tone_locker.iter().any(|pos| response.rect.contains(*pos)),
+        "restored {:?}, Tone Locker {tone_locker:?}",
         response.rect
     );
     assert!(!stage_frame(&ctx, &mut app).contains("Tuner stopped"));
