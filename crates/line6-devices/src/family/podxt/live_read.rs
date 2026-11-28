@@ -3,7 +3,7 @@
 //! the identity of the open port before sending a domain request.
 
 use super::current_read::TONE_HEADER;
-use super::procedures::{read_stored_tone_observing, resend_identity};
+use super::procedures::{StoredRead, read_stored_tone_observing, resend_identity};
 use super::*;
 use crate::midi::Event;
 use crate::session::POLL;
@@ -482,13 +482,13 @@ impl<L: Link> Reader<'_, '_, L> {
         result
     }
 
-    fn stored(&mut self, location: Location, deadline: Option<Duration>) -> Result<(), String> {
+    fn stored(&mut self, location: Location, mode: StoredRead) -> Result<(), String> {
         let cancelled = self.cancelled;
         let tone = read_stored_tone_observing(
             self.session,
             location,
             || check_cancel(cancelled),
-            deadline,
+            mode,
             self.outstanding,
             |event, now| self.updates.incoming(event, now),
         )?
@@ -522,7 +522,7 @@ impl<L: Link> Reader<'_, '_, L> {
         self.check_cancel()?;
         (self.updates.publish)(ReadUpdate::LibraryStarted);
         for location in Location::all(banks) {
-            self.stored(location, None)?;
+            self.stored(location, StoredRead::Library)?;
         }
         Ok(())
     }
@@ -595,7 +595,7 @@ impl<L: Link> Reader<'_, '_, L> {
             {
                 self.updates.saves.pop_front();
                 if self.session.allows(Operation::PodxtLibraryRead) {
-                    self.stored(location, end)?;
+                    self.stored(location, StoredRead::Once(end))?;
                 } else {
                     (self.updates.publish)(ReadUpdate::FollowWarning(
                         "A PODxt save was detected. The library read gate is closed.".into(),

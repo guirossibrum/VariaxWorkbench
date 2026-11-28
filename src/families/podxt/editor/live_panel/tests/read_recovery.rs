@@ -367,6 +367,92 @@ fn librarian_previews_only_the_expected_dump_with_an_optional_end_marker() {
 }
 
 #[test]
+fn library_retries_only_the_missing_address_and_continues_after_the_guard() {
+    let first = Location::new(BankKind::Tones, 0).unwrap();
+    let next = Location::new(BankKind::Tones, 1).unwrap();
+    let first_tone = tone(b"Recovered");
+    let next_tone = tone(b"Next slot");
+
+    for command in [ReadCommand::ToneBank, ReadCommand::Library] {
+        let pending = AtomicBool::new(false);
+        let mut received = Vec::new();
+        let (result, writes) = read(
+            command,
+            vec![
+                identity_reply(),
+                (PodxtRequest::Stored(first), vec![]),
+                (PodxtRequest::Stored(first), vec![]),
+                (
+                    PodxtRequest::Stored(first),
+                    vec![(10, first_tone.raw.clone()), (20, END.to_vec())],
+                ),
+                (
+                    PodxtRequest::Stored(next),
+                    vec![(10, next_tone.raw.clone())],
+                ),
+            ],
+            Duration::MAX,
+            &pending,
+            |update, stop| {
+                if let ReadUpdate::Stored(stored) = update {
+                    received.push((stored.location, stored.tone));
+                    if stored.location == next {
+                        stop.store(true, Ordering::Release);
+                    }
+                }
+            },
+        );
+        assert_eq!(result, Err("PODxt read cancelled.".into()));
+        assert_eq!(
+            received,
+            [(first, first_tone.clone()), (next, next_tone.clone())]
+        );
+        assert_eq!(writes, 5);
+        assert!(!pending.load(Ordering::Acquire));
+    }
+}
+
+#[test]
+fn library_stops_after_three_missing_dumps_at_one_address() {
+    let first = Location::new(BankKind::Tones, 0).unwrap();
+    let pending = AtomicBool::new(false);
+    let mut script = vec![identity_reply()];
+    script.extend((0..3).map(|_| (PodxtRequest::Stored(first), vec![])));
+    let (result, writes) = read(
+        ReadCommand::Library,
+        script,
+        Duration::MAX,
+        &pending,
+        |update, _| assert!(matches!(update, ReadUpdate::LibraryStarted)),
+    );
+    assert!(result.unwrap_err().contains("1A: no stored dump"));
+    assert_eq!(writes, 4);
+    assert!(pending.load(Ordering::Acquire));
+}
+
+#[test]
+fn library_refuses_a_second_dump_from_the_retried_address_before_advancing() {
+    let first = Location::new(BankKind::Tones, 0).unwrap();
+    let reply = tone(b"First slot").raw;
+    let pending = AtomicBool::new(false);
+    let (result, writes) = read(
+        ReadCommand::ToneBank,
+        vec![
+            identity_reply(),
+            // This first attempt's reply arrives after the retry was sent.
+            (PodxtRequest::Stored(first), vec![(3400, reply.clone())]),
+            (PodxtRequest::Stored(first), vec![(3150, reply)]),
+        ],
+        Duration::MAX,
+        &pending,
+        |update, _| assert!(matches!(update, ReadUpdate::LibraryStarted)),
+    );
+    assert!(result.unwrap_err().contains("Unexpected SysEx reply"));
+    assert_eq!(writes, 3);
+    assert!(pending.load(Ordering::Acquire));
+}
+
+#[test]
 fn follow_refuses_a_stale_dump_between_reads_without_suppressing_notifications() {
     let pending = AtomicBool::new(false);
     let initial = tone(b"Initial");
