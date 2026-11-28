@@ -5,6 +5,9 @@ mod notice;
 pub(super) use notice::PodxtSaveIngress;
 #[cfg(feature = "usb")]
 pub(super) use notice::SaveListener;
+#[cfg(feature = "usb")]
+#[allow(unused_imports)]
+pub(super) use notice::{FreshSavedSlot, SavedSlotRefresh};
 use notice::{Notice, PodxtProgram};
 
 use super::ProductFamily;
