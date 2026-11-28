@@ -5,7 +5,6 @@ use crate::editor::{
     tabs::{Connection, DeviceTab},
 };
 use variax_workbench::device_probe::PODXT_LIVE_USB;
-use variax_workbench::ui::theme;
 
 pub(super) fn status(device: &DeviceTab) -> String {
     if device.connection == Connection::Present
@@ -31,7 +30,7 @@ pub(super) fn status(device: &DeviceTab) -> String {
 }
 
 impl VariaxEditor {
-    fn guitar_connection_status(&self) -> &str {
+    pub(in crate::editor) fn guitar_connection_status(&self) -> &str {
         #[cfg(feature = "usb")]
         if self.follow.disconnected() {
             return "Guitar disconnected";
@@ -47,30 +46,12 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         has_download: bool,
     ) -> Option<egui::Response> {
-        let status =
-            egui::WidgetText::from(egui::RichText::new(self.guitar_connection_status()).weak())
-                .into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Wrap),
-                    ui.available_width(),
-                    egui::FontSelection::Default,
-                );
-        if ui.layout().main_wrap() && status.size().x > ui.available_size_before_wrap().x {
-            // A wrapped status row only needs the height of its text.
-            ui.end_row();
-            ui.set_row_height(status.size().y);
-        }
-        ui.label(status);
-        #[cfg(feature = "usb")]
-        if self.follow.active() {
-            ui.weak("Following the guitar");
-        }
         if has_download || self.connection_status.is_none() {
             return None;
         }
         let button = ui.add_enabled(
             services.can_refresh_guitar(),
-            egui::Button::new("Refresh guitar").min_size(egui::vec2(0.0, theme::TARGET)),
+            egui::Button::new("Refresh guitar"),
         );
         if button.clicked() {
             services.request_guitar_refresh();
@@ -173,7 +154,8 @@ mod tests {
         };
         let connected = render(&mut app);
         assert_connection_label(&connected, "Guitar: Variax 600 3.10 via PODxt Live");
-        assert_eq!(count_labels(&connected, "Download from guitar…"), 1);
+        assert_eq!(count_labels(&connected, "Guitar actions"), 1);
+        assert_eq!(count_labels(&connected, "Download from guitar…"), 0);
         assert_eq!(count_labels(&connected, "Refresh guitar"), 0);
         assert_eq!(
             count_labels(&connected, "Identity verified · firmware 3.10"),

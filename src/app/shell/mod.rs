@@ -536,112 +536,53 @@ impl Workbench {
         if quit || ctx.input(|i| i.viewport().close_requested()) {
             self.request_close(ctx);
         }
-        // The panel clips to its previous height. The first frame would
-        // otherwise be one control tall and hide the command row.
+        let variax_active = self
+            .tabs
+            .active
+            .and_then(|id| self.tabs.index(id))
+            .is_some_and(|index| self.tabs.entries[index].family.info().id == "variax");
+        // The first frame needs room for wrapped commands before the panel has a saved height.
         egui::TopBottomPanel::top("header")
             .resizable(false)
             .show_separator_line(false)
             .default_height(220.0)
             .frame(shell_bar(4, self.clears_window_controls()))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_8, theme::SPACE_4);
-                ui.spacing_mut().button_padding = egui::vec2(theme::SPACE_12, theme::SPACE_4);
-                ui.spacing_mut().interact_size.y = theme::TARGET;
-                // The title stays on its own row. Commands wrap beneath it, and
-                // the frame margin indents every wrapped line.
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = theme::SPACE_8;
-                    paint_product_mark(ui);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("Variax Workbench")
-                                .size(theme::SECTION)
-                                .strong()
-                                .color(theme::TEXT),
-                        )
-                        .wrap_mode(egui::TextWrapMode::Extend),
-                    );
-                });
+                if !variax_active {
+                    ui.horizontal(toolbar_title);
+                }
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_8, theme::SPACE_4);
-                    ui.spacing_mut().button_padding = egui::vec2(theme::SPACE_12, theme::SPACE_4);
-                    ui.spacing_mut().interact_size.y = theme::TARGET;
-                    ui.add_enabled_ui(!self.has_prompt(), |ui| {
-                        let variax_active = self
-                            .tabs
-                            .active
-                            .and_then(|id| self.tabs.index(id))
-                            .is_some_and(|index| {
-                                self.tabs.entries[index].family.info().id == "variax"
-                            });
-                        if variax_active {
-                            self.with_active(|entry, services| {
-                                let editor = (&mut *entry.editor as &mut dyn std::any::Any)
-                                    .downcast_mut::<VariaxEditor>()
-                                    .expect("Variax tab has a Variax editor");
-                                let enabled = !services.picker.is_open()
-                                    && !editor.busy()
-                                    && !editor.blocking_prompt();
-                                ui.group(|ui| {
-                                    ui.horizontal(|ui| {
-                                        if command_button(ui, "Open…", enabled).clicked() {
-                                            editor.open_dialog(ctx, services);
-                                        }
-                                        let can_save = enabled && editor.has_document();
-                                        if command_button(ui, "Save", can_save).clicked() {
-                                            editor.save_file(ctx, services, false);
-                                        }
-                                        if command_button(ui, "Save As…", can_save).clicked() {
-                                            editor.save_copy(ctx, services);
-                                        }
-                                    });
-                                });
-                            });
-                        } else if self.tabs.active.is_some()
-                            && command_button(ui, "Open file…", !self.picker.is_open()).clicked()
-                        {
-                            self.request_open_file(ctx);
-                        }
-                        self.open_commands(ui, false);
-                        self.with_active(|entry, services| {
-                            let enabled = !services.picker.is_open()
-                                && !entry.editor.busy()
-                                && !entry.editor.blocking_prompt();
-                            if !variax_active && command_button(ui, "Save copy…", enabled).clicked()
-                            {
-                                entry.editor.save_copy(ctx, services);
-                            }
-                            // Keep the editor menu and its status together on a row
-                            // wide enough for both.
-                            const EDITOR_ACTIONS: f32 = 340.0;
-                            if ui.available_size_before_wrap().x < EDITOR_ACTIONS {
-                                ui.end_row();
-                            }
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing =
-                                    egui::vec2(theme::SPACE_8, theme::SPACE_4);
-                                ui.spacing_mut().button_padding =
-                                    egui::vec2(theme::SPACE_12, theme::SPACE_4);
-                                ui.add_enabled_ui(enabled, |ui| {
-                                    entry.editor.actions(ui, services);
-                                });
-                            });
+                    ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_4, theme::SPACE_4);
+                    ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                    ui.spacing_mut().interact_size = egui::vec2(24.0, 24.0);
+                    if variax_active {
+                        ui.horizontal(|ui| {
+                            toolbar_title(ui);
+                            ui.add_space(theme::SPACE_4);
                         });
-                    });
-                    let response = command_button(ui, "Device check…", true);
-                    #[cfg(test)]
-                    self.device_check_buttons.insert("open", response.rect);
-                    if response.clicked() {
-                        self.device_check_open = true;
                     }
-                    let response = command_button(ui, "Test recording…", true);
-                    #[cfg(test)]
-                    self.recording_buttons
-                        .insert("open-recording", response.rect);
-                    if response.clicked() {
-                        self.recording_open = true;
+                    if self.has_prompt() {
+                        ui.add_enabled_ui(false, |ui| {
+                            self.editor_commands(ui, ctx, variax_active);
+                        });
+                    } else {
+                        self.editor_commands(ui, ctx, variax_active);
                     }
-                    if command_button(ui, "Help", true).clicked() {
+                    if variax_active {
+                        let tools = ui.menu_button("Tools", |ui| {
+                            if self.tool_commands(ui) {
+                                ui.close();
+                            }
+                        });
+                        #[cfg(test)]
+                        self.recording_buttons
+                            .insert("tools-menu", tools.response.rect);
+                        #[cfg(not(test))]
+                        let _ = tools;
+                    } else {
+                        self.tool_commands(ui);
+                    }
+                    if toolbar_command(ui, "Help", true).clicked() {
                         self.help = true;
                     }
                 });
@@ -709,6 +650,11 @@ impl Workbench {
                             }
                             let entry = &self.tabs.entries[index];
                             let variax = entry.family.info().id == "variax";
+                            if let Some(editor) = (entry.editor.as_ref() as &dyn std::any::Any)
+                                .downcast_ref::<VariaxEditor>()
+                            {
+                                status_line(ui, editor.guitar_connection_status(), theme::MUTED);
+                            }
                             if let Some(device) = &entry.device {
                                 if !variax {
                                     connection_chip(ui, &device.status());
@@ -892,6 +838,70 @@ impl Workbench {
         self.connection_window(ctx);
         // Window closes discard their actions before any late picker result runs.
         self.poll_picker(ctx);
+    }
+
+    fn editor_commands(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, variax_active: bool) {
+        if variax_active {
+            self.with_active(|entry, services| {
+                let editor = (&mut *entry.editor as &mut dyn std::any::Any)
+                    .downcast_mut::<VariaxEditor>()
+                    .expect("Variax tab has a Variax editor");
+                let enabled =
+                    !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt();
+                if toolbar_command(ui, "Open…", enabled).clicked() {
+                    editor.open_dialog(ctx, services);
+                }
+                let can_save = enabled && editor.has_document();
+                if toolbar_command(ui, "Save", can_save).clicked() {
+                    editor.save_file(ctx, services, false);
+                }
+                if toolbar_command(ui, "Save As…", can_save).clicked() {
+                    editor.save_copy(ctx, services);
+                }
+            });
+        } else if self.tabs.active.is_some()
+            && toolbar_command(ui, "Open file…", !self.picker.is_open()).clicked()
+        {
+            self.request_open_file(ctx);
+        }
+        self.open_commands(ui, false);
+        self.with_active(|entry, services| {
+            let enabled = !services.picker.is_open()
+                && !entry.editor.busy()
+                && !entry.editor.blocking_prompt();
+            if variax_active && enabled {
+                entry.editor.actions(ui, services);
+                return;
+            }
+            if !variax_active {
+                if toolbar_command(ui, "Save copy…", enabled).clicked() {
+                    entry.editor.save_copy(ctx, services);
+                }
+                // Keep the other family editors' actions together.
+                if ui.available_size_before_wrap().x < 340.0 {
+                    ui.end_row();
+                }
+            }
+            ui.add_enabled_ui(enabled, |ui| entry.editor.actions(ui, services));
+        });
+    }
+
+    fn tool_commands(&mut self, ui: &mut egui::Ui) -> bool {
+        let response = toolbar_command(ui, "Device check…", true);
+        #[cfg(test)]
+        self.device_check_buttons.insert("open", response.rect);
+        let device_check = response.clicked();
+        if device_check {
+            self.device_check_open = true;
+        }
+        let response = toolbar_command(ui, "Test recording…", true);
+        #[cfg(test)]
+        self.recording_buttons
+            .insert("open-recording", response.rect);
+        if response.clicked() {
+            self.recording_open = true;
+        }
+        device_check || response.clicked()
     }
 
     fn open_commands(&mut self, ui: &mut egui::Ui, start_panel: bool) {
@@ -1090,6 +1100,27 @@ impl Workbench {
             cfg!(target_os = "macos")
         }
     }
+}
+
+fn toolbar_title(ui: &mut egui::Ui) {
+    paint_product_mark(ui);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new("Variax Workbench")
+                .size(theme::SECTION)
+                .strong()
+                .color(theme::TEXT),
+        )
+        .extend(),
+    );
+}
+
+fn toolbar_command(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(label).size(theme::BODY))
+            .min_size(egui::vec2(24.0, 24.0)),
+    )
 }
 
 fn command_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {

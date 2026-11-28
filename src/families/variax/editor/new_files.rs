@@ -260,20 +260,20 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn rename_bank_button(&mut self, ui: &mut egui::Ui, available: bool) {
+    pub(super) fn rename_bank_button(&mut self, ui: &mut egui::Ui, available: bool) -> bool {
         let Some((bank, current)) = self
             .document
             .as_ref()
             .and_then(EditorDocument::selected_bank)
         else {
-            return;
+            return false;
         };
         let label = if current.fixed {
             "Rename bank…"
         } else {
             "Rename folder…"
         };
-        let response = ui.add_enabled(available, egui::Button::new(label).small());
+        let response = ui.add_enabled(available, egui::Button::new(label));
         #[cfg(test)]
         self.new_file_buttons.insert(label, response.rect);
         if response.clicked() {
@@ -284,6 +284,7 @@ impl VariaxEditor {
                 focus: true,
             });
         }
+        response.clicked()
     }
 
     pub(super) fn rename_bank_dialog(
@@ -425,7 +426,13 @@ mod tests {
     fn click(ctx: &egui::Context, app: &mut Workbench, label: &'static str) {
         frame(ctx, app, vec![]);
         frame(ctx, app, vec![]);
-        let pos = app.variax().new_file_buttons[label].center();
+        let editor = app.variax();
+        let pos = if label == "Library actions" {
+            editor.slot_file_buttons["library-actions"]
+        } else {
+            editor.new_file_buttons[label]
+        }
+        .center();
         let button = |pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -784,6 +791,7 @@ mod tests {
         let (ctx, mut app) = app();
         app.variax_mut().open_example();
         let original = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+        click(&ctx, &mut app, "Library actions");
         click(&ctx, &mut app, "Rename bank…");
         replace_text(&ctx, &mut app, "Too long 1234567890");
         click_prompt(&ctx, &mut app, "confirm-bank-rename");

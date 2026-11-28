@@ -82,8 +82,21 @@ fn text_bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
 }
 
 #[cfg(feature = "usb")]
+fn glyph_bounds(shape: &egui::Shape, expected: &str) -> Option<egui::Rect> {
+    match shape {
+        egui::Shape::Text(text) if text.galley.text() == expected => {
+            Some(text.galley.mesh_bounds.translate(text.pos.to_vec2()))
+        }
+        egui::Shape::Vec(shapes) => shapes
+            .iter()
+            .find_map(|shape| glyph_bounds(shape, expected)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "usb")]
 #[test]
-fn verified_toolbar_keeps_actions_and_compacts_the_status_row_at_both_densities() {
+fn compact_toolbar_keeps_route_in_footer_and_device_actions_keyboard_reachable() {
     const ROUTE: &str = "Guitar: Variax 600 3.10 via PODxt Live";
     const ACTIONS: &[&str] = &[
         "Open…",
@@ -92,17 +105,20 @@ fn verified_toolbar_keeps_actions_and_compacts_the_status_row_at_both_densities(
         "New offline tab",
         "Detect devices",
         "New Variax file",
-        "String Volume Setup…",
-        "Download from guitar…",
-        "Device check…",
-        "Test recording…",
+        "Guitar actions",
+        "Tools",
         "Help",
     ];
     let build = format!("Build {}", crate::BUILD_NUMBER);
 
-    for (size, header_limit) in SIZES.into_iter().zip([165.0, 237.0]) {
+    for (size, mac_inset) in SIZES
+        .into_iter()
+        .map(|size| (size, true))
+        .chain([(egui::vec2(1301.0, 974.0), false)])
+    {
         for density in [1.0, 2.0] {
             let (ctx, mut app) = chime_editor(true);
+            app.clear_window_controls = mac_inset;
             let none = egui::Modifiers::NONE;
             let frame =
                 |app: &mut Workbench, events| render(app, &ctx, size, density, events, none);
@@ -113,61 +129,103 @@ fn verified_toolbar_keeps_actions_and_compacts_the_status_row_at_both_densities(
                 let (rect, clip) = output
                     .shapes
                     .iter()
-                    .find_map(|shape| {
-                        text_bounds(&shape.shape, label).map(|rect| (rect, shape.clip_rect))
-                    })
-                    .unwrap_or_else(|| panic!("{size:?} at {density}x lacks {label:?}"));
+                    .find_map(|shape| Some((glyph_bounds(&shape.shape, label)?, shape.clip_rect)))
+                    .unwrap_or_else(|| panic!("{size:?} at {density}x misses {label:?}"));
                 let visible = clip.intersect(viewport);
                 assert!(
                     visible.expand(0.5).contains_rect(rect),
                     "{size:?} at {density}x clips {label:?} {rect:?} to {visible:?}"
                 );
-                (rect, visible)
+                rect
             };
-
-            let (route, header) = full_bounds(ROUTE);
+            let panel = |id| {
+                egui::containers::panel::PanelState::load(&ctx, egui::Id::new(id))
+                    .unwrap()
+                    .rect
+            };
+            let header = panel("header");
+            let footer = panel("status");
             assert!(
-                header.max.y <= header_limit,
-                "{size:?} at {density}x header grew to {header:?}"
+                header.height() <= 80.0,
+                "{size:?} at {density}x: {header:?}"
             );
-            let (title, _) = full_bounds("Variax Workbench");
-            assert!(title.max.y < route.min.y);
+            let editor = app.variax();
+            let (body, inspector) = editor.workspace_cards.unwrap();
+            let band = editor.workspace_tuning.unwrap();
+            assert!(
+                body.top() <= size.y * 0.4,
+                "{size:?} at {density}x: {body:?}"
+            );
+            assert!(
+                inspector.height() > 200.0,
+                "{size:?} at {density}x: {inspector:?}"
+            );
+            assert!((band.height() - size.y * 0.225).abs() < 0.01);
             for &label in ACTIONS {
-                let (rect, _) = full_bounds(label);
-                assert!(
-                    header.contains_rect(rect),
-                    "{label:?} lies outside the header"
-                );
-                assert!(!rect.intersects(route), "{label:?} overlaps the route");
+                assert!(header.contains_rect(full_bounds(label)), "{label:?}");
             }
-            let (status, _) = full_bounds("Opened the built-in example banks.");
-            let (build, _) = full_bounds(&build);
-            assert!(status.max.x < build.min.x);
-            assert!(build.max.y >= size.y - 3.0);
+            let route = full_bounds(ROUTE);
+            let status = full_bounds("Opened the built-in example banks.");
+            let build = full_bounds(&build);
+            assert!(footer.contains_rect(route));
+            assert!(footer.contains_rect(status));
+            assert!(
+                !route.intersects(status),
+                "{size:?} at {density}x: route {route:?}, status {status:?}"
+            );
+            assert!(status.max.x < build.min.x && route.max.x < build.min.x);
+            assert!(build.max.y >= size.y - 10.0);
 
-            let menu = app.variax().new_file_buttons["New Variax file"];
             let tap = |app: &mut Workbench, key| {
                 frame(app, vec![tuning_key(key, true, none)]);
                 frame(app, vec![tuning_key(key, false, none)])
             };
-            let menu_focused = || {
-                ctx.memory(|memory| memory.focused())
-                    .and_then(|id| ctx.read_response(id))
-                    .is_some_and(|response| response.rect == menu)
-            };
-            for _ in 0..20 {
-                if menu_focused() {
-                    break;
+            let focus = |app: &mut Workbench, target: egui::Rect, exact: bool| {
+                for _ in 0..100 {
+                    let focused = ctx
+                        .memory(|memory| memory.focused())
+                        .and_then(|id| ctx.read_response(id));
+                    if focused.is_some_and(|response| {
+                        (response.rect == target || !exact && response.rect.contains_rect(target))
+                            && Some(response.layer_id) == ctx.layer_id_at(target.center())
+                    }) {
+                        return;
+                    }
+                    tap(app, egui::Key::Tab);
                 }
-                tap(&mut app, egui::Key::Tab);
-            }
-            assert!(
-                menu_focused(),
-                "{size:?} at {density}x cannot Tab to the file menu"
-            );
+                panic!("{size:?} at {density}x cannot Tab to {target:?}");
+            };
+
+            focus(&mut app, full_bounds("New Variax file"), false);
             tap(&mut app, egui::Key::Enter);
-            let opened = frame(&mut app, vec![]);
-            assert!(text_rect(&opened, "New Model…").is_some());
+            assert!(text_rect(&frame(&mut app, vec![]), "New Model…").is_some());
+            tap(&mut app, egui::Key::Escape);
+
+            focus(&mut app, full_bounds("Guitar actions"), false);
+            tap(&mut app, egui::Key::Enter);
+            let guitar = frame(&mut app, vec![]);
+            for label in [
+                "Download from guitar…",
+                "Send Edit Buffer",
+                "Get Edit Buffer",
+                "String Volume Setup…",
+            ] {
+                assert!(text_rect(&output, label).is_none());
+                assert!(text_rect(&guitar, label).is_some(), "{label}");
+            }
+            tap(&mut app, egui::Key::Escape);
+
+            focus(&mut app, full_bounds("Tools"), false);
+            tap(&mut app, egui::Key::Enter);
+            let tools = frame(&mut app, vec![]);
+            for label in ["Device check…", "Test recording…"] {
+                assert!(text_rect(&output, label).is_none());
+                assert!(text_rect(&tools, label).is_some(), "{label}");
+            }
+            let device_check = app.device_check_buttons["open"];
+            focus(&mut app, device_check, true);
+            tap(&mut app, egui::Key::Enter);
+            assert!(app.device_check_open);
         }
     }
 }
@@ -516,23 +574,12 @@ fn bank_selection_and_file_actions_share_a_compact_header_at_supported_sizes() {
                 );
                 bounds
             };
-            let first_action = visible("Save model as…");
-            for label in [
-                "Replace slot with model file…",
-                "Copy, paste and swap",
-                "Rename bank…",
-                "Export HTML Model List…",
-                &origin,
-            ] {
-                let bounds = visible(label);
-                assert!(
-                    first_action.y_range().contains(bounds.center().y),
-                    "{size:?}: {label}"
-                );
-            }
+            let model_actions = visible("Model actions");
+            let library_actions = visible("Library actions");
+            assert!(model_actions.y_range().contains(library_actions.center().y));
             let editor = app.variax();
             let slot_top = editor.bank_slots[&0].top();
-            assert!(first_action.bottom() - slot_top <= 100.0);
+            assert!(model_actions.bottom() - slot_top <= 100.0);
             assert!(
                 visible("Modified · not stored on guitar").bottom()
                     <= editor.bank_slots[&4].bottom()
@@ -540,11 +587,12 @@ fn bank_selection_and_file_actions_share_a_compact_header_at_supported_sizes() {
             assert!(visible("Unsaved").bottom() <= editor.bank_slots[&4].bottom());
             for label in ["Model", "Author", "Notes", "Undo", "Redo", "Output trim"] {
                 let bounds = visible(label);
-                assert!(bounds.top() > slot_top && bounds.bottom() < first_action.top());
+                assert!(bounds.top() > slot_top && bounds.bottom() < model_actions.top());
             }
 
             let second_slot = editor.bank_slots[&1];
-            let action = editor.slot_file_buttons["slot-transfers"];
+            let model_menu = editor.slot_file_buttons["slot-transfers"];
+            let library_menu = editor.slot_file_buttons["library-actions"];
             let tap = |app: &mut Workbench, key| {
                 frame(app, vec![tuning_key(key, true, egui::Modifiers::NONE)]);
                 frame(app, vec![tuning_key(key, false, egui::Modifiers::NONE)])
@@ -576,12 +624,32 @@ fn bank_selection_and_file_actions_share_a_compact_header_at_supported_sizes() {
                 app.variax().document.as_ref().unwrap().selection(),
                 Some((0, 1))
             );
-            tab_to(&mut app, action);
+            tab_to(&mut app, model_menu);
             tap(&mut app, egui::Key::Enter);
             let opened = frame(&mut app, vec![]);
-            assert!(text_rect(&opened, "Copy model").is_some());
+            for label in [
+                "Copy model",
+                "Save model as…",
+                "Replace slot with model file…",
+            ] {
+                assert!(text_rect(&opened, label).is_some(), "{label}");
+            }
             tap(&mut app, egui::Key::Escape);
             assert!(text_rect(&frame(&mut app, vec![]), "Copy model").is_none());
+
+            tab_to(&mut app, library_menu);
+            tap(&mut app, egui::Key::Enter);
+            let opened = frame(&mut app, vec![]);
+            for label in [
+                "Rename bank…",
+                "Export HTML Model List…",
+                "Copy bank",
+                &origin,
+            ] {
+                assert!(text_rect(&opened, label).is_some(), "{label}");
+            }
+            tap(&mut app, egui::Key::Escape);
+            assert!(text_rect(&frame(&mut app, vec![]), &origin).is_none());
         }
     }
 }

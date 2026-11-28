@@ -10,31 +10,17 @@ pub(super) struct SlotTransfer {
 }
 
 impl VariaxEditor {
-    pub(super) fn slot_transfer_menu(&mut self, ui: &mut egui::Ui, available: bool) {
-        ui.add_enabled_ui(available, |ui| {
-            let button = egui::Button::new("Copy, paste and swap").small();
-            let (response, _) =
-                egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                    self.transfer_commands(
-                        ui,
-                        "model",
-                        SlotBuffer::ModelClipboard,
-                        SlotBuffer::ModelSwap,
-                    );
-                    ui.separator();
-                    self.transfer_commands(
-                        ui,
-                        "bank",
-                        SlotBuffer::BankClipboard,
-                        SlotBuffer::BankSwap,
-                    );
-                });
-            #[cfg(test)]
-            self.slot_file_buttons
-                .insert("slot-transfers", response.rect);
-            #[cfg(not(test))]
-            let _ = response;
-        });
+    pub(super) fn model_transfer_actions(&mut self, ui: &mut egui::Ui) {
+        self.transfer_commands(
+            ui,
+            "model",
+            SlotBuffer::ModelClipboard,
+            SlotBuffer::ModelSwap,
+        );
+    }
+
+    pub(super) fn bank_transfer_actions(&mut self, ui: &mut egui::Ui) {
+        self.transfer_commands(ui, "bank", SlotBuffer::BankClipboard, SlotBuffer::BankSwap);
     }
 
     fn transfer_commands(
@@ -243,11 +229,12 @@ mod tests {
     fn command(ctx: &egui::Context, app: &mut Workbench, label: &str) {
         frame(ctx, app, vec![]);
         frame(ctx, app, vec![]);
-        click(
-            ctx,
-            app,
-            app.variax().slot_file_buttons["slot-transfers"].center(),
-        );
+        let menu = if label.contains("bank") {
+            "library-actions"
+        } else {
+            "slot-transfers"
+        };
+        click(ctx, app, app.variax().slot_file_buttons[menu].center());
         click(ctx, app, app.variax().slot_transfer_buttons[label].center());
     }
 

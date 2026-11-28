@@ -289,8 +289,8 @@ impl VariaxEditor {
             && !self.device_sync.stopped_after_store()
     }
 
-    pub(super) fn download_button(&mut self, ui: &mut egui::Ui) {
-        self.draw_download_button(ui, read_library);
+    pub(super) fn download_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        self.draw_download_button(ui, read_library)
     }
 
     fn draw_download_button(&mut self, ui: &mut egui::Ui, read: ReadLibrary) -> egui::Response {

@@ -599,7 +599,7 @@ const SHELL_COMMANDS: &[&str] = &[
     "Test recording…",
     "Help",
     "New Variax file",
-    "Guitar offline",
+    "Tools",
 ];
 
 fn layout_input(width: f32, height: f32, pixels_per_point: f32) -> egui::RawInput {
@@ -818,8 +818,7 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
                                 "Detect devices",
                                 "New Variax file",
                                 "Guitar offline",
-                                "Device check…",
-                                "Test recording…",
+                                "Tools",
                                 "Help",
                             ]
                         } else {
@@ -859,7 +858,7 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
                             }
                             if SHELL_COMMANDS.contains(&text.as_str()) {
                                 assert!(
-                                    rect.top() >= title.bottom() - 1.0,
+                                    !text_overlaps(*rect, title),
                                     "{where_} {text:?} overlaps the title"
                                 );
                                 commands.push((text.clone(), *rect));

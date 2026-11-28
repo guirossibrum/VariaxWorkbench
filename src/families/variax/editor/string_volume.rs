@@ -344,6 +344,7 @@ impl VariaxEditor {
             self.error = None;
             self.follow.stop();
             self.string_volume.waiting_for_follow = true;
+            ui.close();
             ui.ctx().request_repaint();
         }
     }
