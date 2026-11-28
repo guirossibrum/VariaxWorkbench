@@ -740,7 +740,7 @@ fn read_updates(
 ) -> Result<ListenEnd, String> {
     use line6_devices::{
         device_lock::{FollowDeviceLock, LockError},
-        family::variax::follow,
+        family::variax::follow_reporting_cleanup,
         gate::{GatePolicy, Operation},
         session::{Quiet, Session},
     };
@@ -785,19 +785,29 @@ fn read_updates(
                 ListenEnd::Stopped
             });
         }
+        let cleanup_uncertain = Cell::new(true);
         let result = (|| {
             let link = variax_workbench::usb::open_variax_bridge_borrowed(
                 lease.rig(),
                 (&attachment.path, attachment.address),
             )?;
+            cleanup_uncertain.set(false);
             ready();
             let mut log = Quiet;
             let mut session = Session::new(link, &Policy, &mut log);
             session.log_packets = false;
-            let result = follow(lease.rig(), &mut session, cancelled, |update| {
-                publish(update, Instant::now())
-            });
-            match (result, session.link.finish()) {
+            let result = follow_reporting_cleanup(
+                lease.rig(),
+                &mut session,
+                cancelled,
+                |update| publish(update, Instant::now()),
+                || cleanup_uncertain.set(true),
+            );
+            let release = session.link.finish();
+            if release.is_err() {
+                cleanup_uncertain.set(true);
+            }
+            match (result, release) {
                 (Err(error), Err(release)) => Err(format!("{error} {release}")),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
                 (Ok(()), Ok(())) => Ok(()),
@@ -808,7 +818,7 @@ fn read_updates(
             Ok(()) if yielded.get() => Ok(ListenEnd::Yielded),
             Ok(()) => Ok(ListenEnd::Stopped),
             Err(error) => {
-                if yielded.get() || lease.yield_requested() {
+                if cleanup_uncertain.get() && (yielded.get() || lease.yield_requested()) {
                     lease.cleanup_failed();
                 }
                 Err(error)

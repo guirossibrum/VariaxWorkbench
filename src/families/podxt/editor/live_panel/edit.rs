@@ -253,6 +253,30 @@ fn edit_transaction<'a, G>(
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn wait_for_edit_lock<T>(
+    stop: &AtomicBool,
+    mut acquire: impl FnMut() -> Result<T, line6_devices::device_lock::LockError>,
+    mut pause: impl FnMut(Duration),
+) -> Result<T, String> {
+    use line6_devices::device_lock::LockError;
+
+    for attempt in 0..5 {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        match acquire() {
+            Ok(guard) if !stop.load(Ordering::Acquire) => return Ok(guard),
+            Ok(_) => break,
+            Err(LockError::Busy | LockError::BusyHere) if attempt < 4 => {
+                pause(Duration::from_millis(500));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("PODxt Live operation cancelled before opening the connection.".into())
+}
+
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn platform_edit(
     device: &detection::DeviceKey,
@@ -265,7 +289,13 @@ fn platform_edit(
     edit_transaction(
         job,
         stop,
-        || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
+        || {
+            wait_for_edit_lock(
+                stop,
+                line6_devices::device_lock::DeviceLock::acquire,
+                std::thread::sleep,
+            )
+        },
         |rig, run| {
             if matches!(job.action, Action::Recall(_)) {
                 with_recall_link(device, rig, stop, run)
@@ -467,6 +497,7 @@ impl LiveEditor {
             || !admitted
             || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
             || action != Action::Get && (self.session.is_none() || self.needs_get)
+            || action == Action::Undo && !self.can_undo()
             || matches!(action, Action::Recall(_)) && (self.stage_only || self.has_pending())
         {
             return;
@@ -662,6 +693,14 @@ impl LiveEditor {
             }
         }
         None
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.has_pending()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|active| active.current.has_restorable_changes(&active.original))
     }
 
     pub(super) fn can_get(&self) -> bool {

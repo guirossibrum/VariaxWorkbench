@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::{Preset, identify_variax, is_reply, with_bridged_read_session};
+use super::{Preset, identify_variax, is_reply, with_bridged_read_session_reporting_cleanup};
 use crate::{
     device_lock::DeviceLock,
     gate::Operation,
@@ -42,19 +42,42 @@ pub enum FollowUpdate {
 /// successful cleanup. A transport or cleanup failure is returned to the caller. The session-off and bridge-off
 /// sends are both attempted after the listening session starts.
 pub fn follow<L: Link>(
-    _rig: &DeviceLock,
+    rig: &DeviceLock,
     session: &mut Session<L>,
     cancelled: impl Fn() -> bool,
     publish: impl FnMut(FollowUpdate),
 ) -> Result<(), String> {
-    follow_on(session, None, cancelled, publish)
+    follow_reporting_cleanup(rig, session, cancelled, publish, || {})
 }
 
+/// As in [follow], reporting failed session or relay shutdown separately
+/// from identity and listener errors.
+pub fn follow_reporting_cleanup<L: Link>(
+    _rig: &DeviceLock,
+    session: &mut Session<L>,
+    cancelled: impl Fn() -> bool,
+    publish: impl FnMut(FollowUpdate),
+    cleanup_failed: impl Fn(),
+) -> Result<(), String> {
+    follow_on_reporting_cleanup(session, None, cancelled, publish, cleanup_failed)
+}
+
+#[cfg(test)]
 fn follow_on<L: Link>(
     session: &mut Session<L>,
     window: Option<Duration>,
     cancelled: impl Fn() -> bool,
     publish: impl FnMut(FollowUpdate),
+) -> Result<(), String> {
+    follow_on_reporting_cleanup(session, window, cancelled, publish, || {})
+}
+
+fn follow_on_reporting_cleanup<L: Link>(
+    session: &mut Session<L>,
+    window: Option<Duration>,
+    cancelled: impl Fn() -> bool,
+    publish: impl FnMut(FollowUpdate),
+    cleanup_failed: impl Fn(),
 ) -> Result<(), String> {
     if session.link.path() != Path::VariaxViaPodxt
         || !session.allows(Operation::VariaxIdentity)
@@ -76,7 +99,7 @@ fn follow_on<L: Link>(
         return Ok(());
     }
 
-    listen_updates(session, window, cancelled, publish)
+    listen_updates(session, window, cancelled, publish, cleanup_failed)
 }
 
 /// Bounded Follow for an already locked diagnostic link. While waiting for
@@ -90,9 +113,9 @@ pub fn follow_window<L: Link>(
     publish: impl FnMut(FollowUpdate),
 ) -> Result<(), String> {
     if waiting_for_replug {
-        listen_updates(session, Some(window), cancelled, publish)
+        listen_updates(session, Some(window), cancelled, publish, || {})
     } else {
-        follow_on(session, Some(window), cancelled, publish)
+        follow_on_reporting_cleanup(session, Some(window), cancelled, publish, || {})
     }
 }
 
@@ -112,7 +135,7 @@ pub fn follow_action<L: Link>(
             "Variax Follow requires the PODxt Live relay and identity and read permissions.".into(),
         );
     }
-    listen_updates(session, None, cancelled, publish)
+    listen_updates(session, None, cancelled, publish, || {})
 }
 
 fn listen_updates<L: Link>(
@@ -120,43 +143,49 @@ fn listen_updates<L: Link>(
     window: Option<Duration>,
     cancelled: impl Fn() -> bool,
     mut publish: impl FnMut(FollowUpdate),
+    cleanup_failed: impl Fn(),
 ) -> Result<(), String> {
-    with_bridged_read_session(session, Duration::ZERO, |session| {
-        let mut reported_connected = false;
-        let start = session.link.elapsed();
-        session.note("Listening window open for Variax Follow.");
-        while !cancelled()
-            && window.is_none_or(|window| session.link.elapsed().saturating_sub(start) < window)
-        {
-            for event in session.poll(POLL)?.into_iter().flatten() {
-                if cancelled() {
-                    return Ok(());
-                }
-                match decode(&event) {
-                    Some(FollowUpdate::Connected) if reported_connected => {}
-                    Some(update) => {
-                        publish(update);
-                        match update {
-                            FollowUpdate::Connected => reported_connected = true,
-                            FollowUpdate::Disconnected => return Ok(()),
-                            _ => {}
-                        }
+    with_bridged_read_session_reporting_cleanup(
+        session,
+        Duration::ZERO,
+        |session| {
+            let mut reported_connected = false;
+            let start = session.link.elapsed();
+            session.note("Listening window open for Variax Follow.");
+            while !cancelled()
+                && window.is_none_or(|window| session.link.elapsed().saturating_sub(start) < window)
+            {
+                for event in session.poll(POLL)?.into_iter().flatten() {
+                    if cancelled() {
+                        return Ok(());
                     }
-                    None => {
-                        let (kind, frame) = match &event {
-                            Event::Sysex(frame) => ("SysEx", frame),
-                            Event::Short(frame) => ("MIDI", frame),
-                        };
-                        session.note(format!(
-                            "Ignored unrecognized Follow {kind} frame: {}",
-                            hex(frame)
-                        ));
+                    match decode(&event) {
+                        Some(FollowUpdate::Connected) if reported_connected => {}
+                        Some(update) => {
+                            publish(update);
+                            match update {
+                                FollowUpdate::Connected => reported_connected = true,
+                                FollowUpdate::Disconnected => return Ok(()),
+                                _ => {}
+                            }
+                        }
+                        None => {
+                            let (kind, frame) = match &event {
+                                Event::Sysex(frame) => ("SysEx", frame),
+                                Event::Short(frame) => ("MIDI", frame),
+                            };
+                            session.note(format!(
+                                "Ignored unrecognized Follow {kind} frame: {}",
+                                hex(frame)
+                            ));
+                        }
                     }
                 }
             }
-        }
-        Ok(())
-    })
+            Ok(())
+        },
+        cleanup_failed,
+    )
 }
 
 fn decode(event: &Event) -> Option<FollowUpdate> {

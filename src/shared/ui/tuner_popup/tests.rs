@@ -264,7 +264,7 @@ fn keyboard_cycles_activates_and_returns_focus_after_stop() {
     assert_labels(&gui.open(starting), &["Starting tuner…"]);
     assert_eq!(gui.focus_index(), Some(0));
     gui.key(starting, Key::Tab, Modifiers::SHIFT);
-    assert_eq!(gui.focus_index(), Some(2));
+    assert_eq!(gui.focus_index(), Some(1));
     gui.key(starting, Key::Tab, Modifiers::NONE);
     assert_eq!(gui.focus_index(), Some(0));
     gui.key(starting, Key::Tab, Modifiers::NONE);
@@ -288,8 +288,7 @@ fn keyboard_cycles_activates_and_returns_focus_after_stop() {
     gui.frame(None, vec![]);
     assert!(gui.stage.as_ref().unwrap().has_focus());
     gui.open(TunerState::Stopped);
-    gui.key(TunerState::Stopped, Key::Tab, Modifiers::SHIFT);
-    gui.key(TunerState::Stopped, Key::Enter, Modifiers::NONE);
+    gui.key(TunerState::Stopped, Key::Escape, Modifiers::NONE);
     assert_eq!(gui.action, Some(TunerAction::Dismiss));
 }
 
@@ -322,9 +321,7 @@ fn nonmodal_window_moves_and_accepts_stage_and_popup_pointer_actions() {
     assert!(gui.stage_escape);
 
     let frame = gui.draw(active);
-    let stop = visible_label(&frame, "Stop tuner").unwrap().center();
-    gui.click(active, stop);
-    assert_eq!(gui.action, Some(TunerAction::Stop));
+    assert!(visible_label(&frame, "Stop tuner").is_none());
     let window = gui.window();
     let title_height = theme::TARGET + 24.0;
     let glyph = window.right_top() + vec2(-1.0 - title_height / 2.0, 1.0 + title_height / 2.0);
@@ -378,7 +375,7 @@ fn terminal_states_clear_readings_keep_errors_and_announce_state_changes_only() 
         assert_labels(&frame, &["—", status]);
         assert!(needle(&frame).is_none());
         if let TunerState::Error(detail) = state {
-            assert_labels(&frame, &[detail, "Close"]);
+            assert_labels(&frame, &[detail]);
             gui.key(state, Key::Escape, Modifiers::NONE);
             assert_eq!(gui.action, Some(TunerAction::Dismiss));
         }
@@ -386,16 +383,13 @@ fn terminal_states_clear_readings_keep_errors_and_announce_state_changes_only() 
 }
 
 #[test]
-fn compact_viewport_keeps_title_views_and_stop_visible_at_both_densities() {
+fn compact_viewport_keeps_title_views_and_status_visible_at_both_densities() {
     for density in [1.0, 2.0] {
         let mut gui = Harness::new(vec2(320.0, 210.0));
         gui.density = density;
         let active = reading(TunerNote::Named("E"), Some(-12), gui.now);
         let frame = gui.open(active);
-        assert_labels(
-            &frame,
-            &["Tuner", "Digital", "Analog", "Stop tuner", "◀ Flat"],
-        );
+        assert_labels(&frame, &["Tuner", "Digital", "Analog", "◀ Flat"]);
         assert!(
             Rect::from_min_size(Pos2::ZERO, gui.screen)
                 .shrink(7.0)
@@ -404,7 +398,7 @@ fn compact_viewport_keeps_title_views_and_stop_visible_at_both_densities() {
             gui.window()
         );
         assert!(visible_label(&frame, "−12 cents").is_none());
-        let body = pos2(gui.window().center().x, gui.window().bottom() - 58.0);
+        let body = pos2(gui.window().center().x, gui.window().bottom() - 52.0);
         gui.frame(
             Some(active),
             vec![
@@ -420,12 +414,9 @@ fn compact_viewport_keeps_title_views_and_stop_visible_at_both_densities() {
         for _ in 0..12 {
             scrolled = gui.draw(active);
         }
-        assert_labels(&scrolled, &["−12 cents", "Stop tuner"]);
+        assert_labels(&scrolled, &["−12 cents"]);
         let frame = gui.key(active, Key::ArrowRight, Modifiers::NONE);
-        assert_labels(
-            &frame,
-            &["Tuner", "Digital", "Analog", "Stop tuner", "◀ Flat"],
-        );
+        assert_labels(&frame, &["Tuner", "Digital", "Analog", "◀ Flat"]);
         assert!(
             Rect::from_min_size(Pos2::ZERO, gui.screen)
                 .shrink(7.0)
@@ -433,15 +424,14 @@ fn compact_viewport_keeps_title_views_and_stop_visible_at_both_densities() {
             "{:?}",
             gui.window()
         );
-        gui.key(active, Key::Tab, Modifiers::NONE);
-        gui.key(active, Key::Enter, Modifiers::NONE);
+        gui.key(active, Key::Escape, Modifiers::NONE);
         assert_eq!(gui.action, Some(TunerAction::Stop));
 
         gui.screen.y = 180.0;
         let frame = gui.open(TunerState::Stopping);
         assert_labels(&frame, &["Tuner", "Digital", "Analog", "Stopping tuner…"]);
         let frame = gui.draw(TunerState::Disconnected);
-        assert_labels(&frame, &["PODxt Live disconnected", "Close"]);
+        assert_labels(&frame, &["PODxt Live disconnected"]);
     }
 }
 

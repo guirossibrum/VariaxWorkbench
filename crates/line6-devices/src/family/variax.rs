@@ -11,7 +11,7 @@ pub mod driver;
 pub mod firmware_read;
 mod follow;
 pub mod procedures;
-pub use follow::{FollowUpdate, follow, follow_action, follow_window};
+pub use follow::{FollowUpdate, follow, follow_action, follow_reporting_cleanup, follow_window};
 pub mod slot_read;
 pub mod span_read;
 pub mod string_levels;
@@ -299,15 +299,29 @@ fn in_session<L: Link, T>(
     session: &mut Session<L>,
     body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
 ) -> Result<T, String> {
+    in_session_reporting_cleanup(session, body, || {})
+}
+
+fn in_session_reporting_cleanup<L: Link, T>(
+    session: &mut Session<L>,
+    body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
+    cleanup_failed: impl Fn(),
+) -> Result<T, String> {
     if let Err(error) = session.send(VariaxRequest::SessionOn) {
         return match session.send(VariaxRequest::SessionOff) {
             Ok(()) => Err(error),
-            Err(off) => Err(format!("{error} Session off also failed: {off}")),
+            Err(off) => {
+                cleanup_failed();
+                Err(format!("{error} Session off also failed: {off}"))
+            }
         };
     }
     session.link.pause(SESSION_SETTLE);
     let result = body(session);
     let off = session.send(VariaxRequest::SessionOff);
+    if off.is_err() {
+        cleanup_failed();
+    }
     match (result, off) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
@@ -449,16 +463,28 @@ fn with_bridged_read_session<L: Link, T>(
     bridge_settle: Duration,
     body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
 ) -> Result<T, String> {
+    with_bridged_read_session_reporting_cleanup(session, bridge_settle, body, || {})
+}
+
+fn with_bridged_read_session_reporting_cleanup<L: Link, T>(
+    session: &mut Session<L>,
+    bridge_settle: Duration,
+    body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
+    cleanup_failed: impl Fn(),
+) -> Result<T, String> {
     let result = session.send(ReadBridge(true)).and_then(|()| {
         if !bridge_settle.is_zero() {
             session.link.pause(bridge_settle);
         }
-        in_session(session, body)
+        in_session_reporting_cleanup(session, body, &cleanup_failed)
     });
     let release = session
         .send(ReadBridge(false))
         .err()
         .map(|error| format!("PODxt Variax-messages release failed: {error}"));
+    if release.is_some() {
+        cleanup_failed();
+    }
     match (result, release) {
         (result, None) => result,
         (Ok(_), Some(error)) => Err(error),

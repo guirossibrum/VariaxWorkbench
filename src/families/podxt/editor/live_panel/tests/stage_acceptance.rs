@@ -377,14 +377,15 @@ fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
         "physical update should scroll to the playing channel"
     );
 
+    app.podxt_mut().live.editor.use_fake_get();
     let requests = app.podxt().live.device_requests;
     click_text(&ctx, &mut app, "32C  Saved Channel");
     let panel = &app.podxt().live;
-    assert_eq!(panel.device_requests, requests + 1);
+    assert_eq!(panel.device_requests, requests + 2);
     assert_eq!(panel.playing_channel(), Some(slot));
     assert_eq!(
         panel.message.as_deref(),
-        Some("Use Read playing tone before selecting a channel.")
+        Some("Rechecking the playing tone. Select the channel again once the read completes.")
     );
 }
 

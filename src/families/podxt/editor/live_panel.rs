@@ -937,7 +937,12 @@ impl LivePanel {
             self.message =
                 Some("Wait for the current PODxt operation, then select the channel again.".into());
         } else if !self.editor.recall_ready() {
-            self.message = Some("Use Read playing tone before selecting a channel.".into());
+            if self.can_refresh_current() {
+                self.refresh_current(ctx);
+                self.message = Some("Rechecking the playing tone. Select the channel again once the read completes.".into());
+            } else {
+                self.message = Some("Use Read playing tone before selecting a channel.".into());
+            }
         } else if let Some(device) = &self.device {
             self.message = None;
             self.follow.pause();

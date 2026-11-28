@@ -268,14 +268,17 @@ fn disconnect_attempts_both_cleanup_sends_and_preserves_all_failures() {
         fake.fail_at = fail_at;
         let mut quiet = Quiet;
         let mut session = Session::new(Disconnect(fake), &READS, &mut quiet);
-        let error = follow_on(
+        let reported = Cell::new(false);
+        let error = follow_on_reporting_cleanup(
             &mut session,
             None,
             || false,
             |_| panic!("unexpected update"),
+            || reported.set(true),
         )
         .unwrap_err();
         assert!(error.contains("simulated disconnect"));
+        assert_eq!(reported.get(), fail_cleanup);
         assert_eq!(error.contains("Session off also failed"), fail_cleanup);
         assert_eq!(
             error.contains("PODxt Variax-messages release failed"),

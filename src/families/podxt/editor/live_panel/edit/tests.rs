@@ -578,3 +578,60 @@ fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
     );
     assert!(!text.contains("Discard and recall"), "{text}");
 }
+
+#[test]
+fn undo_is_available_only_for_changes_the_session_can_restore() {
+    let mut editor = LiveEditor::default();
+    let original = sample(20, 3);
+    let changed = sample(45, 3);
+    assert!(!editor.can_undo());
+    editor.completed(Action::Get, Ok(original.clone()));
+    assert!(!editor.can_undo());
+    editor.completed(Action::Controls, Ok(changed));
+    assert!(editor.can_undo());
+    editor.pending.set(drive(60));
+    assert!(!editor.can_undo());
+    editor.discard_staged();
+    editor.completed(Action::Undo, Ok(original));
+    assert!(!editor.can_undo());
+    editor.completed(Action::Get, Ok(sample(45, 4)));
+    assert!(!editor.can_undo());
+}
+
+#[test]
+fn edit_lock_retries_only_busy_and_stops_before_open_on_cancel() {
+    use line6_devices::device_lock::LockError;
+    let stop = AtomicBool::new(false);
+    let mut script = VecDeque::from([Err(LockError::Busy), Err(LockError::BusyHere), Ok(42)]);
+    let mut delays = Vec::new();
+    assert_eq!(
+        wait_for_edit_lock(
+            &stop,
+            || script.pop_front().unwrap(),
+            |delay| delays.push(delay)
+        ),
+        Ok(42)
+    );
+    assert_eq!(delays, [Duration::from_millis(500); 2]);
+    let result: Result<(), _> = wait_for_edit_lock(
+        &stop,
+        || {
+            Err(LockError::Unavailable(
+                "Variax Follow could not cleanly release the rig".into(),
+            ))
+        },
+        |_| panic!("cleanup failure must stop"),
+    );
+    assert!(result.unwrap_err().contains("could not cleanly release"));
+    let attempts = Cell::new(0);
+    let result: Result<(), _> = wait_for_edit_lock(
+        &stop,
+        || {
+            attempts.set(attempts.get() + 1);
+            Err(LockError::Busy)
+        },
+        |_| stop.store(true, Ordering::Release),
+    );
+    assert_eq!(attempts.get(), 1);
+    assert!(result.unwrap_err().contains("cancelled"));
+}

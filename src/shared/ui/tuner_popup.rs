@@ -96,7 +96,7 @@ impl View {
 pub struct TunerPopup {
     preference_path: Option<PathBuf>,
     last_frame: Option<u64>,
-    controls: Option<[egui::Id; 3]>,
+    controls: Option<[egui::Id; 2]>,
     last_status: Option<String>,
 }
 
@@ -160,7 +160,7 @@ impl TunerPopup {
             }
         };
 
-        let escape = !opening && self.keyboard(ctx, &mut view, command.is_some());
+        let escape = !opening && self.keyboard(ctx, &mut view);
         let bounds = ctx.content_rect().shrink(8.0);
         let compact = bounds.width() < 360.0 || bounds.height() < 300.0;
         let padding = if compact { 6 } else { 12 };
@@ -192,106 +192,78 @@ impl TunerPopup {
         } else {
             window
         };
-        let close_requested = window
-            .show(ctx, |ui| {
-                if compact {
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                }
-                ui.label(RichText::new("PODxt Live").color(theme::MUTED));
-                let selectors = ui
-                    .horizontal(|ui| {
-                        let button_width =
-                            (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-                        [View::Digital, View::Analog].map(|option| {
-                            ui.add(
-                                egui::Button::selectable(
-                                    view == option,
-                                    match option {
-                                        View::Digital => "Digital",
-                                        View::Analog => "Analog",
-                                    },
-                                )
-                                .min_size(vec2(button_width, theme::TARGET)),
+        window.show(ctx, |ui| {
+            if compact {
+                ui.spacing_mut().item_spacing.y = 4.0;
+            }
+            ui.label(RichText::new("PODxt Live").color(theme::MUTED));
+            let selectors = ui
+                .horizontal(|ui| {
+                    let button_width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                    [View::Digital, View::Analog].map(|option| {
+                        ui.add(
+                            egui::Button::selectable(
+                                view == option,
+                                match option {
+                                    View::Digital => "Digital",
+                                    View::Analog => "Analog",
+                                },
                             )
-                        })
+                            .min_size(vec2(button_width, theme::TARGET)),
+                        )
                     })
-                    .inner;
-                for (option, selector) in [View::Digital, View::Analog].into_iter().zip(&selectors)
-                {
-                    if selector.clicked() {
-                        view = option;
-                        selector.request_focus();
-                    }
+                })
+                .inner;
+            for (option, selector) in [View::Digital, View::Analog].into_iter().zip(&selectors) {
+                if selector.clicked() {
+                    view = option;
+                    selector.request_focus();
                 }
+            }
 
-                egui::Frame::new()
-                    .fill(theme::PANEL)
-                    .stroke(Stroke::new(1.0_f32, theme::LINE))
-                    .corner_radius(theme::RADIUS_PANEL)
-                    .inner_margin(if compact { 4 } else { 8 })
-                    .show(ui, |ui| {
-                        let reading = egui::ScrollArea::vertical()
-                            .max_height(body_height)
-                            .min_scrolled_height(0.0)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| draw_reading(ui, view, &display));
-                        let response = ui.interact(
-                            reading.inner_rect,
-                            id.with("reading"),
-                            egui::Sense::hover(),
+            egui::Frame::new()
+                .fill(theme::PANEL)
+                .stroke(Stroke::new(1.0_f32, theme::LINE))
+                .corner_radius(theme::RADIUS_PANEL)
+                .inner_margin(if compact { 4 } else { 8 })
+                .show(ui, |ui| {
+                    let reading = egui::ScrollArea::vertical()
+                        .max_height(body_height)
+                        .min_scrolled_height(0.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| draw_reading(ui, view, &display));
+                    let response =
+                        ui.interact(reading.inner_rect, id.with("reading"), egui::Sense::hover());
+                    let label =
+                        |text| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text);
+                    let status = display.announcement();
+                    if ui.is_visible() && self.last_status.as_deref() != Some(&status) {
+                        response.output_event(egui::output::OutputEvent::ValueChanged(label(
+                            status.clone(),
+                        )));
+                        self.last_status = Some(status);
+                    }
+                    response.widget_info(|| label(display.description()));
+                });
+            ui.label(RichText::new(display.status).strong().color(display.color));
+            if ui.is_visible() {
+                self.last_frame = Some(frame);
+                self.controls = Some([selectors[0].id, selectors[1].id]);
+                if opening {
+                    selectors[usize::from(view == View::Analog)].request_focus();
+                }
+                for control in &selectors {
+                    if control.has_focus() {
+                        ui.painter().rect_stroke(
+                            control.rect.shrink(1.0),
+                            theme::RADIUS_CONTROL,
+                            Stroke::new(theme::FOCUS_RING, theme::FOCUS),
+                            egui::StrokeKind::Inside,
                         );
-                        let label =
-                            |text| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text);
-                        let status = display.announcement();
-                        if ui.is_visible() && self.last_status.as_deref() != Some(&status) {
-                            response.output_event(egui::output::OutputEvent::ValueChanged(label(
-                                status.clone(),
-                            )));
-                            self.last_status = Some(status);
-                        }
-                        response.widget_info(|| label(display.description()));
-                    });
-                let stop = ui
-                    .allocate_ui_with_layout(
-                        vec2(ui.available_width(), theme::TARGET),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.label(RichText::new(display.status).strong().color(display.color));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let label = if command == Some(TunerAction::Dismiss) {
-                                    "Close"
-                                } else {
-                                    "Stop tuner"
-                                };
-                                ui.add_enabled(command.is_some(), egui::Button::new(label))
-                            })
-                            .inner
-                        },
-                    )
-                    .inner;
-
-                if ui.is_visible() {
-                    self.last_frame = Some(frame);
-                    self.controls = Some([selectors[0].id, selectors[1].id, stop.id]);
-                    let selected = usize::from(view == View::Analog);
-                    if opening || (command.is_none() && stop.has_focus()) {
-                        selectors[selected].request_focus();
-                    }
-                    for control in [&selectors[0], &selectors[1], &stop] {
-                        if control.has_focus() {
-                            ui.painter().rect_stroke(
-                                control.rect.shrink(1.0),
-                                theme::RADIUS_CONTROL,
-                                Stroke::new(theme::FOCUS_RING, theme::FOCUS),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
                     }
                 }
-                stop.clicked()
-            })
-            .and_then(|response| response.inner)
-            .unwrap_or(false);
+            }
+        });
         if view != previous_view {
             ctx.data_mut(|data| data.insert_temp(view_id, view));
             if let Some(path) = &self.preference_path
@@ -301,14 +273,10 @@ impl TunerPopup {
             }
             ctx.request_repaint();
         }
-        if close_requested || !open || escape {
-            command
-        } else {
-            None
-        }
+        if !open || escape { command } else { None }
     }
 
-    fn keyboard(&self, ctx: &egui::Context, view: &mut View, actionable: bool) -> bool {
+    fn keyboard(&self, ctx: &egui::Context, view: &mut View) -> bool {
         let Some(controls) = self.controls else {
             return false;
         };
@@ -337,10 +305,10 @@ impl TunerPopup {
                 Some(-1)
             } else if input.consume_key(Modifiers::NONE, Key::Tab) {
                 Some(1)
-            } else if index < 2 && input.consume_key(Modifiers::NONE, Key::ArrowLeft) {
+            } else if input.consume_key(Modifiers::NONE, Key::ArrowLeft) {
                 *view = View::Digital;
                 Some(-(index as isize))
-            } else if index < 2 && input.consume_key(Modifiers::NONE, Key::ArrowRight) {
+            } else if input.consume_key(Modifiers::NONE, Key::ArrowRight) {
                 *view = View::Analog;
                 Some(1 - index as isize)
             } else {
@@ -349,8 +317,7 @@ impl TunerPopup {
             (escape, navigation)
         });
         if let Some(offset) = navigation {
-            let count = if actionable { 3 } else { 2 };
-            let next = (index as isize + offset).rem_euclid(count) as usize;
+            let next = (index as isize + offset).rem_euclid(controls.len() as isize) as usize;
             ctx.memory_mut(|memory| {
                 // Egui decides default focus movement at the start of the pass.
                 memory.move_focus(egui::FocusDirection::None);

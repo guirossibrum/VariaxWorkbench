@@ -12,6 +12,16 @@ pub struct EditorBuffer {
     pub packs: Packs,
 }
 
+impl EditorBuffer {
+    /// Whether Undo can restore a supported control in this channel.
+    pub fn has_restorable_changes(&self, snapshot: &Self) -> bool {
+        self.channel == snapshot.channel
+            && differing_controls(&self.tone, &snapshot.tone)
+                .next()
+                .is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum EditorEdit<'a> {
     /// Apply verified encoder messages to the currently playing tone.
@@ -273,7 +283,7 @@ pub fn edit_editor_buffer<L: Link>(
 
     let (tone, packs) = match edit {
         EditorEdit::Undo(snapshot) => {
-            let controls = changed_controls(&before, &snapshot.tone);
+            let controls: Vec<_> = differing_controls(&before, &snapshot.tone).collect();
             let packs = checked_models(
                 session,
                 expected.packs,
@@ -590,13 +600,15 @@ pub(super) fn read_after_write<L: Link>(
     Ok(tone)
 }
 
-fn changed_controls(before: &EditBuffer, snapshot: &EditBuffer) -> Vec<LiveControl> {
+fn differing_controls<'a>(
+    before: &'a EditBuffer,
+    snapshot: &'a EditBuffer,
+) -> impl Iterator<Item = LiveControl> + 'a {
     Control::ALL
         .into_iter()
         .map(LiveControl::Basic)
         .chain(Setting::ALL.into_iter().map(LiveControl::Additional))
-        .filter(|control| control.read(before) != control.read(snapshot))
-        .collect()
+        .filter(move |control| control.read(before) != control.read(snapshot))
 }
 
 fn restore_snapshot<L: Link>(
@@ -640,7 +652,7 @@ fn restore_snapshot<L: Link>(
         send_controls(session, &changes, cancelled)?;
         observed = read_after_write(session, channel)?;
         // A model that failed to restore must not be sent indefinitely.
-        controls = changed_controls(&observed, snapshot);
+        controls = differing_controls(&observed, snapshot).collect();
         controls.retain(|control| {
             !matches!(control, LiveControl::Additional(setting)
             if setting.model_list().is_some())
