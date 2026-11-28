@@ -5,10 +5,12 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == Darwin ]] || die "Run this script on macOS with Rust and Xcode command-line tools."
 profile=offline
+export VARIAX_LOG_PROFILE=v1
 features=gui,portable-math
 if [[ "${1:-}" == --owner-usb ]]; then
     [[ $# -eq 2 ]] || die "Usage: $0 --owner-usb <private-output-directory>"
     profile=owner-usb
+    export VARIAX_LOG_PROFILE=owner
     features+=,usb
     shift
 fi

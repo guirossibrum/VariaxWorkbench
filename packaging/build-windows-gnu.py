@@ -49,7 +49,7 @@ def build(revision, build_number, output):
         RUSTFLAGS="-C target-feature=+crt-static", VARIAX_BUILD_NUMBER=build_number,
         RUSTC=rustc_path, RUSTC_WRAPPER="", RUSTC_WORKSPACE_WRAPPER="",
         RIG_CHECK_GIT_COMMIT=revision, RIG_CHECK_RUSTC_VERSION=rustc.splitlines()[0],
-        RIG_CHECK_TARGET=GNU_TARGET,
+        RIG_CHECK_TARGET=GNU_TARGET, VARIAX_LOG_PROFILE="owner",
     )
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
 

@@ -150,7 +150,7 @@ def main():
     target_dir = (ROOT / env.get("CARGO_TARGET_DIR", "target")).resolve()
     env.update(CARGO_TARGET_DIR=str(target_dir), RUSTFLAGS="-C target-feature=+crt-static",
                RIG_CHECK_GIT_COMMIT=commit, RIG_CHECK_RUSTC_VERSION=rustc.splitlines()[0],
-               RIG_CHECK_TARGET=TARGET)
+               RIG_CHECK_TARGET=TARGET, VARIAX_LOG_PROFILE="v1")
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
     subprocess.run(
         ["cargo", "build", "--locked", "--release", "--target", TARGET,

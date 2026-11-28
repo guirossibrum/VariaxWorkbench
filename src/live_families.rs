@@ -8,22 +8,30 @@
 use crate::PresetMetadata;
 use crate::firmware_notice::FirmwareNotice;
 use crate::hardware_gates::{self, Gate};
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+use crate::session_log::Endpoint;
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+use crate::session_log::Operation as LogOperation;
 
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+use line6_devices::family::podxt;
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
-use line6_devices::family::{self, podxt, variax};
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+use line6_devices::family::{self, variax};
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use line6_devices::gate::{GatePolicy, Operation};
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
-use line6_devices::session::{Link, Quiet, Session};
+use line6_devices::session::Quiet;
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+use line6_devices::session::{Link, Session};
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 use line6_devices::transport::usb::UsbInterfaceLink;
 
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 struct DeviceCheckPolicy;
 
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 impl GatePolicy for DeviceCheckPolicy {
     fn allows(&self, operation: Operation) -> bool {
         match operation {
@@ -95,14 +103,34 @@ fn read_both_supported() -> Result<BothReads, String> {
 #[cfg(all(not(test), target_os = "linux"))]
 fn read_variax() -> Result<(PresetMetadata, String), String> {
     let mut link = UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE)?;
-    let result = read_variax_on(&mut link);
-    after_release(result, link.finish())
+    read_variax_checked(
+        &mut link,
+        UsbInterfaceLink::finish,
+        LogOperation::begin(Endpoint::Variax),
+    )
 }
 
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
-fn read_variax_on(link: &mut dyn Link) -> Result<(PresetMetadata, String), String> {
-    let mut log = Quiet;
-    let mut session = Session::new(link, &DeviceCheckPolicy, &mut log);
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn read_variax_checked<L: Link>(
+    link: &mut L,
+    finish: impl FnOnce(&mut L) -> Result<(), String>,
+    mut operation: LogOperation,
+) -> Result<(PresetMetadata, String), String> {
+    let result = read_variax_on(link, &mut operation);
+    let start = std::time::Instant::now();
+    let release = finish(link);
+    let release_duration = start.elapsed();
+    operation.finished(result.is_ok());
+    operation.checked_release(release.is_ok(), release_duration);
+    after_release(result, release)
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn read_variax_on(
+    link: &mut dyn Link,
+    log: &mut LogOperation,
+) -> Result<(PresetMetadata, String), String> {
+    let mut session = Session::new(link, &DeviceCheckPolicy, log);
     let preset = variax::read_current(&mut session)?;
     let metadata = PresetMetadata::from_replies(&preset.replies[0], &preset.replies[1])?;
     let family = family::Family::Variax;
@@ -117,7 +145,7 @@ fn read_variax_on(link: &mut dyn Link) -> Result<(PresetMetadata, String), Strin
     Ok((metadata, text))
 }
 
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn integer(metadata: &PresetMetadata, key: &str) -> Result<i32, String> {
     match metadata.parameters.get(key) {
         Some(crate::ParameterValue::Integer(value)) => Ok(*value),
@@ -191,8 +219,11 @@ pub(crate) fn read_both_on(
                             address,
                             rig,
                         )?;
-                        let result = read_variax_on(&mut link);
-                        after_release(result, link.finish())
+                        read_variax_checked(
+                            &mut link,
+                            UsbInterfaceLink::finish,
+                            LogOperation::begin(Endpoint::Variax),
+                        )
                     },
                     || {
                         let mut link = UsbInterfaceLink::open_attachment_borrowed(
@@ -247,5 +278,112 @@ mod tests {
     fn a_test_build_does_not_open_either_device() {
         let error = read_both().unwrap_err();
         assert!(error.contains("nothing was sent"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use crate::session_log::{Endpoint, SessionLog, Severity, tests::ScriptedLink};
+    use line6_devices::family::variax::VariaxRequest::*;
+    use line6_devices::session::Path;
+
+    #[test]
+    fn variax_step_three_logs_existing_orphan_retry_read_timeout_and_checked_release() {
+        // Synthetic identity with the Variax 600 member and made-up firmware.
+        let identity = vec![
+            0xf0, 0x7e, 0x7f, 0x06, 0x02, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x04, 0x00, 0x31, 0x32,
+            0x30, 0x33, 0xf7,
+        ];
+        let mut metadata = vec![0xf0, 0, 1, 0x0c, 7, 4, 0x3c];
+        for word in b"HiddenPreset".as_chunks::<3>().0 {
+            let value = u32::from_be_bytes([0, word[0], word[1], word[2]]);
+            metadata.extend(crate::encode_word(value).unwrap());
+        }
+        metadata.resize(199, 0);
+        metadata.push(0xf7);
+
+        for (identity_timeout, metadata_timeout) in [(false, false), (false, true), (true, false)] {
+            let read_succeeded = !identity_timeout && !metadata_timeout;
+            let temp = tempfile::tempdir().unwrap();
+            let (log, guard) = SessionLog::open(Some(temp.path().into()), Severity::Trace);
+            let script = if identity_timeout {
+                vec![(Identity, None)]
+            } else {
+                vec![
+                    (Identity, Some(vec![0xf7])),
+                    (Identity, Some(identity.clone())),
+                    (SessionOn, None),
+                    (Metadata1, Some(metadata.clone())),
+                    (Metadata2, (!metadata_timeout).then(|| metadata.clone())),
+                    (SessionOff, None),
+                ]
+            };
+            let mut link = ScriptedLink::new(Path::VariaxViaPodxt, script);
+            let result = read_variax_checked(
+                &mut link,
+                |link| {
+                    link.assert_finished();
+                    if read_succeeded {
+                        Err("private release detail".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                LogOperation::with_log(&log, Endpoint::Variax),
+            );
+            assert!(result.is_err());
+            drop(guard);
+            let text = std::fs::read_to_string(log.status().path.unwrap()).unwrap();
+            assert!(!text.contains("HiddenPreset") && !text.contains("private release detail"));
+            let rows: Vec<serde_json::Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .filter(|row: &serde_json::Value| row["endpoint"] == "variax")
+                .collect();
+            assert!(
+                rows.iter()
+                    .all(|row| row["operation"] == rows[0]["operation"])
+            );
+            let transport = |request: &str, outcome: &str| {
+                rows.iter()
+                    .filter(|row| {
+                        row["observation"]["request"] == request
+                            && row["observation"]["outcome"] == outcome
+                    })
+                    .count()
+            };
+            assert_eq!(
+                transport("VariaxIdentity", "Sent"),
+                if identity_timeout { 1 } else { 2 }
+            );
+            assert_eq!(
+                transport("VariaxIdentity", "OrphanQuiet"),
+                usize::from(!identity_timeout)
+            );
+            assert_eq!(
+                transport("VariaxIdentity", "Timeout"),
+                usize::from(identity_timeout)
+            );
+            assert_eq!(
+                transport("VariaxRead", "Sent"),
+                if identity_timeout { 0 } else { 4 }
+            );
+            let packets = if identity_timeout {
+                0
+            } else if metadata_timeout {
+                1
+            } else {
+                2
+            };
+            assert_eq!(transport("VariaxRead", "Packet"), packets);
+            if metadata_timeout {
+                assert!(transport("VariaxRead", "NoPacket") > 0);
+            }
+            assert_eq!(rows[rows.len() - 2]["category"], "operation_finished");
+            assert_eq!(rows[rows.len() - 2]["success"], read_succeeded);
+            assert_eq!(rows.last().unwrap()["category"], "checked_release");
+            assert_eq!(rows.last().unwrap()["success"], !read_succeeded);
+        }
     }
 }

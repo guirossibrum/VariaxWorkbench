@@ -9,6 +9,7 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 [pickup response](pickup-response.md), [generator results](offline-generator-results.md), and [backlog](github-backlog.md).
 
 ## Verified and passing
+- [x] [#320](https://github.com/guirossibrum/VariaxWorkbench/issues/320) adds bounded local Workbench session logs with package-aware severity and offline verification of file creation, retention, export, redaction, an HD500X button/switch/slider and the Variax step 3 read and release. [Paths, API and coverage](session-log.md).
 
 - [x] [#318](https://github.com/guirossibrum/VariaxWorkbench/issues/318) adds offline CLI help, routes `gui` through the existing main-thread launcher and adds `preset inspect` and `preset rename` for original Variax 300/600 and 500/700 presets and PODxt Live tones. Nine Linux command tests passed with core-only and all-feature builds, covering content-based detection, opaque bytes, ambiguous and unsupported input, non-overwriting copies, legacy output and GUI routing.
 

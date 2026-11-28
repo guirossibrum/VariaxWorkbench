@@ -87,6 +87,7 @@ pub mod read_session;
 pub mod recording;
 pub mod rig;
 pub mod rig_check;
+pub mod session_log;
 mod shared;
 #[cfg(feature = "gui")]
 pub use shared::ui;
