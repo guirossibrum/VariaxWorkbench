@@ -16,7 +16,7 @@ enum Outcome {
 
 pub(super) struct Update {
     pub(super) buffer: EditorBuffer,
-    pub(super) program_change: bool,
+    pub(super) program_target: Option<Location>,
 }
 
 struct Worker {
@@ -168,11 +168,11 @@ fn listen(
     saves: &SaveListener,
 ) -> Result<Outcome, String> {
     use line6_devices::{midi::Event, session::POLL};
-    let mut changed_at = None;
+    let mut changed = None;
     while !stop() {
         let now = session.link.elapsed();
-        let settled = changed_at.is_some_and(|at| now >= at);
-        if settled || reconcile && changed_at.is_none() {
+        let settled = changed.filter(|&(at, _)| now >= at);
+        if settled.is_some() || reconcile && changed.is_none() {
             // The checked read consumes MIDI replies on this link without
             // forwarding save notices, so passive coverage ends here.
             saves.gap();
@@ -185,11 +185,12 @@ fn listen(
             .map(|buffer| {
                 Outcome::Changed(Update {
                     buffer,
-                    program_change: settled,
+                    program_target: settled.map(|(_, target)| target),
                 })
             });
         }
-        let wait = changed_at
+        let wait = changed
+            .map(|(at, _)| at)
             .filter(|&at| at > now)
             .map_or(POLL, |at| (at - now).min(POLL));
         let Some(events) = session.poll(wait)? else {
@@ -206,12 +207,13 @@ fn listen(
         }
         for event in events {
             match event {
-                Event::Short(message)
-                    if matches!(message.as_slice(), [status, program]
-                        if status & 0xf0 == 0xc0
-                            && Location::new(BankKind::Tones, u16::from(*program)).is_some()) =>
-                {
-                    changed_at = Some(session.link.elapsed() + CHANNEL_SETTLE);
+                Event::Short(message) => {
+                    if let [status, program] = message.as_slice()
+                        && status & 0xf0 == 0xc0
+                        && let Some(target) = Location::new(BankKind::Tones, u16::from(*program))
+                    {
+                        changed = Some((session.link.elapsed() + CHANNEL_SETTLE, target));
+                    }
                 }
                 Event::Sysex(frame)
                     if frame.starts_with(&[0xf0, 0, 1, 0x0c, 3, 0x74])

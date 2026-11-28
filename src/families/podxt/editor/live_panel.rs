@@ -38,7 +38,7 @@ pub(super) struct LivePanel {
     reveal_playing: bool,
     live_since: Option<Instant>,
     linux_program_seen: Option<Instant>,
-    linux_follow_due: Option<Instant>,
+    linux_follow_due: Option<(Instant, Location)>,
     linux_follow_read: bool,
     store: store::StorePanel,
     locker: locker::Locker,
@@ -458,7 +458,7 @@ impl LivePanel {
         let key = verified.map(|tab| &tab.device.key);
         if self.device.as_ref() == key {
             if let Some(program) = verified.and_then(|tab| tab.device.podxt_program)
-                && Location::new(BankKind::Tones, u16::from(program.channel)).is_some()
+                && let Some(target) = Location::new(BankKind::Tones, u16::from(program.channel))
                 && self
                     .live_since
                     .is_some_and(|since| program.observed_at >= since)
@@ -467,7 +467,9 @@ impl LivePanel {
                     .is_none_or(|seen| program.observed_at > seen)
             {
                 self.linux_program_seen = Some(program.observed_at);
-                self.linux_follow_due = Some(program.observed_at + follow::CHANNEL_SETTLE);
+                self.linux_follow_due =
+                    Some((program.observed_at + follow::CHANNEL_SETTLE, target));
+                self.editor.observe_program(target);
             }
             return false;
         }
@@ -720,12 +722,12 @@ impl LivePanel {
             && !hardware_gates::is_locked(Gate::CurrentSettingsRead);
         if !eligible {
             self.follow.pause();
-        } else if let Some(due) = self.linux_follow_due {
+        } else if let Some((due, target)) = self.linux_follow_due {
             let remaining = due.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 self.linux_follow_due = None;
                 self.linux_follow_read = true;
-                self.refresh_current(ctx);
+                self.refresh_current_after_program(Some(target), ctx);
             } else {
                 ctx.request_repaint_after(remaining);
             }
@@ -737,8 +739,15 @@ impl LivePanel {
             ctx,
         ) {
             Ok(Some(update)) => {
-                self.reveal_playing |= update.program_change;
-                self.editor.accept_follow(update.buffer.clone());
+                self.reveal_playing |= update.program_target.is_some();
+                if let Some(device) = &self.device {
+                    self.editor.accept_program_follow(
+                        update.buffer.clone(),
+                        update.program_target,
+                        device,
+                        ctx,
+                    );
+                }
                 self.update_playing(update.buffer);
             }
             Ok(None) => {}
@@ -933,6 +942,10 @@ impl LivePanel {
     }
 
     pub(super) fn refresh_current(&mut self, ctx: &egui::Context) {
+        self.refresh_current_after_program(None, ctx);
+    }
+
+    fn refresh_current_after_program(&mut self, target: Option<Location>, ctx: &egui::Context) {
         #[cfg(test)]
         {
             self.device_requests += 1;
@@ -941,7 +954,11 @@ impl LivePanel {
             && let Some(device) = &self.device
         {
             self.follow.pause();
-            self.editor.get(device, ctx);
+            if let Some(target) = target {
+                self.editor.get_after_program(target, device, ctx);
+            } else {
+                self.editor.get(device, ctx);
+            }
         }
     }
 

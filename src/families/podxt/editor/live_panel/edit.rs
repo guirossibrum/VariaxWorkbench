@@ -10,6 +10,8 @@ const EDIT_INTERVAL: Duration = Duration::from_millis(150);
 const UNDO_PENDING: &str = "Undo pending while the live control change finishes";
 // #222's full-payload transfer has a separate first-run decision.
 const WHOLE_TONE_SEND_APPROVED: bool = false;
+// Approval of a manual resend does not admit automatic replay.
+const AUTOMATIC_DRAFT_REPLAY_APPROVED: bool = false;
 
 pub(super) struct LiveEditor {
     pub(super) reply_pending: Arc<AtomicBool>,
@@ -18,7 +20,9 @@ pub(super) struct LiveEditor {
     worker: Option<EditWorker>,
     pending: Pending,
     queued_undo: Option<QueuedUndo>,
-    whole_tone_backup: Option<VerifiedToneBackup>,
+    whole_tone_backup: Option<Arc<VerifiedToneBackup>>,
+    replay_backups: HashMap<u16, Arc<VerifiedToneBackup>>,
+    attachment_session: Arc<()>,
     stage_only: bool,
     needs_get: bool,
     recall_confirmation: Option<(detection::DeviceKey, RecallConfirmation)>,
@@ -30,6 +34,8 @@ pub(super) struct LiveEditor {
     fake_recall: Option<tests::FakeRecall>,
     #[cfg(test)]
     fake_edit: Option<tests::FakeEdit>,
+    #[cfg(test)]
+    fake_dispatch: Option<Arc<tests::FakeDispatch>>,
 }
 
 impl Default for LiveEditor {
@@ -42,6 +48,8 @@ impl Default for LiveEditor {
             pending: Pending::default(),
             queued_undo: None,
             whole_tone_backup: None,
+            replay_backups: HashMap::new(),
+            attachment_session: Arc::new(()),
             stage_only: true,
             needs_get: false,
             recall_confirmation: None,
@@ -53,6 +61,8 @@ impl Default for LiveEditor {
             fake_recall: None,
             #[cfg(test)]
             fake_edit: None,
+            #[cfg(test)]
+            fake_dispatch: None,
         }
     }
 }
@@ -136,6 +146,8 @@ impl Pending {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Get,
+    Follow(Location),
+    ReplayDraft(Location),
     Controls,
     Send,
     ResendWholeTone,
@@ -144,13 +156,30 @@ enum Action {
 }
 
 impl Action {
+    fn native_approval(self) -> bool {
+        match self {
+            Self::ReplayDraft(_) => WHOLE_TONE_SEND_APPROVED && AUTOMATIC_DRAFT_REPLAY_APPROVED,
+            Self::ResendWholeTone => WHOLE_TONE_SEND_APPROVED,
+            _ => true,
+        }
+    }
+
+    fn is_whole_tone_send(self) -> bool {
+        matches!(self, Self::ResendWholeTone | Self::ReplayDraft(_))
+    }
+
+    fn is_read(self) -> bool {
+        matches!(self, Self::Get | Self::Follow(_))
+    }
+
     fn progress_label(self) -> Option<&'static str> {
         (self != Self::Controls).then(|| self.label())
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Get => "Read playing tone",
+            Self::Get | Self::Follow(_) => "Read playing tone",
+            Self::ReplayDraft(_) => "Restore session draft",
             Self::Recall(_) => "Select channel",
             Self::Controls => "Apply live controls",
             Self::Send => "Send edit buffer",
@@ -171,6 +200,8 @@ struct EditWorker {
     device: Option<detection::DeviceKey>,
     stop: Arc<AtomicBool>,
     targets: Vec<LiveTarget>,
+    superseded: bool,
+    replay: Option<Arc<DraftReplay>>,
     thread: Option<std::thread::JoinHandle<Result<EditOutcome, String>>>,
 }
 
@@ -191,7 +222,7 @@ impl GatePolicy for EditPolicy {
         }
         match operation {
             Operation::PodxtLibraryRead => {
-                matches!(self.0, Action::ResendWholeTone | Action::Recall(_))
+                (self.0.is_whole_tone_send() || matches!(self.0, Action::Recall(_)))
                     && !hardware_gates::is_locked(Gate::FullBackupRead)
             }
             Operation::PodxtChannelSwitch => {
@@ -199,11 +230,13 @@ impl GatePolicy for EditPolicy {
                     && !hardware_gates::is_locked(Gate::DeviceCheckChannel)
             }
             Operation::PodxtEditBufferWrite | Operation::PodxtAdditionalEditBufferWrite => {
-                !matches!(self.0, Action::Get | Action::Recall(_))
+                !self.0.is_read()
+                    && !matches!(self.0, Action::Recall(_))
                     && !hardware_gates::is_locked(Gate::EditBufferWrite)
             }
             Operation::PodxtKeepEditBufferChanges => {
-                !matches!(self.0, Action::Get | Action::Recall(_))
+                !self.0.is_read()
+                    && !matches!(self.0, Action::Recall(_))
                     && !hardware_gates::is_locked(Gate::KeepLiveEdit)
             }
             _ => false,
@@ -227,11 +260,19 @@ impl GatePolicy for ReadBufferPolicy {
     }
 }
 
+struct DraftReplay {
+    attachment_session: Arc<()>,
+    expected: EditorBuffer,
+    payload: TonePayload,
+    backup: Arc<VerifiedToneBackup>,
+}
+
 struct Job {
     recall_confirmation: Option<RecallConfirmation>,
     reply_pending: Arc<AtomicBool>,
     action: Action,
-    whole_tone_backup: Option<VerifiedToneBackup>,
+    whole_tone_backup: Option<Arc<VerifiedToneBackup>>,
+    replay: Option<Arc<DraftReplay>>,
     current: Option<EditorBuffer>,
     original: Option<EditorBuffer>,
     targets: Vec<LiveTarget>,
@@ -254,7 +295,7 @@ fn edit_transaction<'a, G>(
             EditPolicy(job.action),
             move |session| {
                 let edit = match job.action {
-                    Action::Get => {
+                    Action::Get | Action::Follow(_) => {
                         return track_reply(&job.reply_pending, |outstanding| {
                             podxt::get_editor_buffer_tracking_reply(session, stopped, outstanding)
                         })
@@ -269,13 +310,30 @@ fn edit_transaction<'a, G>(
                         )
                         .map(EditOutcome::Recall);
                     }
+                    Action::ReplayDraft(slot) => {
+                        let replay = job
+                            .replay
+                            .as_ref()
+                            .expect("draft replay has verified selection");
+                        if replay.expected.channel != slot || replay.backup.slot() != slot {
+                            return Err("The draft replay target changed.".into());
+                        }
+                        return podxt::send_whole_tone(
+                            session,
+                            &replay.expected,
+                            WholeToneSource::Payload(&replay.payload),
+                            &replay.backup,
+                            stopped,
+                        )
+                        .map(EditOutcome::Buffer);
+                    }
                     Action::ResendWholeTone => {
                         return podxt::send_whole_tone(
                             session,
                             job.current.as_ref().expect("whole-tone send has snapshot"),
                             WholeToneSource::Current,
                             job.whole_tone_backup
-                                .as_ref()
+                                .as_deref()
                                 .ok_or("Verify a backup for the playing channel first.")?,
                             stopped,
                         )
@@ -298,13 +356,13 @@ fn edit_transaction<'a, G>(
         )
     };
     match job.action {
-        Action::Get => run(),
+        Action::Get | Action::Follow(_) => run(),
         Action::Recall(_) => hardware_gates::run_if_unlocked(Gate::DeviceCheckChannel, || {
             hardware_gates::run_if_unlocked(Gate::FullBackupRead, run)
         }),
         _ => hardware_gates::run_if_unlocked(Gate::EditBufferWrite, || {
             hardware_gates::run_if_unlocked(Gate::KeepLiveEdit, || {
-                if job.action == Action::ResendWholeTone {
+                if job.action.is_whole_tone_send() {
                     hardware_gates::run_if_unlocked(Gate::FullBackupRead, run)
                 } else {
                     run()
@@ -344,8 +402,8 @@ fn platform_edit(
     job: &Job,
     stop: &AtomicBool,
 ) -> Result<EditOutcome, String> {
-    if job.action == Action::ResendWholeTone && !WHOLE_TONE_SEND_APPROVED {
-        return Err("Whole-tone resend awaits owner approval.".into());
+    if !job.action.native_approval() {
+        return Err(format!("{} awaits owner approval.", job.action.label()));
     }
     edit_transaction(
         job,
@@ -360,7 +418,11 @@ fn platform_edit(
         |rig, run| {
             if matches!(
                 job.action,
-                Action::Recall(_) | Action::Controls | Action::Undo
+                Action::Recall(_)
+                    | Action::Follow(_)
+                    | Action::ReplayDraft(_)
+                    | Action::Controls
+                    | Action::Undo
             ) {
                 with_checked_edit_link(device, rig, stop, run)
             } else {
@@ -415,6 +477,7 @@ fn platform_edit(
     let _ = (
         job.action,
         &job.whole_tone_backup,
+        &job.replay,
         &job.current,
         &job.original,
         &job.targets,
@@ -446,6 +509,8 @@ impl LiveEditor {
         }
         self.session = None;
         self.drafts.end_attachment();
+        self.replay_backups.clear();
+        self.attachment_session = Arc::new(());
         self.whole_tone_backup = None;
         self.pending.0.clear();
         self.needs_get = false;
@@ -551,7 +616,37 @@ impl LiveEditor {
         self.pending.0.clear();
     }
 
+    pub(super) fn observe_program(&mut self, slot: Location) {
+        if let Some(worker) = &mut self.worker {
+            match worker.action {
+                // The app's own program change can reach passive Follow.
+                Action::Recall(target) if slot != target => worker.superseded = true,
+                Action::Follow(_) => worker.superseded = true,
+                Action::ReplayDraft(_) => worker.stop.store(true, Ordering::Release),
+                _ => {}
+            }
+        }
+    }
+
+    pub(super) fn accept_program_follow(
+        &mut self,
+        buffer: EditorBuffer,
+        target: Option<Location>,
+        device: &detection::DeviceKey,
+        ctx: &egui::Context,
+    ) {
+        self.accept_follow(buffer);
+        if let Some(target) = target {
+            self.replay_selected(target, device, ctx);
+        }
+    }
+
     pub(super) fn accept_follow(&mut self, buffer: EditorBuffer) {
+        if let Some(worker) = &self.worker
+            && matches!(worker.action, Action::ReplayDraft(_))
+        {
+            worker.stop.store(true, Ordering::Release);
+        }
         self.whole_tone_backup = None;
         let expired = self
             .recall_confirmation
@@ -597,17 +692,17 @@ impl LiveEditor {
     }
 
     fn admitted(action: Action) -> bool {
-        Self::admitted_on(platform_available(), action)
+        Self::admitted_on(platform_available(), action.native_approval(), action)
     }
 
-    fn admitted_on(available: bool, action: Action) -> bool {
+    fn admitted_on(available: bool, approved: bool, action: Action) -> bool {
         available
-            && (action != Action::ResendWholeTone
-                || WHOLE_TONE_SEND_APPROVED && !hardware_gates::is_locked(Gate::FullBackupRead))
+            && approved
+            && (!action.is_whole_tone_send() || !hardware_gates::is_locked(Gate::FullBackupRead))
             && !hardware_gates::is_locked(Gate::OsDiscovery)
             && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
             && match action {
-                Action::Get => true,
+                Action::Get | Action::Follow(_) => true,
                 Action::Recall(_) => {
                     !hardware_gates::is_locked(Gate::DeviceCheckChannel)
                         && !hardware_gates::is_locked(Gate::FullBackupRead)
@@ -624,11 +719,15 @@ impl LiveEditor {
         #[cfg(test)]
         let available = available
             || self.fake_edit.is_some() && matches!(action, Action::Controls | Action::Undo);
-        Self::admitted_on(available, action)
+        #[cfg(test)]
+        if self.fake_dispatch.is_some() {
+            return Self::admitted_on(true, true, action);
+        }
+        Self::admitted_on(available, action.native_approval(), action)
     }
 
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
-        self.start_job(action, device, ctx, None);
+        self.start_job(action, device, ctx, None, None);
     }
 
     fn start_job(
@@ -637,6 +736,7 @@ impl LiveEditor {
         device: &detection::DeviceKey,
         ctx: &egui::Context,
         recall_confirmation: Option<RecallConfirmation>,
+        replay: Option<Arc<DraftReplay>>,
     ) {
         let admitted = if action == Action::Get {
             self.can_get()
@@ -647,7 +747,7 @@ impl LiveEditor {
         let admitted = admitted
             || self.fake_recall.is_some()
                 && matches!(action, Action::Recall(_))
-                && Self::admitted_on(true, action);
+                && Self::admitted_on(true, action.native_approval(), action);
         // An initial recall reads the playing channel and buffer on the same
         // verified link before it can select anything.
         let fresh_recall = matches!(action, Action::Recall(_)) && recall_confirmation.is_none();
@@ -655,7 +755,7 @@ impl LiveEditor {
             || self.reply_pending.load(Ordering::Acquire)
             || !admitted
             || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
-            || action != Action::Get && !fresh_recall && !self.recall_ready()
+            || !action.is_read() && !fresh_recall && !self.recall_ready()
             || action == Action::Undo && !self.can_undo()
             || matches!(action, Action::Recall(_)) && (self.stage_only || self.has_pending())
         {
@@ -665,12 +765,16 @@ impl LiveEditor {
         let targets = match action {
             Action::Send | Action::Controls => std::mem::take(&mut self.pending.0),
             Action::Recall(_) => Vec::new(),
-            Action::Get | Action::Undo | Action::ResendWholeTone => {
+            Action::Get
+            | Action::Follow(_)
+            | Action::Undo
+            | Action::ResendWholeTone
+            | Action::ReplayDraft(_) => {
                 self.pending.0.clear();
                 Vec::new()
             }
         };
-        if matches!(action, Action::Get | Action::Recall(_)) {
+        if matches!(action, Action::Get | Action::Follow(_) | Action::Recall(_)) {
             self.whole_tone_backup = None;
         }
         let job = Job {
@@ -682,6 +786,7 @@ impl LiveEditor {
             } else {
                 None
             },
+            replay: replay.clone(),
             current: self.session.as_ref().map(|active| active.current.clone()),
             original: self.session.as_ref().map(|active| active.original.clone()),
             targets: targets.clone(),
@@ -701,13 +806,17 @@ impl LiveEditor {
             .fake_edit
             .clone()
             .filter(|_| matches!(action, Action::Controls | Action::Undo));
+        #[cfg(test)]
+        let fake_dispatch = self.fake_dispatch.clone();
         let thread = std::thread::Builder::new()
             .name("podxt-edit-buffer".into())
             .spawn(move || {
                 let run = || platform_edit(&endpoint, &job, &worker_stop);
                 #[cfg(test)]
                 let run = || {
-                    if fake_get {
+                    if let Some(dispatch) = fake_dispatch {
+                        dispatch(&job, &worker_stop)
+                    } else if fake_get {
                         tests::fake_get(&job, &worker_stop)
                     } else if let Some(scenario) = fake_recall {
                         tests::fake_recall(scenario, &job, &worker_stop)
@@ -730,6 +839,8 @@ impl LiveEditor {
                     device: Some(device.clone()),
                     stop,
                     targets,
+                    superseded: false,
+                    replay,
                     thread: Some(thread),
                 });
             }
@@ -760,7 +871,7 @@ impl LiveEditor {
                 self.needs_get = false;
                 let message = match action {
                     Action::Controls => None,
-                    Action::Get => Some(format!(
+                    Action::Get | Action::Follow(_) => Some(format!(
                         "Edit buffer read from {}.",
                         active.current.channel.label()
                     )),
@@ -768,6 +879,7 @@ impl LiveEditor {
                     Action::Recall(slot) => Some(format!("Playing {}.", slot.label())),
                     Action::Send => Some("Edit buffer sent and read back.".into()),
                     Action::ResendWholeTone => Some("Whole tone sent and read back.".into()),
+                    Action::ReplayDraft(_) => Some("Session draft restored and read back.".into()),
                 }
                 .map(Ok);
                 // Keep any queued Undo cancellation visible after Controls completes.
@@ -827,6 +939,83 @@ impl LiveEditor {
         }
     }
 
+    fn replay_selected(
+        &mut self,
+        target: Location,
+        device: &detection::DeviceKey,
+        ctx: &egui::Context,
+    ) {
+        let action = Action::ReplayDraft(target);
+        if self.stage_only
+            || self.has_pending()
+            || !self.admits(action)
+            || self.reply_pending.load(Ordering::Acquire)
+            || !self.recall_ready()
+        {
+            return;
+        }
+        let Some(active) = self
+            .session
+            .as_ref()
+            .filter(|active| active.current.channel == target)
+        else {
+            return;
+        };
+        let Some(payload) = self.draft(target) else {
+            return;
+        };
+        if TonePayload::from_dump(&active.current.tone).as_ref() == Ok(payload) {
+            return;
+        }
+        let Some(backup) = self.replay_backups.get(&target.address()) else {
+            self.message = Some(Err(format!(
+                "Draft retained. Verify a backup for {} before replay.",
+                target.label()
+            )));
+            return;
+        };
+        let replay = Arc::new(DraftReplay {
+            attachment_session: Arc::clone(&self.attachment_session),
+            expected: active.current.clone(),
+            payload: payload.clone(),
+            backup: Arc::clone(backup),
+        });
+        self.start_job(action, device, ctx, None, Some(replay));
+    }
+
+    fn verify_replay_result(
+        &self,
+        replay: &DraftReplay,
+        stopped: bool,
+        result: Result<EditOutcome, String>,
+    ) -> Result<EditorBuffer, String> {
+        let buffer = match result {
+            Ok(EditOutcome::Buffer(buffer)) => buffer,
+            Ok(EditOutcome::Recall(_)) => {
+                return Err("Draft retained. Unexpected replay result.".into());
+            }
+            Err(error) => return Err(format!("Draft retained. {error}")),
+        };
+        let target = replay.backup.slot();
+        if stopped
+            || self.stage_only
+            || self.needs_get
+            || !Arc::ptr_eq(&self.attachment_session, &replay.attachment_session)
+            || self.reply_pending.load(Ordering::Acquire)
+            || !self.session.as_ref().is_some_and(|active| {
+                active.current.channel == target
+                    && active.current.tone == replay.expected.tone
+                    && active.current.packs == replay.expected.packs
+            })
+            || self.draft(target) != Some(&replay.payload)
+            || buffer.channel != target
+            || TonePayload::from_dump(&buffer.tone).as_ref() != Ok(&replay.payload)
+        {
+            return Err("Draft retained. The replay result could not be verified for the current selection.".into());
+        }
+        Ok(buffer)
+    }
+
     fn dispatch_wait(&self, now: Instant) -> Duration {
         self.last_dispatch.map_or(Duration::ZERO, |last| {
             EDIT_INTERVAL.saturating_sub(now.saturating_duration_since(last))
@@ -862,10 +1051,30 @@ impl LiveEditor {
                     return None;
                 }
                 let stopped = worker.stop.load(Ordering::Acquire);
+                let selection = match (&worker.action, &result) {
+                    (Action::Recall(target), Ok(EditOutcome::Recall(EditorRecall::Playing(_))))
+                    | (Action::Follow(target), Ok(EditOutcome::Buffer(_)))
+                        if !stopped && !worker.superseded =>
+                    {
+                        Some(*target)
+                    }
+                    _ => None,
+                };
+                if let Some(replay) = &worker.replay {
+                    let result = self.verify_replay_result(replay, stopped, result);
+                    self.completed(worker.action, result)?;
+                    return self.session.as_ref().map(|active| &active.current);
+                }
                 let verified = self
                     .complete_job(worker.action, device, stopped, result)
                     .is_some();
                 self.finish_queued_undo(device, read_idle, ctx, stopped, verified);
+                if verified
+                    && read_idle
+                    && let Some(target) = selection
+                {
+                    self.replay_selected(target, device, ctx);
+                }
                 return if verified {
                     self.session.as_ref().map(|active| &active.current)
                 } else {
@@ -988,16 +1197,33 @@ impl LiveEditor {
     pub(super) fn can_get(&self) -> bool {
         let available = platform_available();
         #[cfg(test)]
-        let available = available || self.fake_get;
+        let available = available || self.fake_get || self.fake_dispatch.is_some();
         self.worker.is_none()
             && !self.reply_pending.load(Ordering::Acquire)
             && !self.has_pending()
-            && Self::admitted_on(available, Action::Get)
+            && Self::admitted_on(available, true, Action::Get)
     }
 
     pub(super) fn get(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
         if self.can_get() {
             self.start(Action::Get, device, ctx);
+        }
+    }
+
+    pub(super) fn get_after_program(
+        &mut self,
+        target: Location,
+        device: &detection::DeviceKey,
+        ctx: &egui::Context,
+    ) {
+        if self.can_get() {
+            // A replay trigger needs the program target and checked release.
+            let action = if self.admits(Action::ReplayDraft(target)) {
+                Action::Follow(target)
+            } else {
+                Action::Get
+            };
+            self.start(action, device, ctx);
         }
     }
 
@@ -1074,7 +1300,13 @@ impl LiveEditor {
                 .clicked()
                 && let Some(confirmation) = self.take_recall_confirmation(device)
             {
-                self.start_job(Action::Recall(target), device, ui.ctx(), Some(confirmation));
+                self.start_job(
+                    Action::Recall(target),
+                    device,
+                    ui.ctx(),
+                    Some(confirmation),
+                    None,
+                );
             }
         });
     }
@@ -1082,6 +1314,11 @@ impl LiveEditor {
     pub(super) fn set_live(&mut self, on: bool) {
         if !on {
             self.clear_recall_confirmation();
+            if let Some(worker) = &self.worker
+                && matches!(worker.action, Action::ReplayDraft(_))
+            {
+                worker.stop.store(true, Ordering::Release);
+            }
         }
         self.stage_only = !on;
     }
@@ -1299,13 +1536,15 @@ impl LiveEditor {
                 .clicked()
                 && let Some(channel) = channel
             {
+                let attachment_session = Arc::clone(&self.attachment_session);
                 services.request_picker::<PodxtEditor>(
                     ui.ctx(),
                     PickRequest::Folder,
                     move |editor, folder, _| {
                         let Some(folder) = folder else { return };
                         let editor = &mut editor.live.editor;
-                        if editor.busy()
+                        if !Arc::ptr_eq(&editor.attachment_session, &attachment_session)
+                            || editor.busy()
                             || editor.needs_get
                             || !editor
                                 .session
@@ -1315,9 +1554,14 @@ impl LiveEditor {
                             return;
                         }
                         editor.whole_tone_backup = None;
+                        editor.replay_backups.remove(&channel.address());
                         match podxt::verify_tone_backup(&folder, channel) {
                             Ok(backup) => {
                                 editor.message = None;
+                                let backup = Arc::new(backup);
+                                editor
+                                    .replay_backups
+                                    .insert(channel.address(), Arc::clone(&backup));
                                 editor.whole_tone_backup = Some(backup);
                             }
                             Err(error) => editor.message = Some(Err(error)),
