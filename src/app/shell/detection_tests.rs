@@ -201,6 +201,177 @@ fn has_label(shapes: &[egui::epaint::ClippedShape], expected: &str) -> bool {
     shapes.iter().any(|shape| matches(&shape.shape, expected))
 }
 
+// Each request has its own reply so the test can hold a sample while advancing
+// actual Workbench frames through the production background inventory path.
+type InventoryReply = std::sync::mpsc::Sender<Result<(Vec<UsbDevice>, u8), MetadataError>>;
+
+struct HeldInventory {
+    entered: std::sync::mpsc::Sender<InventoryReply>,
+    address: std::cell::Cell<u8>,
+}
+
+impl OsMetadataSource for HeldInventory {
+    fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
+        let (reply, result) = std::sync::mpsc::channel();
+        self.entered.send(reply).expect("report inventory start");
+        let (devices, address) = result
+            .recv_timeout(Duration::from_secs(5))
+            .expect("test did not release inventory")?;
+        self.address.set(address);
+        Ok(devices)
+    }
+
+    fn sound_cards(&self) -> Result<Vec<SoundCard>, MetadataError> {
+        panic!("inventory cannot read sound-card metadata")
+    }
+}
+
+impl PresenceSource for HeldInventory {
+    fn metadata(&self) -> &dyn OsMetadataSource {
+        self
+    }
+
+    fn usb_address(&self, _: &str) -> Option<u8> {
+        Some(self.address.get())
+    }
+}
+
+fn held_inventory_fixture() -> (
+    egui::Context,
+    Workbench,
+    std::sync::mpsc::Receiver<InventoryReply>,
+    Vec<UsbDevice>,
+) {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, true);
+    let devices = source.0.borrow().usb.clone();
+    let (entered, started) = std::sync::mpsc::channel();
+    app.detection = Some(DetectionService::background(Box::new(HeldInventory {
+        entered,
+        address: Default::default(),
+    })));
+    (ctx, app, started, devices)
+}
+
+fn drive_inventory(
+    ctx: &egui::Context,
+    app: &mut Workbench,
+    mut done: impl FnMut(&Workbench) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !done(app) {
+        assert!(Instant::now() < deadline, "inventory result did not arrive");
+        frame(ctx, app, vec![]);
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn delayed_periodic_inventory_repaints_and_dispatches_help_without_another_scan() {
+    let (ctx, mut app, started, devices) = held_inventory_fixture();
+    tick(&ctx, &mut app);
+    let reply = started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let output = frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(!output.shapes.is_empty());
+    assert!(app.help, "normal frame accepted the Help shortcut");
+    assert!(app.inventory_refresh.busy());
+    tick(&ctx, &mut app);
+    assert!(started.try_recv().is_err());
+    assert!(entries(&app).is_empty());
+
+    reply.send(Ok((devices, 10))).unwrap();
+    drive_inventory(&ctx, &mut app, |app| !app.inventory_refresh.busy());
+    assert_eq!(entries(&app)[0].0, "podxt");
+    assert_eq!(entries(&app).len(), 1, "automatic scans do not open HD");
+}
+
+#[test]
+fn confirmed_inventory_supersedes_an_old_snapshot_and_periodic_failure_retries() {
+    let (ctx, mut app, started, devices) = held_inventory_fixture();
+    tick(&ctx, &mut app);
+    let receive = || started.recv_timeout(Duration::from_secs(2)).unwrap();
+    receive().send(Ok((devices.clone(), 10))).unwrap();
+    drive_inventory(&ctx, &mut app, |app| !app.inventory_refresh.busy());
+    let original = entries(&app)[0].2.device.key.attachment.clone();
+
+    tick(&ctx, &mut app);
+    let stale = receive();
+    detection_button(&ctx, &mut app, "detect");
+    detection_button(&ctx, &mut app, "yes");
+    assert!(app.detect_confirmation.is_none());
+    assert!(started.try_recv().is_err());
+
+    // The superseded sample sees an absence. It must never disconnect the
+    // existing session or apply its mode to the next sample.
+    stale.send(Ok((vec![], 0))).unwrap();
+    let mut confirmed = None;
+    drive_inventory(&ctx, &mut app, |app| {
+        assert_eq!(entries(app)[0].2.connection, Connection::Present);
+        assert_eq!(entries(app)[0].2.device.key.attachment, original);
+        confirmed = started.try_recv().ok();
+        confirmed.is_some()
+    });
+    confirmed.unwrap().send(Ok((devices.clone(), 10))).unwrap();
+    drive_inventory(&ctx, &mut app, |app| !app.inventory_refresh.busy());
+    assert_eq!(entries(&app)[0].2.device.key.attachment, original);
+    assert!(entries(&app).iter().any(|entry| entry.0 == "hd500x"));
+
+    tick(&ctx, &mut app);
+    receive()
+        .send(Err(MetadataError::Unreadable("injected inventory".into())))
+        .unwrap();
+    drive_inventory(&ctx, &mut app, |app| !app.inventory_refresh.busy());
+    assert_eq!(entries(&app)[0].2.connection, Connection::Uncertain);
+    assert!(app.detection_status.is_some());
+    assert!(app.next_detection > Instant::now());
+    assert!(started.try_recv().is_err());
+
+    tick(&ctx, &mut app);
+    receive().send(Ok((devices, 11))).unwrap();
+    drive_inventory(&ctx, &mut app, |app| !app.inventory_refresh.busy());
+    let replacement = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    assert_ne!(replacement, original);
+    assert_eq!(replacement.usb_location(), Some(("8-2.1", 11)));
+    assert!(app.detection_status.is_none());
+}
+
+#[test]
+fn quitting_does_not_wait_for_a_passive_inventory_sample() {
+    let (ctx, mut app, started, devices) = held_inventory_fixture();
+    tick(&ctx, &mut app);
+    let reply = started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let modifiers = egui::Modifiers::CTRL;
+    let _ = ctx.run(
+        egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: egui::Key::Q,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        },
+        |ctx| app.render(ctx),
+    );
+    assert!(app.permit_close);
+    assert!(app.inventory_refresh.busy());
+    reply.send(Ok((devices, 10))).unwrap();
+    frame(&ctx, &mut app, vec![]);
+    assert!(entries(&app).is_empty());
+}
+
 #[test]
 fn passive_pod_inventory_stays_visible_without_interfaces_or_access() {
     let (ctx, mut app, source) = fixture();
@@ -599,9 +770,9 @@ fn dismissal_lasts_only_for_the_current_logical_attachment() {
     assert_eq!(entries(&app).len(), 1);
 
     source.finish(parent.clone(), SimulatedGuitar::Silent);
-    app.refresh_guitar(&parent);
+    app.refresh_guitar(&ctx, &parent);
     source.guitar(parent.clone());
-    app.refresh_guitar(&parent);
+    app.refresh_guitar(&ctx, &parent);
     assert_eq!(entries(&app).len(), 2);
     assert_ne!(entries(&app)[1].2.device.key, old_key);
 }
@@ -699,7 +870,7 @@ fn refresh_silence_detaches_guitar_and_keeps_last_verified_identity_as_history()
     tick(&ctx, &mut app);
     let guitar = entries(&app)[1].1;
 
-    app.refresh_guitar(&attachment);
+    app.refresh_guitar(&ctx, &attachment);
     assert_eq!(
         entries(&app)[1].2.device.support,
         DeviceSupport::Refreshing("3.10")
@@ -732,7 +903,7 @@ fn cleanup_failure_suspends_refresh_and_stale_replies_do_not_open_guitar_tabs() 
             .contains("cleanup failed")
     );
     assert!(!pod.device.refresh_guitar);
-    app.refresh_guitar(&old);
+    app.refresh_guitar(&ctx, &old);
     source.guitar(old);
     tick(&ctx, &mut app);
     assert_eq!(entries(&app).len(), 1);
@@ -750,7 +921,7 @@ fn cleanup_failure_suspends_refresh_and_stale_replies_do_not_open_guitar_tabs() 
     tick(&ctx, &mut app);
     assert_eq!(entries(&app).len(), 1);
     source.guitar(new.clone());
-    app.refresh_guitar(&new);
+    app.refresh_guitar(&ctx, &new);
     assert_eq!(entries(&app).len(), 2);
 }
 
@@ -955,7 +1126,7 @@ fn linux_explicit_refresh_can_recover_when_no_return_notice_arrives() {
     tick(&ctx, &mut app);
     assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
     source.guitar(attachment.clone());
-    app.refresh_guitar(&attachment);
+    app.refresh_guitar(&ctx, &attachment);
     assert_eq!(entries(&app)[1].2.connection, Connection::Present);
 
     source.notice(&attachment, SimulatedNotice::Disconnected);
@@ -2712,7 +2883,7 @@ fn replacement_requires_live_verification_but_preserves_dirty_editors_and_local_
     assert!(!app.connections.is_complete(old_guitar_row));
 
     source.guitar(new_parent.clone());
-    app.refresh_guitar(&new_parent);
+    app.refresh_guitar(&ctx, &new_parent);
     let returned = frame(&ctx, &mut app, vec![]);
     assert!(has_label(&returned.shapes, "Reconnected after disconnect"));
     assert!(!has_label(&returned.shapes, "Download"));

@@ -337,6 +337,7 @@ struct Workbench {
     connection_inventory: shell::ConnectionInventory,
     detection: Option<DetectionService>,
     detect_confirmation: Option<DetectConfirmation>,
+    inventory_refresh: detection::InventoryRefresh,
     next_detection: Instant,
     detection_status: Option<String>,
     #[cfg(test)]
