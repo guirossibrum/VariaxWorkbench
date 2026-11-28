@@ -665,16 +665,16 @@ fn save_evidence_does_not_cross_disconnect_with_reused_usb_coordinates() {
 
     let profiles = super::super::registry::DEVICE_PROFILES;
     let state = Rc::new(Cell::new(InventoryState::Ready));
-    service.source = Box::new(UsbFixture(SyntheticSysfs::new(), Rc::clone(&state), None));
-    service.refresh_attachments(profiles).unwrap();
+    let absent = UsbFixture(SyntheticSysfs::new(), Rc::clone(&state), None);
+    service.refresh_attachments(inventory::capture(&absent, profiles).unwrap());
     assert!(!listener.is_current());
     assert!(old.revision() > revision);
     let after_removal = old.revision();
 
     let mut usb = SyntheticSysfs::new();
     usb.add_device("1-1", 0x0e41, 0x4650, "PODxt Live", &[]);
-    service.source = Box::new(UsbFixture(usb, state, None));
-    service.refresh_attachments(profiles).unwrap();
+    let present = UsbFixture(usb, state, None);
+    service.refresh_attachments(inventory::capture(&present, profiles).unwrap());
     let replacement = &service.attachments["1-1"];
     assert_eq!(
         replacement.key.usb_location(),

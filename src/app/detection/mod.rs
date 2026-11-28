@@ -1,5 +1,7 @@
 //! Reconcile cached USB presence and attachment-scoped identity results.
 mod identity;
+mod inventory;
+pub(super) use inventory::InventoryRefresh;
 mod notice;
 #[cfg(feature = "usb")]
 pub(super) use notice::PodxtSaveIngress;
@@ -305,6 +307,7 @@ struct Attachment {
     bridge: Option<Bridge>,
     open_candidate: bool,
     readiness_reason: Option<String>,
+    observed_coordinates: (Option<String>, Option<u8>),
     identity_started: bool,
 }
 
@@ -592,7 +595,7 @@ impl Bridge {
 }
 
 pub(super) struct DetectionService {
-    source: Box<dyn PresenceSource>,
+    source: inventory::Source,
     attachments: BTreeMap<String, Attachment>,
     known: BTreeMap<DeviceKey, DetectedDevice>,
     generation: u64,
@@ -610,14 +613,14 @@ impl DetectionService {
             ) {
                 return None;
             }
-            Some(Self::new(Box::new(CachedUsbPresence(
+            Some(Self::background(Box::new(CachedUsbPresence(
                 variax_workbench::device_probe::LinuxSysfs::new(),
             ))))
         }
         #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
         {
             variax_workbench::macos_usb_available()
-                .then(|| Self::new(Box::new(MacUsbPresence::default())))
+                .then(|| Self::background(Box::new(MacUsbPresence::default())))
         }
         #[cfg(not(any(
             all(target_os = "linux", not(test)),
@@ -628,8 +631,18 @@ impl DetectionService {
         }
     }
 
-    #[cfg(any(target_os = "linux", test, all(target_os = "macos", feature = "usb")))]
+    #[cfg(test)]
     pub fn new(source: Box<dyn PresenceSource>) -> Self {
+        Self::with_source(inventory::Source::InlineFixture(source))
+    }
+
+    #[cfg(any(target_os = "linux", test, all(target_os = "macos", feature = "usb")))]
+    pub fn background(source: Box<dyn PresenceSource + Send>) -> Self {
+        Self::with_source(inventory::Source::background(source))
+    }
+
+    #[cfg(any(target_os = "linux", test, all(target_os = "macos", feature = "usb")))]
+    fn with_source(source: inventory::Source) -> Self {
         Self {
             source,
             attachments: BTreeMap::new(),
@@ -690,6 +703,7 @@ impl DetectionService {
             })
     }
 
+    #[cfg(test)]
     pub fn refresh(
         &mut self,
         scan: Scan,
@@ -698,42 +712,65 @@ impl DetectionService {
         self.refresh_at(scan, profiles, Instant::now())
     }
 
+    #[cfg(test)]
     pub(super) fn refresh_at(
         &mut self,
         scan: Scan,
         profiles: &[DiscoveryProfile],
         now: Instant,
     ) -> Result<Vec<DetectedDevice>, MetadataError> {
-        if let Err(error) = self.refresh_attachments(profiles) {
-            #[cfg(feature = "usb")]
-            for attachment in self.attachments.values() {
-                attachment.podxt_saves.interrupt();
-            }
-            if let Some(worker) = &mut self.worker
-                && worker.job.attachment.registry_id.is_some()
-            {
-                worker.revoke_observation();
-                let key = worker.job.attachment.clone();
-                if let Some(bridge) = self.bridge_mut(&key) {
-                    bridge.running = None;
-                    bridge.status = "PODxt Live USB identity unverified".into();
+        let snapshot = inventory::capture(
+            self.source
+                .inline_fixture()
+                .expect("inline test inventory source"),
+            profiles,
+        );
+        self.apply_inventory(scan, profiles, now, snapshot)
+    }
+
+    fn apply_inventory(
+        &mut self,
+        scan: Scan,
+        profiles: &[DiscoveryProfile],
+        now: Instant,
+        snapshot: inventory::Snapshot,
+    ) -> Result<Vec<DetectedDevice>, MetadataError> {
+        let listed = match snapshot {
+            Ok(listed) => listed,
+            Err(error) => {
+                #[cfg(feature = "usb")]
+                for attachment in self.attachments.values() {
+                    attachment.podxt_saves.interrupt();
                 }
-            } else if let Some(worker) = &mut self.worker
-                && worker.job.kind == JobKind::Listen
-            {
-                worker.revoke_observation();
+                if let Some(worker) = &mut self.worker
+                    && worker.job.attachment.registry_id.is_some()
+                {
+                    worker.revoke_observation();
+                    let key = worker.job.attachment.clone();
+                    if let Some(bridge) = self.bridge_mut(&key) {
+                        bridge.running = None;
+                        bridge.status = "PODxt Live USB identity unverified".into();
+                    }
+                } else if let Some(worker) = &mut self.worker
+                    && worker.job.kind == JobKind::Listen
+                {
+                    worker.revoke_observation();
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
+        self.refresh_attachments(listed);
         #[cfg(test)]
-        if matches!(scan, Scan::Automatic) {
+        if matches!(scan, Scan::Automatic)
+            && let Some(source) = self.source.inline_fixture()
+        {
             let batches: Vec<_> = self
                 .attachments
                 .values()
                 .map(|attachment| {
                     (
                         attachment.key.clone(),
-                        self.source.simulated_notices(&attachment.key),
+                        source.simulated_notices(&attachment.key),
                     )
                 })
                 .collect();
@@ -749,34 +786,21 @@ impl DetectionService {
         Ok(self.known.values().cloned().collect())
     }
 
-    fn refresh_attachments(&mut self, profiles: &[DiscoveryProfile]) -> Result<(), MetadataError> {
-        let mut listed = BTreeMap::new();
-        for device in self.source.usb_devices()? {
-            if listed.insert(device.sysfs_name.clone(), device).is_some() {
-                return Err(MetadataError::Unreadable(
-                    "the USB device list (duplicate attachment path)".into(),
-                ));
-            }
-        }
-
+    fn refresh_attachments(&mut self, listed: BTreeMap<String, inventory::Observation>) {
         // An absence or changed attachment identity starts a new generation.
         // Published interface availability is independent of that identity.
         let mut previous = std::mem::take(&mut self.attachments);
-        for (path, usb) in listed {
+        for (path, observation) in listed {
+            let inventory::Observation {
+                usb,
+                automatic,
+                address,
+                registry_id,
+                open_candidate,
+                readiness_reason,
+                observed_coordinates,
+            } = observation;
             let id = Self::usb_id(&usb);
-            let automatic = profiles.iter().any(
-                |p| matches!(p.discovery, DeviceDiscovery::Automatic(automatic) if automatic == id),
-            );
-            let address = if automatic {
-                self.source.usb_address(&path)
-            } else {
-                None
-            };
-            let registry_id = self.source.usb_registry_id(&path);
-            let open_candidate = self.source.usb_open_candidate(&path);
-            let readiness_reason = self.source.usb_readiness_reason(&path).or_else(|| {
-                (!open_candidate).then(|| "Guitar: PODxt Live USB interfaces unavailable".into())
-            });
             let can_identify = self.identify.is_some() || cfg!(test);
             let attachment = match previous.remove(&path) {
                 Some(mut existing)
@@ -807,6 +831,7 @@ impl DetectionService {
                         usb,
                         open_candidate,
                         readiness_reason,
+                        observed_coordinates,
                         ..existing
                     }
                 }
@@ -834,6 +859,7 @@ impl DetectionService {
                         bridge: automatic.then(|| Bridge::new(open_candidate && can_identify)),
                         open_candidate,
                         readiness_reason,
+                        observed_coordinates,
                         identity_started: false,
                     }
                 }
@@ -874,7 +900,6 @@ impl DetectionService {
                 worker.cancel();
             }
         }
-        Ok(())
     }
 
     #[cfg(test)]
@@ -1145,7 +1170,10 @@ impl DetectionService {
         let Some(identify) = self.identify else {
             #[cfg(test)]
             if let Some(job) = queued
-                && let Some(outcome) = self.source.simulated_identity(&job)
+                && let Some(outcome) = self
+                    .source
+                    .inline_fixture()
+                    .and_then(|source| source.simulated_identity(&job))
             {
                 self.note_identity_started(&job);
                 if job.attachment.registry_id.is_some() {
@@ -1325,7 +1353,7 @@ impl DetectionService {
                         support,
                         guitar_status: status,
                         mac_identity_details: mac.then(|| {
-                            let (path, address) = self.source.observed_usb_coordinates(&attachment.key.path);
+                            let (path, address) = &attachment.observed_coordinates;
                             let path = path.as_deref().unwrap_or("unknown");
                             let address = address.map_or_else(|| "unknown".into(), |value| value.to_string());
                             let readiness = if attachment.open_candidate {

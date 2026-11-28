@@ -39,22 +39,47 @@ impl Workbench {
             }
             return;
         }
-        if Instant::now() >= self.next_detection {
-            self.refresh_detection(Scan::Automatic);
+        if !self.inventory_refresh.busy() && Instant::now() >= self.next_detection {
+            self.request_detection(ctx, Scan::Automatic);
+        } else {
+            self.poll_inventory(ctx);
         }
-        ctx.request_repaint_after(
-            self.next_detection
-                .saturating_duration_since(Instant::now()),
-        );
     }
 
-    fn refresh_detection(&mut self, scan: Scan) {
-        self.next_detection = Instant::now() + PRESENCE_INTERVAL;
-        let Some(service) = &mut self.detection else {
-            return;
-        };
+    fn request_detection(&mut self, ctx: &egui::Context, scan: Scan) {
+        self.inventory_refresh.request(scan);
         self.connections.begin_detection();
-        match service.refresh(scan, registry::DEVICE_PROFILES) {
+        self.poll_inventory(ctx);
+    }
+
+    fn poll_inventory(&mut self, ctx: &egui::Context) {
+        if let Some(service) = &mut self.detection
+            && let Some((scan, result)) = self
+                .inventory_refresh
+                .poll(service, registry::DEVICE_PROFILES)
+        {
+            self.finish_detection(scan, result);
+        }
+        self.schedule_detection_repaint(ctx);
+    }
+
+    fn schedule_detection_repaint(&self, ctx: &egui::Context) {
+        let delay = if self.inventory_refresh.busy() {
+            Duration::from_millis(25)
+        } else {
+            self.next_detection
+                .saturating_duration_since(Instant::now())
+        };
+        ctx.request_repaint_after(delay);
+    }
+
+    fn finish_detection(
+        &mut self,
+        scan: Scan,
+        result: Result<Vec<super::super::detection::DetectedDevice>, device_probe::MetadataError>,
+    ) {
+        self.next_detection = Instant::now() + PRESENCE_INTERVAL;
+        match result {
             Ok(devices) => {
                 self.connections.detection(connections::Detection::Complete);
                 self.reconcile_connection_inventory(&devices);
@@ -111,6 +136,7 @@ impl Workbench {
             .as_mut()
             .and_then(|service| service.report_guitar_disconnect(&key, registry::DEVICE_PROFILES))
         {
+            self.inventory_refresh.invalidate();
             self.reconcile_connection_inventory(&devices);
             self.detection_status = self
                 .tabs
@@ -130,7 +156,7 @@ impl Workbench {
         response.clicked()
     }
 
-    pub(super) fn refresh_guitar(&mut self, attachment: &AttachmentKey) {
+    pub(super) fn refresh_guitar(&mut self, ctx: &egui::Context, attachment: &AttachmentKey) {
         let Some(service) = &mut self.detection else {
             return;
         };
@@ -140,7 +166,7 @@ impl Workbench {
                 starting: true,
             });
         } else if service.queue_guitar_refresh(attachment, false) {
-            self.refresh_detection(Scan::Automatic);
+            self.request_detection(ctx, Scan::Automatic);
         }
     }
 
@@ -255,10 +281,10 @@ impl Workbench {
                     .as_mut()
                     .is_some_and(|service| service.queue_guitar_refresh(attachment, true))
                 {
-                    self.refresh_detection(Scan::Automatic);
+                    self.request_detection(ctx, Scan::Automatic);
                 }
             } else {
-                self.refresh_detection(Scan::Confirmed);
+                self.request_detection(ctx, Scan::Confirmed);
             }
         } else {
             self.detect_confirmation = Some(match confirmation {

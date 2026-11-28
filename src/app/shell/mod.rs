@@ -75,6 +75,7 @@ impl Workbench {
             connection_inventory: ConnectionInventory::default(),
             detection: DetectionService::platform(),
             detect_confirmation: None,
+            inventory_refresh: Default::default(),
             next_detection: Instant::now(),
             detection_status: None,
             #[cfg(test)]
@@ -343,6 +344,7 @@ impl Workbench {
             return;
         };
         if matches!(request, CloseRequest::Quit { .. }) {
+            self.inventory_refresh.discard();
             self.cancel_full_backup();
             let identity_busy = self
                 .detection
@@ -863,7 +865,7 @@ impl Workbench {
                     .galley(caption_pos, caption_galley, theme::MUTED);
                 ui.expand_to_include_rect(egui::Rect::from_min_size(caption_pos, caption_size));
                 if let Some(attachment) = guitar_refresh {
-                    self.refresh_guitar(&attachment);
+                    self.refresh_guitar(ui.ctx(), &attachment);
                 }
             });
         let closing = self.close_blocks_active_editor();
@@ -1175,7 +1177,7 @@ impl Workbench {
                         status_line(ui, &status, theme::MUTED);
                     }
                     if self.retry_guitar_button(ui, true) {
-                        self.refresh_guitar(&attachment);
+                        self.refresh_guitar(ui.ctx(), &attachment);
                     }
                 });
             });
