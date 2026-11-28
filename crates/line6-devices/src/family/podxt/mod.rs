@@ -24,8 +24,9 @@ mod live_edit;
 mod live_read;
 mod live_settings;
 pub use live_edit::{
-    EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buffer,
-    get_editor_buffer_tracking_reply, playing_channel, recall_editor_channel,
+    EditorBuffer, EditorEdit, EditorRecall, RecallConfirmation, edit_editor_buffer,
+    get_editor_buffer, get_editor_buffer_tracking_reply, playing_channel, recall_editor_channel,
+    recall_live_channel,
 };
 pub use live_read::{
     ReadCommand, ReadUpdate, controller_notification, follow_action, follow_window,

@@ -415,6 +415,10 @@ impl PodxtEditor {
         ui.scope(|ui| {
             ui.set_style(theme::style());
             self.stage_toolbar(ui, services);
+            #[cfg(feature = "usb")]
+            if self.stage_is_current() {
+                self.live.recall_controls(ui);
+            }
             let selected = self.pod_selected.and_then(|index| {
                 self.pod_library
                     .tone(index)

@@ -329,11 +329,11 @@ fn with_platform_link<T>(
 }
 
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
-fn with_download_link(
+fn with_verified_platform_link<T>(
     device: &detection::DeviceKey,
     rig: &line6_devices::device_lock::DeviceLock,
-    run: RunOnLink<'_, ()>,
-) -> Result<(), String> {
+    run: RunOnLink<'_, T>,
+) -> Result<T, String> {
     let (path, address) = device
         .attachment
         .usb_location()
@@ -386,7 +386,7 @@ fn platform_read(
         },
         |rig, run| {
             if acquired.is_some() {
-                with_download_link(device, rig, run)
+                with_verified_platform_link(device, rig, run)
             } else {
                 with_platform_link(device, rig, run)
             }
@@ -685,6 +685,7 @@ impl LivePanel {
 
     fn poll_follow(&mut self, ctx: &egui::Context) {
         let eligible = self.live_editing
+            && !self.editor.awaiting_recall_confirmation()
             && self.device_ready()
             && !self.busy()
             && (self.startup.is_none()
@@ -925,6 +926,27 @@ impl LivePanel {
             self.message = None;
             self.follow.pause();
             self.editor.recall(slot, device, ctx);
+        }
+    }
+
+    pub(super) fn recall_controls(&mut self, ui: &mut egui::Ui) {
+        if !self.live_editing || !self.device_ready() {
+            return;
+        }
+        let idle = !self.busy();
+        if self.editor.needs_refresh()
+            && ui
+                .add_enabled(
+                    idle && Self::admitted(ReadCommand::Current),
+                    egui::Button::new("Refresh playing tone"),
+                )
+                .clicked()
+        {
+            self.message = None;
+            self.refresh_current(ui.ctx());
+        }
+        if let Some(device) = &self.device {
+            self.editor.show_recall_confirmation(ui, device, idle);
         }
     }
 

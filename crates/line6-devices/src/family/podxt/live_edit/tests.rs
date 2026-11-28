@@ -450,6 +450,170 @@ fn librarian_recall_refuses_edited_tones_and_verified_recall_only_changes_progra
     session.link.assert_finished();
 }
 
+fn live_recall(
+    script: Script,
+    target: Location,
+    consent: Option<&RecallConfirmation>,
+    stopped: impl Fn() -> bool,
+) -> Result<EditorRecall, String> {
+    let mut log = Quiet;
+    let mut session = Session::new(
+        Fake::from_bytes(Path::PodxtMidi, script),
+        &AllowAll,
+        &mut log,
+    );
+    let result = recall_live_channel(&mut session, target, consent, stopped);
+    session.link.assert_finished();
+    result
+}
+
+fn recall_consent(
+    playing: &EditorBuffer,
+    target: Location,
+    saved: EditBuffer,
+) -> RecallConfirmation {
+    let mut script = begin(&playing.tone);
+    script.extend([
+        reply(PodxtRequest::Stored(playing.channel), saved.raw),
+        packs(4),
+        channel(17),
+    ]);
+    let EditorRecall::ConfirmationRequired(consent) =
+        live_recall(script, target, None, || false).unwrap()
+    else {
+        panic!("the playing difference requires a choice");
+    };
+    assert_eq!(consent.target(), target);
+    assert_eq!(consent.playing().tone, playing.tone);
+    consent
+}
+
+#[test]
+fn live_recall_ignores_proven_live_state_and_name_padding() {
+    let mut playing = buffer(&[(13, 42), (7, 0), (17, 86)]);
+    let saved = frame(&[(13, 42), (7, 127), (17, 114)]);
+    playing.tone.raw[17..23].fill(b' ');
+    let target = Location::tone_from_label("1B").unwrap();
+    let target_tone = frame(&[(13, 77)]);
+    let mut script = begin(&playing.tone);
+    script.extend([
+        reply(PodxtRequest::Stored(playing.channel), saved.raw),
+        reply(PodxtRequest::Stored(target), target_tone.raw.clone()),
+        packs(4),
+        dump(&playing.tone),
+        channel(17),
+        (vec![0xc0, 1], vec![]),
+        dump(&target_tone),
+        channel(1),
+    ]);
+    let EditorRecall::Playing(buffer) = live_recall(script, target, None, || false).unwrap() else {
+        panic!("equivalent playing tone should allow recall");
+    };
+    assert_eq!(buffer.channel, target);
+    assert_eq!(buffer.tone, target_tone);
+}
+
+#[test]
+fn live_recall_preserves_drive_link_data_and_opaque_bytes_until_confirmed() {
+    let playing = buffer(&[(13, 42)]);
+    let target = Location::tone_from_label("1B").unwrap();
+    let saved_target = frame(&[(13, 77)]);
+    let mut opaque_difference = playing.tone.clone();
+    opaque_difference.raw[23] = 1;
+    for saved in [
+        frame(&[(13, 41)]),
+        frame(&[(13, 42), (120, 63)]),
+        opaque_difference,
+    ] {
+        let consent = recall_consent(&playing, target, saved);
+        let mut script = begin(&playing.tone);
+        script.extend([
+            reply(PodxtRequest::Stored(target), saved_target.raw.clone()),
+            packs(4),
+            dump(&playing.tone),
+            channel(17),
+            (vec![0xc0, 1], vec![]),
+            dump(&saved_target),
+            channel(1),
+        ]);
+        assert!(matches!(
+            live_recall(script, target, Some(&consent), || false).unwrap(),
+            EditorRecall::Playing(buffer) if buffer.channel == target && buffer.tone == saved_target
+        ));
+    }
+}
+
+#[test]
+fn live_recall_confirmation_expires_for_another_target_or_a_changed_buffer() {
+    let playing = buffer(&[(13, 42)]);
+    let target = Location::tone_from_label("1B").unwrap();
+    let consent = recall_consent(&playing, target, frame(&[(13, 41)]));
+    let changed = frame(&[(13, 43)]);
+    let other = Location::tone_from_label("1C").unwrap();
+    for (destination, initial, reread) in [
+        (other, &playing.tone, None),
+        (target, &changed, None),
+        (target, &playing.tone, Some(&changed)),
+    ] {
+        let mut script = begin(initial);
+        if reread.is_some() {
+            script.push(reply(PodxtRequest::Stored(target), frame(&[(13, 77)]).raw));
+        }
+        script.push(packs(4));
+        if let Some(tone) = reread {
+            script.push(dump(tone));
+        }
+        script.push(channel(17));
+        assert!(matches!(
+            live_recall(script, destination, Some(&consent), || false).unwrap(),
+            EditorRecall::ConfirmationExpired(buffer) if &buffer.tone == reread.unwrap_or(initial)
+        ));
+    }
+    let mut script = vec![identity([0, 3, 0, 1]), channel(18), dump(&playing.tone)];
+    script.extend([packs(4), channel(18)]);
+    assert!(matches!(
+        live_recall(script, target, Some(&consent), || false).unwrap(),
+        EditorRecall::ConfirmationExpired(buffer) if buffer.channel.index() == 18
+    ));
+    assert!(
+        live_recall(Vec::new(), target, Some(&consent), || true)
+            .unwrap_err()
+            .contains("cancelled")
+    );
+}
+
+#[test]
+fn live_recall_requires_the_addressed_target_and_checks_playing_readback() {
+    let before = buffer(&[(13, 42)]);
+    let target = Location::tone_from_label("1B").unwrap();
+    let mut script = begin(&before.tone);
+    script.push(reply(
+        PodxtRequest::Stored(before.channel),
+        before.tone.raw.clone(),
+    ));
+    let mut missing = script.clone();
+    missing.push((PodxtRequest::Stored(target).bytes(), vec![]));
+    assert!(
+        live_recall(missing, target, None, || false)
+            .unwrap_err()
+            .contains("No dump for stored tone 1B")
+    );
+    script.extend([
+        reply(PodxtRequest::Stored(target), frame(&[(13, 77)]).raw),
+        packs(4),
+        dump(&before.tone),
+        channel(17),
+        (vec![0xc0, 1], vec![]),
+        dump(&before.tone),
+        channel(1),
+    ]);
+    assert!(
+        live_recall(script, target, None, || false)
+            .unwrap_err()
+            .contains("channel switch could not be verified")
+    );
+}
+
 fn addressed_reply(tone: &EditBuffer, split_marker: bool) -> Vec<Vec<u8>> {
     let mut packets = crate::session::testing::packets(&tone.raw[..EDIT_BUFFER_LEN - 1]);
     let tail = vec![0xf7, 0xf0, 0, 1, 0x0c, 3, 0x72];
