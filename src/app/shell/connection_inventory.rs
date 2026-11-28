@@ -2,7 +2,7 @@
 use super::super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
 use super::tabs::{Connection, PODXT_SYNC_RESOURCE, SyncAdmission, SyncUpdate};
 use super::{Workbench, card_icon, egui, registry};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use variax_workbench::ui::connections::{
     Action, Attachment, Connections, Device, Read, Verification,
 };
@@ -12,6 +12,7 @@ type RowKey = (String, &'static str);
 struct Row {
     attachment: Attachment,
     current: Option<DeviceKey>,
+    startup: bool,
     sync: Sync,
 }
 
@@ -47,12 +48,26 @@ impl Workbench {
             };
             (device.key.clone(), (name, verification(device)))
         }));
-        self.connection_inventory
-            .reconcile(&mut self.connections, devices);
+        self.connection_inventory.reconcile(
+            &mut self.connections,
+            devices,
+            self.startup_connection,
+        );
     }
 
     pub(super) fn poll_connection_sync(&mut self, ctx: &egui::Context) {
         let allow_start = !self.has_prompt() && !self.permit_close;
+        // Keep the relay's startup read ahead of its guitar sweep. The
+        // workers still acquire the existing rig lock before opening a link.
+        let relays_syncing: BTreeSet<_> = self
+            .connection_inventory
+            .rows
+            .values()
+            .filter(|row| matches!(row.sync, Sync::Pending | Sync::Running(_)))
+            .filter_map(|row| row.current.as_ref())
+            .filter(|key| key.family_id == "podxt" && self.verified_connection_tab(key).is_some())
+            .cloned()
+            .collect();
         for row in self.connection_inventory.rows.values_mut() {
             let Some(key) = &row.current else {
                 continue;
@@ -91,9 +106,19 @@ impl Workbench {
             if !verified || !allow_start || !matches!(row.sync, Sync::Pending | Sync::Approved) {
                 continue;
             }
+            if row.startup
+                && key
+                    .podxt_upstream()
+                    .is_some_and(|parent| relays_syncing.contains(&parent))
+            {
+                self.connections
+                    .waiting_for_resource(row.attachment, PODXT_SYNC_RESOURCE);
+                ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                continue;
+            }
             match entry
                 .editor
-                .connection_sync_admission(matches!(row.sync, Sync::Approved))
+                .connection_sync_admission(row.startup || matches!(row.sync, Sync::Approved))
             {
                 SyncAdmission::Busy => {
                     self.connections.waiting_for_editor(row.attachment);
@@ -130,6 +155,28 @@ impl Workbench {
                 }
             }
         }
+    }
+
+    fn verified_connection_tab(&self, key: &DeviceKey) -> Option<super::TabId> {
+        self.tabs.entries.iter().find_map(|entry| {
+            let device = entry.device.as_ref()?;
+            (device.device.key == *key
+                && device.connection == Connection::Present
+                && matches!(device.device.support, DeviceSupport::Verified(_)))
+            .then_some(entry.id)
+        })
+    }
+
+    pub(super) fn completed_connection_tab(&self, attachment: Attachment) -> Option<super::TabId> {
+        if !self.connections.is_complete(attachment) {
+            return None;
+        }
+        let row = self
+            .connection_inventory
+            .rows
+            .values()
+            .find(|row| row.attachment == attachment)?;
+        self.verified_connection_tab(row.current.as_ref()?)
     }
 
     pub(super) fn skip_startup_sync(&mut self) {
@@ -172,7 +219,10 @@ impl Workbench {
             Action::AllowDownload(_) if matches!(row.sync, Sync::Consent) => {
                 row.sync = Sync::Approved;
             }
-            Action::SkipDownload(_) if matches!(row.sync, Sync::Consent) => {
+            Action::SkipDownload(_)
+                if matches!(row.sync, Sync::Consent)
+                    || row.startup && matches!(row.sync, Sync::Pending) =>
+            {
                 self.connections.skip(attachment, "Download skipped");
                 row.sync = Sync::Skipped;
             }
@@ -224,6 +274,7 @@ impl ConnectionInventory {
         &mut self,
         connections: &mut Connections,
         devices: BTreeMap<DeviceKey, (&'static str, Verification)>,
+        startup: bool,
     ) {
         for row in self.rows.values_mut() {
             if row
@@ -241,26 +292,34 @@ impl ConnectionInventory {
             .into_iter()
             .partition(|(key, _)| key.podxt_upstream().is_none());
         for (key, (name, verification)) in roots.into_iter().chain(linked) {
-            let upstream = if let Some(parent) = key.podxt_upstream() {
-                let Some(row) = self
+            let logical_row = row_key(&key);
+            let (upstream, automatic) = if let Some(parent) = key.podxt_upstream() {
+                let Some(relay) = self
                     .rows
                     .get(&row_key(&parent))
                     .filter(|row| row.current.as_ref() == Some(&parent))
                 else {
                     continue;
                 };
-                Some(row.attachment)
+                // The first guitar may verify after the user opens the
+                // completed relay's editor. A replacement guitar already
+                // has a row, and a new relay has its own startup decision.
+                let first_startup_guitar = connections.startup_in_background()
+                    && relay.startup
+                    && !self.rows.contains_key(&logical_row);
+                (Some(relay.attachment), startup || first_startup_guitar)
             } else {
-                None
+                (None, startup)
             };
 
             let next_device = self.rows.len() as u64;
-            let row = self.rows.entry(row_key(&key)).or_insert(Row {
+            let row = self.rows.entry(logical_row).or_insert(Row {
                 attachment: Attachment {
                     device: next_device,
                     generation: 0,
                 },
                 current: None,
+                startup: automatic,
                 sync: Sync::Pending,
             });
             if row.current.as_ref() != Some(&key) {
@@ -275,6 +334,7 @@ impl ConnectionInventory {
                     },
                 );
                 row.current = Some(key);
+                row.startup = automatic;
                 row.sync = Sync::Pending;
             }
             if !matches!(verification, Verification::Verified) && !matches!(row.sync, Sync::Skipped)

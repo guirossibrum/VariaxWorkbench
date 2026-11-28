@@ -1907,6 +1907,7 @@ fn unsupported_only_startup_keeps_no_supported_device_summary() {
 struct FakeSync {
     starts: usize,
     cancellations: usize,
+    gain: u8,
     update: Option<tabs::SyncUpdate>,
 }
 
@@ -1917,9 +1918,15 @@ struct SyncEditor {
 }
 
 impl FamilyTab for SyncEditor {
-    fn show(&mut self, _: &mut egui::Ui, _: &mut EditorServices<'_>) {}
+    fn show(&mut self, ui: &mut egui::Ui, _: &mut EditorServices<'_>) {
+        let mut state = self.state.borrow_mut();
+        if ui.button("Increase test gain").clicked() {
+            state.gain += 1;
+        }
+        ui.label(format!("Test gain {}", state.gain));
+    }
     fn dirty(&self) -> bool {
-        false
+        self.state.borrow().gain != 0
     }
     fn close_prompt(&mut self, _: &egui::Context, _: &mut EditorServices<'_>) {}
     fn status(&self) -> (&str, Option<&str>) {
@@ -1957,7 +1964,7 @@ impl FamilyTab for SyncEditor {
 }
 
 #[test]
-fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_continues() {
+fn startup_sync_queues_the_guitar_until_checked_release_while_independent_work_continues() {
     use tabs::SyncUpdate::{Finished, Reading, WaitingForRig};
 
     let (ctx, mut app, source) = fixture();
@@ -1993,7 +2000,8 @@ fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_cont
     app.connections = Default::default();
     tick(&ctx, &mut app);
     let window = frame(&ctx, &mut app, vec![]);
-    assert!(has_label(&window.shapes, "Temporarily switch presets?"));
+    assert!(!has_label(&window.shapes, "Temporarily switch presets?"));
+    assert!(has_label(&window.shapes, "Skip"));
     assert_eq!(guitar.borrow().starts, 0);
     assert_eq!(pod.borrow().starts, 1);
     assert_eq!(other.borrow().starts, 1);
@@ -2001,7 +2009,6 @@ fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_cont
     let guitar_attachment = app
         .connection_inventory
         .attachment_for_test("8-2.1", "variax");
-    app.connection_sync_action(connections::Action::AllowDownload(guitar_attachment), &ctx);
     pod.borrow_mut().update = Some(Reading(127));
     other.borrow_mut().update = Some(Reading(17));
     let overlapping = frame(&ctx, &mut app, vec![]);
@@ -2015,19 +2022,24 @@ fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_cont
     // Reporting the last entry is still in progress. Checked release is the
     // separate success event and the queued transport can then acquire.
     pod.borrow_mut().update = Some(Reading(128));
-    guitar.borrow_mut().update = Some(WaitingForRig);
     other.borrow_mut().update = Some(Reading(41));
     let finishing = frame(&ctx, &mut app, vec![]);
     assert!(has_label(&finishing.shapes, "Model Sync 128 of 128"));
     assert!(!has_label(&finishing.shapes, "Model Sync Complete"));
+    assert_eq!(guitar.borrow().starts, 0);
     assert!(has_label(
         &finishing.shapes,
         "Waiting to sync · the PODxt Live connection"
     ));
 
     pod.borrow_mut().update = Some(Finished(Ok(())));
-    guitar.borrow_mut().update = Some(Reading(19));
     other.borrow_mut().update = Some(Finished(Err("Partial read".into())));
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 1);
+    guitar.borrow_mut().update = Some(WaitingForRig);
+    frame(&ctx, &mut app, vec![]);
+    guitar.borrow_mut().update = Some(Reading(19));
     let partial = frame(&ctx, &mut app, vec![]);
     assert!(has_label(&partial.shapes, "Model Sync Complete"));
     assert!(has_label(&partial.shapes, "Model Sync 19 of 60"));
@@ -2059,7 +2071,7 @@ fn runtime_sync_waits_for_consent_and_shared_release_while_independent_work_cont
     assert!(has_label(&cancelled.shapes, "Download cancelled."));
 }
 
-fn click_startup_label(ctx: &egui::Context, app: &mut Workbench, label: &str) -> egui::FullOutput {
+fn click_sync_label(ctx: &egui::Context, app: &mut Workbench, label: &str) -> egui::FullOutput {
     fn position(shape: &egui::Shape, label: &str) -> Option<Pos2> {
         match shape {
             egui::Shape::Text(text) if text.galley.text() == label => {
@@ -2121,13 +2133,9 @@ fn launch_splash_is_first_then_returns_to_the_movable_popup_after_reconnect() {
     });
     source.finish(old.clone(), SimulatedGuitar::Silent);
     tick(&ctx, &mut app);
-    let consent = frame(&ctx, &mut app, vec![]);
-    assert!(has_label(&consent.shapes, "Temporarily switch presets?"));
-    assert!(!has_label(&consent.shapes, "Home"));
-    assert_eq!(pod.borrow().starts, 0);
-
-    click_startup_label(&ctx, &mut app, "Download");
-    frame(&ctx, &mut app, vec![]);
+    let syncing = frame(&ctx, &mut app, vec![]);
+    assert!(!has_label(&syncing.shapes, "Temporarily switch presets?"));
+    assert!(!has_label(&syncing.shapes, "Home"));
     assert_eq!(pod.borrow().starts, 1);
     pod.borrow_mut().update = Some(tabs::SyncUpdate::Reading(29));
     let progress = frame(&ctx, &mut app, vec![]);
@@ -2142,14 +2150,12 @@ fn launch_splash_is_first_then_returns_to_the_movable_popup_after_reconnect() {
     assert!(has_label(&failed.shapes, "Retry"));
     assert!(has_label(&failed.shapes, "Edit offline"));
     assert!(!has_label(&failed.shapes, "Home"));
-    click_startup_label(&ctx, &mut app, "Retry");
+    click_sync_label(&ctx, &mut app, "Retry");
     frame(&ctx, &mut app, vec![]);
     assert!(app.startup_connection);
-    click_startup_label(&ctx, &mut app, "Download");
-    frame(&ctx, &mut app, vec![]);
     assert_eq!(pod.borrow().starts, 2);
 
-    let entry_frame = click_startup_label(&ctx, &mut app, "Edit offline");
+    let entry_frame = click_sync_label(&ctx, &mut app, "Edit offline");
     assert!(!has_label(&entry_frame.shapes, "Home"));
     assert_eq!(pod.borrow().cancellations, 1);
     let home = frame(&ctx, &mut app, vec![]);
@@ -2192,4 +2198,273 @@ fn launch_splash_is_first_then_returns_to_the_movable_popup_after_reconnect() {
         "Earlier Variax download on USB 8-2.1: USB release could not be verified."
     ));
     assert!(has_label(&diagnostic.shapes, "PODxt Live Connected"));
+}
+
+struct StartupRig {
+    ctx: egui::Context,
+    app: Workbench,
+    source: FakePresence,
+    pod: Rc<RefCell<FakeSync>>,
+    guitar: Rc<RefCell<FakeSync>>,
+}
+
+fn startup_rig_with_fake_downloads() -> StartupRig {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    source.guitar(app.detection.as_ref().unwrap().attachment_key("8-2.1"));
+    tick(&ctx, &mut app);
+    let pod = Rc::new(RefCell::new(FakeSync::default()));
+    let guitar = Rc::new(RefCell::new(FakeSync::default()));
+    for entry in &mut app.tabs.entries {
+        let is_guitar = entry.family.info().id == "variax";
+        entry.editor = Box::new(SyncEditor {
+            state: if is_guitar { &guitar } else { &pod }.clone(),
+            total: if is_guitar { 60 } else { 128 }.try_into().unwrap(),
+            consent: is_guitar,
+        });
+    }
+    app.startup_connection = true;
+    app.connection_inventory = Default::default();
+    app.connections = Default::default();
+    tick(&ctx, &mut app);
+    StartupRig {
+        ctx,
+        app,
+        source,
+        pod,
+        guitar,
+    }
+}
+
+#[test]
+fn completed_startup_card_opens_its_editor_and_keeps_background_sync_and_edits() {
+    use tabs::SyncUpdate::{Finished, Reading};
+    let StartupRig {
+        ctx,
+        mut app,
+        pod,
+        guitar,
+        ..
+    } = startup_rig_with_fake_downloads();
+    let pod_tab = entries(&app)[0].1;
+    pod.borrow_mut().update = Some(Finished(Ok(())));
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 1);
+    guitar.borrow_mut().update = Some(Reading(19));
+    click_sync_label(&ctx, &mut app, "PODxt Live Connected");
+
+    assert!(!app.startup_connection);
+    assert_eq!(app.tabs.active, Some(pod_tab));
+    frame(&ctx, &mut app, vec![]);
+    let workspace = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&workspace.shapes, "Home"));
+    assert!(has_label(&workspace.shapes, "Model Sync 19 of 60"));
+    assert_eq!(guitar.borrow().cancellations, 0);
+
+    click_sync_label(&ctx, &mut app, "Hide progress");
+    let hidden = frame(&ctx, &mut app, vec![]);
+    assert!(!has_label(&hidden.shapes, "Device connections"));
+    click_sync_label(&ctx, &mut app, "Increase test gain");
+    assert_eq!(pod.borrow().gain, 1);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert_eq!(guitar.borrow().cancellations, 0);
+
+    guitar.borrow_mut().update = Some(Reading(31));
+    click_sync_label(&ctx, &mut app, "Show sync progress");
+    let visible = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&visible.shapes, "Model Sync 31 of 60"));
+    assert!(has_label(&visible.shapes, "Test gain 1"));
+
+    guitar.borrow_mut().update = Some(Finished(Ok(())));
+    let completed = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&completed.shapes, "Model Sync Complete"));
+    assert!(!has_label(&completed.shapes, "Cancel download"));
+    assert_eq!(app.tabs.active, Some(pod_tab));
+    assert_eq!(pod.borrow().gain, 1);
+    for read in [&pod, &guitar] {
+        assert_eq!(read.borrow().starts, 1);
+        assert_eq!(read.borrow().cancellations, 0);
+    }
+}
+
+#[test]
+fn queued_startup_cancel_can_retry_and_disconnected_completed_card_is_rejected() {
+    use tabs::SyncUpdate::Finished;
+    let StartupRig {
+        ctx,
+        mut app,
+        source,
+        pod,
+        guitar,
+    } = startup_rig_with_fake_downloads();
+    let pod_attachment = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "podxt");
+    let guitar_attachment = app
+        .connection_inventory
+        .attachment_for_test("8-2.1", "variax");
+    // The POD also exposes Cancel. Select the guitar's queue action explicitly.
+    app.connection_sync_action(connections::Action::CancelDownload(guitar_attachment), &ctx);
+    let cancelled = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&cancelled.shapes, "Download cancelled."));
+    click_sync_label(&ctx, &mut app, "Retry");
+    assert_eq!(guitar.borrow().starts, 0);
+    pod.borrow_mut().update = Some(Finished(Ok(())));
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 1);
+
+    source.usb(false, false);
+    guitar.borrow_mut().update = Some(Finished(Ok(())));
+    tick(&ctx, &mut app);
+    let lost = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&lost.shapes, "Disconnected"));
+    assert!(!has_label(&lost.shapes, "Open editor"));
+    let active = app.tabs.active;
+    app.apply_connection_action(Some(connections::Action::OpenEditor(pod_attachment)), &ctx);
+    app.apply_connection_action(
+        Some(connections::Action::OpenEditor(guitar_attachment)),
+        &ctx,
+    );
+    assert!(app.startup_connection);
+    assert_eq!(app.tabs.active, active);
+}
+
+#[test]
+fn startup_completion_leaves_keyboard_focus_on_cancel_and_opens_via_tab_and_enter() {
+    use tabs::SyncUpdate::Finished;
+    let StartupRig {
+        ctx,
+        mut app,
+        pod,
+        guitar,
+        ..
+    } = startup_rig_with_fake_downloads();
+    let key = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Tab, egui::Modifiers::NONE)],
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Tab, egui::Modifiers::NONE)],
+    );
+    let guitar_cancel = ctx.memory(|memory| memory.focused()).unwrap();
+    pod.borrow_mut().update = Some(Finished(Ok(())));
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(ctx.memory(|memory| memory.focused()), Some(guitar_cancel));
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert_eq!(ctx.memory(|memory| memory.focused()), Some(guitar_cancel));
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Tab, egui::Modifiers::SHIFT)],
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+    );
+    assert!(!app.startup_connection);
+    assert_eq!(app.tabs.active, Some(entries(&app)[0].1));
+    assert_eq!(guitar.borrow().cancellations, 0);
+}
+
+#[test]
+fn skipping_the_queued_startup_guitar_leaves_the_pod_read_running() {
+    let StartupRig {
+        ctx,
+        mut app,
+        pod,
+        guitar,
+        ..
+    } = startup_rig_with_fake_downloads();
+    click_sync_label(&ctx, &mut app, "Skip");
+    let skipped = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&skipped.shapes, "Download skipped"));
+    assert_eq!(pod.borrow().starts, 1);
+    assert_eq!(pod.borrow().cancellations, 0);
+
+    pod.borrow_mut().update = Some(tabs::SyncUpdate::Finished(Ok(())));
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 0);
+}
+
+#[test]
+fn first_guitar_verified_after_opening_the_startup_pod_syncs_but_a_return_asks() {
+    use tabs::SyncUpdate::Finished;
+
+    let (ctx, mut app, source) = fixture();
+    app.startup_connection = true;
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let relay = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    let pod = Rc::new(RefCell::new(FakeSync::default()));
+    app.tabs.entries[0].editor = Box::new(SyncEditor {
+        state: pod.clone(),
+        total: 128.try_into().unwrap(),
+        consent: false,
+    });
+    source.finish(relay.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    assert_eq!(pod.borrow().starts, 1);
+
+    // Presence has prompted identification, but no guitar row exists yet.
+    source.notice(&relay, SimulatedNotice::Connected);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    pod.borrow_mut().update = Some(Finished(Ok(())));
+    click_sync_label(&ctx, &mut app, "PODxt Live Connected");
+    assert!(!app.startup_connection);
+    assert_eq!(app.tabs.active, Some(entries(&app)[0].1));
+
+    let guitar_read = |app: &mut Workbench| {
+        source.guitar(relay.clone());
+        // Use normal discovery, and inject the fake reader before polling
+        // sync so it sees the first admission decision for this attachment.
+        app.next_detection = Instant::now();
+        app.poll_detection(&ctx);
+        let guitar = Rc::new(RefCell::new(FakeSync::default()));
+        let entry = app
+            .tabs
+            .entries
+            .iter_mut()
+            .find(|entry| entry.family.info().id == "variax")
+            .unwrap();
+        entry.editor = Box::new(SyncEditor {
+            state: guitar.clone(),
+            total: 60.try_into().unwrap(),
+            consent: true,
+        });
+        guitar
+    };
+    let guitar = guitar_read(&mut app);
+    let downloading = frame(&ctx, &mut app, vec![]);
+    assert_eq!(guitar.borrow().starts, 1);
+    assert!(!has_label(
+        &downloading.shapes,
+        "Temporarily switch presets?"
+    ));
+
+    source.notice(&relay, SimulatedNotice::Disconnected);
+    tick(&ctx, &mut app);
+    source.notice(&relay, SimulatedNotice::Connected);
+    let replacement = guitar_read(&mut app);
+    let returned = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(&returned.shapes, "Reconnected after disconnect"));
+    assert!(has_label(&returned.shapes, "Temporarily switch presets?"));
+    assert_eq!(replacement.borrow().starts, 0);
+    assert_eq!(pod.borrow().starts, 1);
 }
