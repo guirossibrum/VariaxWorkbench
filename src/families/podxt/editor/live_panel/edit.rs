@@ -23,7 +23,7 @@ pub(super) struct LiveEditor {
     #[cfg(test)]
     fake_get: bool,
     #[cfg(test)]
-    fake_recall: bool,
+    fake_recall: Option<tests::FakeRecall>,
 }
 
 impl Default for LiveEditor {
@@ -42,7 +42,7 @@ impl Default for LiveEditor {
             #[cfg(test)]
             fake_get: false,
             #[cfg(test)]
-            fake_recall: false,
+            fake_recall: None,
         }
     }
 }
@@ -403,7 +403,12 @@ impl LiveEditor {
 
     #[cfg(test)]
     pub(super) fn use_fake_recall(&mut self) {
-        self.fake_recall = true;
+        self.fake_recall = Some(tests::FakeRecall::Clean);
+    }
+
+    #[cfg(test)]
+    pub(super) fn use_fake_recall_with_changed_source(&mut self) {
+        self.fake_recall = Some(tests::FakeRecall::ChangedSource);
     }
 
     #[cfg(test)]
@@ -507,7 +512,7 @@ impl LiveEditor {
         };
         #[cfg(test)]
         let admitted = admitted
-            || self.fake_recall
+            || self.fake_recall.is_some()
                 && matches!(action, Action::Recall(_))
                 && Self::admitted_on(true, action);
         // An initial recall reads the playing channel and buffer on the same
@@ -555,7 +560,9 @@ impl LiveEditor {
         #[cfg(test)]
         let fake_get = action == Action::Get && self.fake_get;
         #[cfg(test)]
-        let fake_recall = self.fake_recall && matches!(action, Action::Recall(_));
+        let fake_recall = self
+            .fake_recall
+            .filter(|_| matches!(action, Action::Recall(_)));
         let thread = std::thread::Builder::new()
             .name("podxt-edit-buffer".into())
             .spawn(move || {
@@ -564,8 +571,8 @@ impl LiveEditor {
                 let run = || {
                     if fake_get {
                         tests::fake_get(&job, &worker_stop)
-                    } else if fake_recall {
-                        tests::fake_recall(&job, &worker_stop)
+                    } else if let Some(scenario) = fake_recall {
+                        tests::fake_recall(scenario, &job, &worker_stop)
                     } else {
                         run()
                     }
