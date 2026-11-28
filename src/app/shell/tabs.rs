@@ -2,6 +2,7 @@ use super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
 use super::{FileDialogs, PickRequest, Picker, PickerAction, egui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::task::Poll;
 use variax_workbench::firmware_notice::FirmwareNotice;
 
 pub(super) struct EditorDefaults {
@@ -118,6 +119,12 @@ pub(super) trait FamilyTab: std::any::Any {
     fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>);
     fn dirty(&self) -> bool;
     fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>);
+    /// Stop background work after the user has approved closing.
+    fn begin_close(&mut self) {}
+    /// Poll checked release before removing the editor or closing the viewport.
+    fn poll_close(&mut self) -> Poll<Option<String>> {
+        Poll::Ready(None)
+    }
     fn status(&self) -> (&str, Option<&str>);
     fn source_path(&self) -> Option<&Path> {
         None
@@ -242,6 +249,7 @@ pub(super) struct TabEntry {
     pub device: Option<DeviceTab>,
     pub editor: Box<dyn FamilyTab>,
     pub connection_library_complete: bool,
+    pub closing: bool,
 }
 
 impl TabEntry {
@@ -313,6 +321,7 @@ impl Tabs {
             device: None,
             editor,
             connection_library_complete: false,
+            closing: false,
         });
         Ok(id)
     }
@@ -370,6 +379,7 @@ impl Tabs {
             {
                 // Retain document and library state, and release the route.
                 // Only the exact currently verified key may recover this tab.
+                entry.closing = false;
                 entry.editor.observe_device(None);
                 self.parked.insert(key, entry);
             }
@@ -439,7 +449,7 @@ impl Tabs {
                 .iter_mut()
                 .filter_map(|entry| {
                     let previous = entry.device.as_ref()?;
-                    if previous.device.key.family_id != key.family_id {
+                    if entry.closing || previous.device.key.family_id != key.family_id {
                         return None;
                     }
                     Some((previous.disconnected_at?, entry))

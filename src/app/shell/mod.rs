@@ -13,6 +13,8 @@ pub(super) use detect::DetectConfirmation;
 pub(super) enum CloseRequest {
     Tab(TabId),
     Quit { approved: Vec<TabId> },
+    ReleaseTab { id: TabId, quit: bool },
+    ReleaseQuit,
 }
 
 impl Workbench {
@@ -264,13 +266,24 @@ impl Workbench {
     }
 
     pub(super) fn has_prompt(&self) -> bool {
-        self.close_request.is_some()
-            || self.detect_confirmation.is_some()
+        self.close_request.is_some() || self.has_other_prompt()
+    }
+
+    fn has_other_prompt(&self) -> bool {
+        self.detect_confirmation.is_some()
             || self
                 .tabs
                 .active
                 .and_then(|id| self.tabs.index(id))
                 .is_some_and(|index| self.tabs.entries[index].editor.blocking_prompt())
+    }
+
+    fn close_blocks_active_editor(&self) -> bool {
+        match self.close_request {
+            Some(CloseRequest::ReleaseTab { id, quit }) => quit || self.tabs.active == Some(id),
+            Some(_) => true,
+            None => false,
+        }
     }
 
     pub(super) fn pending_dialog(&mut self, ctx: &egui::Context) {
@@ -287,7 +300,11 @@ impl Workbench {
             });
             self.apply_tab_close_result(id, result, ctx);
         } else {
-            self.with_active(|entry, services| entry.editor.local_prompt(ctx, services));
+            self.with_active(|entry, services| {
+                if !entry.closing {
+                    entry.editor.local_prompt(ctx, services);
+                }
+            });
         }
     }
 
@@ -302,13 +319,14 @@ impl Workbench {
             Some(CloseResult::Cancelled) => self.cancel_close(),
             Some(CloseResult::Ready) | None => {
                 self.closing_tab = None;
-                if let Some(CloseRequest::Quit { approved }) = &mut self.close_request {
-                    approved.push(id);
-                } else {
-                    self.tabs.close(id);
-                    self.close_request = None;
+                match &mut self.close_request {
+                    Some(CloseRequest::Quit { approved }) => {
+                        approved.push(id);
+                        self.advance_close(ctx);
+                    }
+                    Some(CloseRequest::Tab(_)) => self.begin_close_release(Some(id), ctx),
+                    _ => {}
                 }
-                self.advance_close(ctx);
             }
         }
     }
@@ -351,6 +369,7 @@ impl Workbench {
             let consider = match request {
                 CloseRequest::Tab(id) => entry.id == *id,
                 CloseRequest::Quit { approved } => !approved.contains(&entry.id),
+                CloseRequest::ReleaseTab { .. } | CloseRequest::ReleaseQuit => return,
             };
             if !consider {
                 continue;
@@ -369,14 +388,63 @@ impl Workbench {
             self.tabs.active = Some(id);
             self.closing_tab = Some(id);
         } else if let Some(CloseRequest::Tab(id)) = self.close_request {
-            self.tabs.close(id);
-            self.close_request = None;
+            self.begin_close_release(Some(id), ctx);
         } else if self.recorder.has_unsaved_take() {
             self.recording_close_pending = true;
         } else {
-            self.cancel_close();
-            self.permit_close = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.begin_close_release(None, ctx);
+        }
+    }
+
+    fn begin_close_release(&mut self, tab: Option<TabId>, ctx: &egui::Context) {
+        self.close_request = Some(match tab {
+            Some(id) => CloseRequest::ReleaseTab { id, quit: false },
+            None => CloseRequest::ReleaseQuit,
+        });
+        for entry in &mut self.tabs.entries {
+            if tab.is_none_or(|id| id == entry.id) {
+                entry.closing = true;
+                entry.editor.begin_close();
+            }
+        }
+        self.poll_close_release(ctx);
+    }
+
+    fn poll_close_release(&mut self, ctx: &egui::Context) {
+        use std::task::Poll;
+
+        let mut pending = false;
+        for entry in self.tabs.entries.iter_mut().filter(|entry| entry.closing) {
+            match entry.editor.poll_close() {
+                Poll::Pending => pending = true,
+                Poll::Ready(Some(warning)) => {
+                    eprintln!("{warning}");
+                    self.connections.report_diagnostic(warning);
+                }
+                Poll::Ready(None) => {}
+            }
+        }
+        if pending {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        }
+        match self.close_request {
+            Some(CloseRequest::ReleaseTab { id, quit }) => {
+                self.tabs.close(id);
+                self.cancel_close();
+                if quit {
+                    self.request_close(ctx);
+                }
+            }
+            Some(CloseRequest::ReleaseQuit) => {
+                self.cancel_close();
+                for entry in &mut self.tabs.entries {
+                    entry.closing = false;
+                }
+                self.permit_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            _ => {}
         }
     }
 
@@ -387,7 +455,12 @@ impl Workbench {
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        if self.close_request.is_none() && !self.picker.is_open() {
+        if self.picker.is_open() {
+            return;
+        }
+        if let Some(CloseRequest::ReleaseTab { quit, .. }) = &mut self.close_request {
+            *quit = true;
+        } else if self.close_request.is_none() {
             self.close_request = Some(CloseRequest::Quit {
                 approved: Vec::new(),
             });
@@ -396,7 +469,7 @@ impl Workbench {
     }
 
     pub(super) fn close_tab(&mut self, id: TabId, ctx: &egui::Context) {
-        if self.picker.is_open() {
+        if self.close_request.is_some() || self.picker.is_open() {
             return;
         }
         self.close_request = Some(CloseRequest::Tab(id));
@@ -414,9 +487,20 @@ impl Workbench {
         if self.waiting_for_hardware {
             self.advance_close(ctx);
         }
-        self.tabs.poll_parked(ctx);
+        if matches!(
+            self.close_request,
+            Some(CloseRequest::ReleaseTab { .. } | CloseRequest::ReleaseQuit)
+        ) {
+            self.poll_close_release(ctx);
+        }
+        if !self.permit_close {
+            self.tabs.poll_parked(ctx);
+        }
         let mut device_events = Vec::new();
         for entry in &mut self.tabs.entries {
+            if self.permit_close || entry.closing {
+                continue;
+            }
             if let Some(device) = &mut entry.device
                 && device.reconnected_with_edits
                 && !entry.editor.dirty()
@@ -491,7 +575,7 @@ impl Workbench {
                 i.key_pressed(egui::Key::Questionmark) && !wants_keyboard_input,
             )
         });
-        if !self.has_prompt() {
+        if !self.close_blocks_active_editor() && !self.has_other_prompt() {
             if open {
                 self.request_editor_open(ctx);
             }
@@ -558,7 +642,7 @@ impl Workbench {
                             ui.add_space(theme::SPACE_4);
                         });
                     }
-                    if self.has_prompt() {
+                    if self.close_blocks_active_editor() || self.has_other_prompt() {
                         ui.add_enabled_ui(false, |ui| {
                             self.editor_commands(ui, ctx, active_family);
                         });
@@ -782,7 +866,7 @@ impl Workbench {
                     self.refresh_guitar(&attachment);
                 }
             });
-        let closing = self.close_request.is_some();
+        let closing = self.close_blocks_active_editor();
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.tabs.active.is_some() {
                 self.with_active(|entry, services| {
@@ -1100,7 +1184,11 @@ impl Workbench {
 
     fn tab_strip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut close = None;
-        ui.add_enabled_ui(!self.has_prompt(), |ui| {
+        let navigating_during_release = matches!(
+            self.close_request,
+            Some(CloseRequest::ReleaseTab { quit: false, .. })
+        ) && !self.has_other_prompt();
+        ui.add_enabled_ui(!self.has_prompt() || navigating_during_release, |ui| {
             // Home stays in view while the document tabs scroll.
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = theme::SPACE_4;
