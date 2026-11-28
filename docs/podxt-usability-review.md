@@ -49,3 +49,66 @@ Workbench fix tracks the hardware playing buffer, saved slot and in-session
 draft separately. It targets a verified switch that preserves the outgoing
 tone as a draft where possible. Native automatic draft replay remains under
 the separate owner acceptance procedure.
+
+
+### Cached clean recall checkpoint
+
+The Windows and macOS 3.06 decompilations agree. `L6SharcToneDevice.QueryGlobalValue`
+sends command 87 (hex `57`) with the global ID and waits up to 100 ms. Global
+17 supplies a program index. Global 28 supplies the device's edited flag.
+`QueryEditedState` treats a missing reply as false. Saved-slot freshness
+requires independent evidence. The synchronized destination path in
+`L6PatchManager.SetCurrentPatch` calls
+`L6SharcTonePatchManager.ChangeDeviceProgram`, which sends a single Program
+Change on the tone bank. PODxt Live uses offset 0. Unsynchronized in-memory
+copies follow a separate edit-buffer path in the original application.
+
+Workbench's scripted path starts with a checked addressed download of all 128
+tones, while a simulated observer covers the same attachment. The proof binds
+each addressed dump to the corresponding save epoch and uninterrupted
+observation window. Each accepted sidebar selection sends exactly six
+requests in order. It sends identity, global 17, global 28, Program Change,
+global 17, and global 28.
+The reply waits are bounded. The existing 400 ms channel-load interval is
+used to receive MIDI before probing the destination. The app publishes the
+cached bytes after validated channel and clean replies and checked release.
+Observed relevant saves, coverage gaps, replacement, and a changed source
+take the addressed checked path before any switch. After a Program Change,
+failed validation requires a checked refresh, and failed checked release
+requires reconnecting. Exact outgoing edits and preexisting session drafts
+use the existing draft workflow.
+
+Native enablement requires independent evidence for each route.
+
+- **Linux ALSA raw MIDI.** `src/app/detection/identity.rs::listen` opens a
+  read-only descriptor per detection batch and closes it at the end. It yields
+  the passive rig lock for foreground work, including Variax traffic. The PODxt
+  library reader uses `with_verified_platform_link`; Linux checks USB path
+  and address there and uses a separate ordinary raw MIDI link. Recall uses
+  `RawMidiAttachment::select_podxt_live`, a borrowed `ScopedRawMidiLink`,
+  and its checked `finish`. The patch boundary is the passive reader,
+  addressed bank reader and checked recall adapter. A shared ordered receiver
+  must preserve save observation across those ownership changes or prove
+  replay/catch-up for the exact USB generation. The addressed reader must
+  collect its slot proof while covered and report checked close. Merely
+  reopening the same ALSA endpoint leaves the gap.
+- **macOS direct USB MIDI, interface 0.** `Follow::pause` ends the save
+  window before foreground work. When Follow starts its own checked tone
+  read, `follow::listen` also closes the observation window because the
+  reply reader does not forward saves. The checked foreground adapter
+  `with_verified_workbench_link` revalidates registry ID, path and address
+  under the rig lock and checks interface release. The patch boundary is
+  macOS Follow, its handoff to the addressed reader and foreground recall,
+  and the interface-0 receive dispatcher. The same generation needs one
+  ordered stream of notices and replies across yields or verified replay
+  across gaps.
+
+For each platform, verify the actual global reply framing, global 17's
+independent post-switch index, and global 28's behavior for clean selection,
+physical and app edits, edits restored to their original values, saves, and
+concurrent changes. Verify delivery of addressed save notifications and the
+behavior of the receiver on loss, yield, and replacement. After a
+coverage gap, establish freshness with replay and catch-up or acquire
+new addressed proof under a covered link. The scripted tests establish
+the app protocol and fallback behavior. Native shortcut admission stays closed
+and the physical Linux and macOS runs remain pending.

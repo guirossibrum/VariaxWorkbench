@@ -736,7 +736,7 @@ fn recall_choice_expires_with_attachment_mode_or_staged_edits() {
     );
     editor.pending.set(drive(55));
     assert!(editor.take_recall_confirmation(&device).is_none());
-    editor.recall(target, &device, &ctx, None);
+    editor.recall_with_cache(target, &device, &ctx, None, None);
     assert_eq!(editor.pending.targets, [drive(55)]);
     assert!(editor.worker.is_none());
 }
