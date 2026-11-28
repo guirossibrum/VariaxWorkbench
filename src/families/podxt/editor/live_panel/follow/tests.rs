@@ -109,7 +109,7 @@ fn mac_follow_settles_the_latest_program_and_publishes_after_release() {
             let Outcome::Changed(actual) = result.unwrap() else {
                 panic!("expected settled program change");
             };
-            assert!(actual.program_change);
+            assert_eq!(actual.program_target, Some(expected.channel));
             assert_eq!(actual.buffer.channel, expected.channel);
             assert_eq!(actual.buffer.tone, expected.tone);
         }
@@ -147,8 +147,8 @@ fn yielding_while_the_program_is_settling_closes_without_requesting_a_tone() {
 
 fn program(buffer: EditorBuffer) -> Outcome {
     Outcome::Changed(Update {
+        program_target: Some(buffer.channel),
         buffer,
-        program_change: true,
     })
 }
 

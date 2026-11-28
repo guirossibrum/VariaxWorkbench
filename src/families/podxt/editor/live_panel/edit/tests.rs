@@ -1,5 +1,8 @@
 mod drafts;
 
+pub(super) type FakeDispatch =
+    dyn Fn(&Job, &AtomicBool) -> Result<EditOutcome, String> + Send + Sync;
+
 use super::super::tests::{FakeLink, FakeLock};
 use super::*;
 use podxt::{Global, PodxtRequest, Value};
@@ -241,6 +244,7 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         reply_pending: Arc::default(),
         action: Action::Controls,
         whole_tone_backup: None,
+        replay: None,
         current: Some(before.clone()),
         original: Some(before.clone()),
         targets: vec![drive(45)],
@@ -335,6 +339,18 @@ fn the_whole_tone_resend_has_its_own_closed_owner_gate() {
         assert!(!WHOLE_TONE_SEND_APPROVED);
     }
     assert!(!LiveEditor::admitted(Action::ResendWholeTone));
+    let replay = Action::ReplayDraft(sample(0, 0).channel);
+    const {
+        assert!(!AUTOMATIC_DRAFT_REPLAY_APPROVED);
+    }
+    assert!(!replay.native_approval());
+    assert!(!LiveEditor::admitted_on(
+        true,
+        replay.native_approval(),
+        replay
+    ));
+    assert!(!EditPolicy(replay).allows(Operation::PodxtStoreRestore));
+    assert!(!EditPolicy(replay).allows(Operation::PodxtChannelSwitch));
     let policy = EditPolicy(Action::ResendWholeTone);
     assert_eq!(
         policy.allows(Operation::PodxtLibraryRead),
@@ -410,6 +426,7 @@ fn stage_get_recovers_and_recall_sends_one_selection_after_final_read() {
                 reply_pending: Arc::clone(&pending),
                 action,
                 whole_tone_backup: None,
+                replay: None,
                 current: None,
                 original: None,
                 targets: Vec::new(),
@@ -458,6 +475,7 @@ pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked
                 reply_pending: Arc::clone(pending),
                 action,
                 whole_tone_backup: None,
+                replay: None,
                 current: Some(current.clone()),
                 original: Some(current.clone()),
                 targets: vec![drive(45)],
@@ -491,6 +509,7 @@ fn refusal(
             reply_pending: Arc::default(),
             action: Action::Recall(target),
             whole_tone_backup: None,
+            replay: None,
             current: None,
             original: None,
             targets: Vec::new(),
@@ -753,6 +772,8 @@ fn automatic_edits_hide_progress_and_success_but_keep_errors_visible() {
         (Action::Send, Some("Send edit buffer")),
     ] {
         editor.worker = Some(EditWorker {
+            superseded: false,
+            replay: None,
             action,
             device: None,
             stop: Arc::default(),
@@ -1121,6 +1142,8 @@ fn undo_never_queues_behind_non_control_jobs() {
         Action::Recall(sample(20, 3).channel),
     ] {
         fixture.editor.worker = Some(EditWorker {
+            superseded: false,
+            replay: None,
             action,
             device: Some(fixture.device.clone()),
             stop: Arc::default(),
