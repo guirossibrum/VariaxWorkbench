@@ -22,6 +22,7 @@ pub mod editor_layout;
 pub mod gallery;
 pub mod knob;
 pub mod theme;
+pub mod tuner_popup;
 pub mod tuning_panel;
 
 #[cfg(test)]
