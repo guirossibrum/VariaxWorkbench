@@ -404,10 +404,27 @@ fn retained_draft_status_survives_file_preview_and_warns_before_close() {
     assert_eq!(app.podxt().live.draft_counts(), (0, 1));
     assert_eq!(app.podxt().live.device_requests, requests);
 
+    let podxt_tab = app.tabs.active.unwrap();
+    app.new_tab(crate::editor::registry::LEGACY_STARTUP);
+    let variax_tab = app.tabs.active.unwrap();
+    app.variax_mut()
+        .change(|preset| preset.rename("Pending edit"));
+
     app.request_close(&ctx);
     click_text(&ctx, &mut app, "Discard drafts and close");
-    assert!(app.permit_close);
-    assert_eq!(app.podxt().live.draft_counts(), (0, 0));
+    click_text(&ctx, &mut app, "Keep editing");
+    assert!(!app.permit_close);
+    assert!(app.variax().dirty());
+    assert_eq!(app.podxt().live.draft_counts(), (0, 1));
+
+    app.request_close(&ctx);
+    click_text(&ctx, &mut app, "Keep drafts");
+    assert!(!app.permit_close);
+    app.close_tab(podxt_tab, &ctx);
+    click_text(&ctx, &mut app, "Discard drafts and close");
+    assert!(app.tabs.index(podxt_tab).is_none());
+    assert!(app.tabs.index(variax_tab).is_some());
+    assert!(!app.permit_close);
 }
 
 #[test]

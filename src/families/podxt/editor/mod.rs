@@ -621,8 +621,8 @@ impl PodxtEditor {
                                     services.close = CloseResult::Cancelled;
                                 }
                                 if ui.button("Discard drafts and close").clicked() {
-                                    self.live.discard_drafts();
-                                    services.finish_close_if(!self.needs_close());
+                                    // Quit may still be cancelled by another tab or recording.
+                                    services.close = CloseResult::Ready;
                                 }
                             });
                         });

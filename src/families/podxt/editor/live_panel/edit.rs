@@ -523,10 +523,6 @@ impl LiveEditor {
         )
     }
 
-    pub(super) fn discard_drafts(&mut self) {
-        self.drafts = Drafts::default();
-    }
-
     pub(super) fn reconcile_stored(&mut self, stored: &podxt::StoredTone) {
         if let Ok(saved) = TonePayload::from_dump(&stored.tone)
             && self.draft(stored.location) == Some(&saved)

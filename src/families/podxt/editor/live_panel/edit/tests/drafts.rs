@@ -70,8 +70,6 @@ fn checked_edits_keep_separate_drafts_through_failures_and_attachment_changes() 
         saved_draft_a
     );
 
-    editor.discard_drafts();
-    assert_eq!(editor.draft_counts(), (0, 0));
     assert_eq!(editor.session.unwrap().current.tone, a.tone);
 }
 

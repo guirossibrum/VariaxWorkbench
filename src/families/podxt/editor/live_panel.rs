@@ -901,10 +901,6 @@ impl LivePanel {
         self.editor.draft_counts()
     }
 
-    pub(super) fn discard_drafts(&mut self) {
-        self.editor.discard_drafts();
-    }
-
     pub(super) fn channel_draft(&self, slot: Location) -> Option<&podxt::TonePayload> {
         self.editor.draft(slot)
     }
