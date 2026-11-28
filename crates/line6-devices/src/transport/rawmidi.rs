@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 mod attachment;
 pub use attachment::{
-    RawMidiAttachment, RawMidiCloseError, RawMidiOpenError, RawMidiOpenFailure, ScopedRawMidiLink,
+    RawMidiAttachment, RawMidiCloseError, RawMidiOpenError, RawMidiOpenFailure, ScopedRawMidiInput,
+    ScopedRawMidiLink,
 };
 
 // Compatibility export for callers of the original raw MIDI adapter API (#214).

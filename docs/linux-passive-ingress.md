@@ -73,6 +73,8 @@ return before a foreground lock-only waiter reports acquisition. A failed
 or missing cleanup result leaves this prerequisite open. Keep raw captures
 local and report only event and cleanup summaries.
 
-This is the proposed acceptance scope for a separately reviewed owner
-procedure. No paired owner probe or production worker is delivered by this
-checkpoint.
+The isolated `passive-ingress-probe` implements the bounded owner
+procedure with the existing routes and the shared #201 poll step. See the
+[owner test card](linux-passive-ingress-owner-test-card.md). Native
+acceptance remains pending Gatekeeper review and direct owner authorization.
+Production listeners retain their existing transport ownership.

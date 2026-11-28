@@ -2,6 +2,7 @@
 
 #[allow(unsafe_code)]
 mod interrupt;
+mod pump;
 
 use line6_devices::backup::{BackupFolder, utc};
 use line6_devices::device_lock::DeviceLock;
@@ -230,8 +231,11 @@ fn drain_inputs(
         if remaining.is_zero() {
             return Ok(());
         }
-        midi.read(Duration::ZERO)?;
-        bridge.read(remaining.min(POLL))?;
+        pump::poll_pair(
+            |wait| midi.read(wait).map(|_| ()),
+            |wait| bridge.read(wait),
+            remaining.min(POLL),
+        )?;
     }
 }
 

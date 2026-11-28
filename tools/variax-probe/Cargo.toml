@@ -2,6 +2,7 @@
 name = "variax-probe"
 version = "0.1.0"
 edition = "2024"
+default-run = "variax-probe"
 publish = false
 description = "Lean owner-run read-only probe for the Variax 600 (through PODxt Live) and the PODxt Live"
 
