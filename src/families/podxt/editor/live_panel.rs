@@ -434,7 +434,7 @@ fn library_total(command: ReadCommand) -> usize {
 
 const fn title(command: ReadCommand) -> &'static str {
     match command {
-        ReadCommand::Current => "Read current tone",
+        ReadCommand::Current => "Read current tone (diagnostic snapshot)",
         ReadCommand::Library => "Read library",
         ReadCommand::ToneBank => "Read tone channels",
         ReadCommand::Packs => "Read installed packs",
@@ -895,13 +895,16 @@ impl LivePanel {
         self.historical_library.get(&slot.address())
     }
 
+    fn can_refresh_current(&self) -> bool {
+        !self.busy() && self.device_ready() && self.editor.can_get()
+    }
+
     pub(super) fn refresh_current(&mut self, ctx: &egui::Context) {
         #[cfg(test)]
         {
             self.device_requests += 1;
         }
-        if !self.busy()
-            && self.device_ready()
+        if self.can_refresh_current()
             && let Some(device) = &self.device
         {
             self.follow.pause();
@@ -934,7 +937,7 @@ impl LivePanel {
             self.message =
                 Some("Wait for the current PODxt operation, then select the channel again.".into());
         } else if !self.editor.recall_ready() {
-            self.message = Some("Refresh the playing tone before selecting a channel.".into());
+            self.message = Some("Use Read playing tone before selecting a channel.".into());
         } else if let Some(device) = &self.device {
             self.message = None;
             self.follow.pause();
@@ -947,17 +950,6 @@ impl LivePanel {
             return;
         }
         let idle = !self.busy();
-        if self.editor.needs_refresh()
-            && ui
-                .add_enabled(
-                    idle && Self::admitted(ReadCommand::Current),
-                    egui::Button::new("Refresh playing tone"),
-                )
-                .clicked()
-        {
-            self.message = None;
-            self.refresh_current(ui.ctx());
-        }
         if let Some(device) = &self.device {
             self.editor.show_recall_confirmation(ui, device, idle);
         }
@@ -1030,6 +1022,28 @@ impl LivePanel {
                 *current = true;
             }
         }
+        if self.visible()
+            && ui
+                .add_enabled(
+                    self.can_refresh_current(),
+                    egui::Button::new("Read playing tone"),
+                )
+                .on_hover_text(if self.editor.needs_refresh() {
+                    "Read the PODxt edit buffer and refresh the editor before editing or recalling a channel."
+                } else {
+                    "Read the PODxt edit buffer into the playing tone editor."
+                })
+                .on_disabled_hover_text(if self.editor.has_pending() {
+                    "Apply or discard staged edits before reading the playing tone."
+                } else {
+                    "A verified, idle PODxt Live read connection is required."
+                })
+                .clicked()
+        {
+            self.message = None;
+            self.refresh_current(ui.ctx());
+            *current = true;
+        }
         if !*current && self.has_staged_edits() && ui.button("Staged PODxt tone").clicked() {
             *current = true;
         }
@@ -1041,6 +1055,7 @@ impl LivePanel {
             );
         }
         if self.visible() && *current {
+            let help = "Review permanent storage of the playing tone in its PODxt channel.";
             let selected = self.panel == Some(StagePanel::Store);
             let enabled = connected
                 && idle
@@ -1052,6 +1067,8 @@ impl LivePanel {
                     enabled || selected,
                     egui::Button::selectable(selected, "Store to POD…"),
                 )
+                .on_hover_text(help)
+                .on_disabled_hover_text(help)
                 .clicked()
             {
                 self.store.clear_preparation();
@@ -1274,10 +1291,13 @@ impl LivePanel {
                 ReadCommand::Globals,
             ] {
                 let enabled = self.device_ready() && !self.busy() && Self::admitted(command);
-                if ui
-                    .add_enabled(enabled, egui::Button::new(title(command)))
-                    .clicked()
-                {
+                let response = ui.add_enabled(enabled, egui::Button::new(title(command)));
+                let response = if command == ReadCommand::Current {
+                    response.on_hover_text("Update the diagnostic snapshot of the current tone.")
+                } else {
+                    response
+                };
+                if response.clicked() {
                     self.start(command, ui.ctx());
                 }
             }

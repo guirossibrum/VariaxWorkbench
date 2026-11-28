@@ -20,6 +20,8 @@ pub(super) struct LiveEditor {
     recall_confirmation: Option<(detection::DeviceKey, RecallConfirmation)>,
     last_dispatch: Option<Instant>,
     message: Option<Result<String, String>>,
+    #[cfg(test)]
+    fake_get: bool,
 }
 
 impl Default for LiveEditor {
@@ -35,6 +37,8 @@ impl Default for LiveEditor {
             recall_confirmation: None,
             last_dispatch: None,
             message: None,
+            #[cfg(test)]
+            fake_get: false,
         }
     }
 }
@@ -85,7 +89,7 @@ enum Action {
 impl Action {
     fn label(self) -> &'static str {
         match self {
-            Self::Get => "Refresh current tone",
+            Self::Get => "Read playing tone",
             Self::Recall(_) => "Select channel",
             Self::Controls => "Apply live controls",
             Self::Send => "Send edit buffer",
@@ -359,6 +363,11 @@ impl LiveEditor {
         self.pending.set(target);
     }
 
+    #[cfg(test)]
+    pub(super) fn use_fake_get(&mut self) {
+        self.fake_get = true;
+    }
+
     pub(super) fn detach_attachment(&mut self) {
         let staged = if self.stage_only {
             let mut staged = std::mem::take(&mut self.pending);
@@ -415,7 +424,11 @@ impl LiveEditor {
     }
 
     fn admitted(action: Action) -> bool {
-        platform_available()
+        Self::admitted_on(platform_available(), action)
+    }
+
+    fn admitted_on(available: bool, action: Action) -> bool {
+        available
             && (action != Action::ResendWholeTone
                 || WHOLE_TONE_SEND_APPROVED && !hardware_gates::is_locked(Gate::FullBackupRead))
             && !hardware_gates::is_locked(Gate::OsDiscovery)
@@ -444,9 +457,14 @@ impl LiveEditor {
         ctx: &egui::Context,
         recall_confirmation: Option<RecallConfirmation>,
     ) {
+        let admitted = if action == Action::Get {
+            self.can_get()
+        } else {
+            Self::admitted(action)
+        };
         if self.worker.is_some()
             || self.reply_pending.load(Ordering::Acquire)
-            || !Self::admitted(action)
+            || !admitted
             || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
             || action != Action::Get && (self.session.is_none() || self.needs_get)
             || matches!(action, Action::Recall(_)) && (self.stage_only || self.has_pending())
@@ -482,10 +500,21 @@ impl LiveEditor {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let repaint = ctx.clone();
+        #[cfg(test)]
+        let fake_get = action == Action::Get && self.fake_get;
         let thread = std::thread::Builder::new()
             .name("podxt-edit-buffer".into())
             .spawn(move || {
-                let result = platform_edit(&endpoint, &job, &worker_stop);
+                let run = || platform_edit(&endpoint, &job, &worker_stop);
+                #[cfg(test)]
+                let run = || {
+                    if fake_get {
+                        tests::fake_get(&job, &worker_stop)
+                    } else {
+                        run()
+                    }
+                };
+                let result = run();
                 repaint.request_repaint();
                 result
             });
@@ -635,8 +664,18 @@ impl LiveEditor {
         None
     }
 
+    pub(super) fn can_get(&self) -> bool {
+        let available = platform_available();
+        #[cfg(test)]
+        let available = available || self.fake_get;
+        self.worker.is_none()
+            && !self.reply_pending.load(Ordering::Acquire)
+            && !self.has_pending()
+            && Self::admitted_on(available, Action::Get)
+    }
+
     pub(super) fn get(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
-        if !self.has_pending() {
+        if self.can_get() {
             self.start(Action::Get, device, ctx);
         }
     }
@@ -835,15 +874,20 @@ impl LiveEditor {
             && self.session.is_some()
             && !self.needs_get;
         for (action, title, enabled) in [
-            (Action::Send, "Send to POD", self.has_pending()),
+            (Action::Send, "Apply to playing tone", self.has_pending()),
             (Action::Undo, "Undo live edits", !self.has_pending()),
         ] {
-            if ui
-                .add_enabled(
-                    ready && enabled && Self::admitted(action),
-                    egui::Button::new(title),
-                )
-                .clicked()
+            let response = ui.add_enabled(
+                ready && enabled && Self::admitted(action),
+                egui::Button::new(title),
+            );
+            let response = if action == Action::Send {
+                let help = "Apply staged edits to the playing edit buffer. Store to POD… saves to a hardware channel.";
+                response.on_hover_text(help).on_disabled_hover_text(help)
+            } else {
+                response
+            };
+            if response.clicked()
                 && let Some(device) = device
             {
                 self.start(action, device, ui.ctx());
@@ -895,9 +939,11 @@ impl LiveEditor {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    idle && Self::admitted(Action::Get),
-                    egui::Button::new(Action::Get.label()),
+                    idle && self.can_get(),
+                    egui::Button::new("Recover edit session"),
                 )
+                .on_hover_text("Read the playing edit buffer to restore the editor session.")
+                .on_disabled_hover_text("Recovery requires an idle connection and no staged edits.")
                 .clicked()
             {
                 action = Some(Action::Get);
@@ -978,7 +1024,7 @@ impl LiveEditor {
             self.start(action, device, ui.ctx());
         }
         if !snapshot {
-            ui.weak("Get edit buffer takes the snapshot for undo.");
+            ui.weak("Reading the edit buffer establishes the undo snapshot.");
         }
         if let Some(worker) = &self.worker {
             ui.label(format!("{} in progress…", worker.action.label()));
