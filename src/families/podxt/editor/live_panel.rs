@@ -7,6 +7,7 @@ mod edit;
 mod follow;
 mod locker;
 mod store;
+mod tuner;
 use line6_devices::family::podxt::{
     self, BankKind, Control, EditBuffer, GlobalValues, LiveControl, Location, Packs, ReadCommand,
     ReadUpdate, Setting, TunerReading,
@@ -29,6 +30,7 @@ pub(super) struct LivePanel {
     device: Option<detection::DeviceKey>,
     device_tab: bool,
     worker: Option<Worker>,
+    tuner: tuner::Tuner,
     editor: edit::LiveEditor,
     follow: follow::Follow,
     resume_live: bool,
@@ -74,6 +76,12 @@ struct Worker {
 }
 
 impl Worker {
+    fn request_stop(&self) {
+        let _ = self
+            .stop
+            .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed);
+    }
+
     fn library_progress(&self) -> Option<usize> {
         self.snapshot.lock().expect("snapshot mutex").library_count
     }
@@ -81,7 +89,9 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        if self.thread.is_some() {
+            self.request_stop();
+        }
     }
 }
 
@@ -92,7 +102,7 @@ struct Snapshot {
     library_count: Option<usize>,
     packs: Option<Packs>,
     globals: Option<GlobalValues>,
-    tuner: Option<TunerReading>,
+    tuner: Option<tuner::Sample>,
     tuner_mode: bool,
     channel: Option<Location>,
     clip: Option<Instant>,
@@ -116,7 +126,12 @@ impl Snapshot {
             }
             ReadUpdate::Packs(packs) => self.packs = Some(packs),
             ReadUpdate::Globals(values) => self.globals = Some(values),
-            ReadUpdate::Tuner(reading) => self.tuner = Some(reading),
+            ReadUpdate::Tuner(pair) => {
+                self.tuner = Some(tuner::Sample {
+                    pair,
+                    received_at: now,
+                });
+            }
             ReadUpdate::TunerMode(active) => self.tuner_mode = active,
             ReadUpdate::Controller { number, value } => {
                 let number = if number == 11 { 12 } else { number };
@@ -454,6 +469,7 @@ impl LivePanel {
             }
             return false;
         }
+        self.tuner.detach();
         self.cancel();
         self.editor.detach_attachment();
         self.follow.reset();
@@ -505,7 +521,7 @@ impl LivePanel {
         self.editor.cancel();
         self.store.cancel();
         if let Some(worker) = &self.worker {
-            worker.stop.store(true, Ordering::Release);
+            worker.request_stop();
         }
     }
 
@@ -561,6 +577,7 @@ impl LivePanel {
                     &reply_pending,
                     worker_acquired.as_deref(),
                     |update| {
+                        let received_at = Instant::now();
                         if !worker_stop.load(Ordering::Acquire) {
                             let mut snapshot = worker_snapshot.lock().expect("snapshot mutex");
                             if command == ReadCommand::Follow
@@ -569,7 +586,7 @@ impl LivePanel {
                             {
                                 return;
                             }
-                            snapshot.apply(update, Instant::now());
+                            snapshot.apply(update, received_at);
                             repaint.request_repaint();
                         }
                     },
@@ -753,7 +770,10 @@ impl LivePanel {
             }
             return;
         };
-        if self.device.as_ref() == Some(&worker.device) && !requires_library(worker.command) {
+        if self.device.as_ref() == Some(&worker.device)
+            && worker.command != ReadCommand::Tuner
+            && !requires_library(worker.command)
+        {
             self.snapshot = worker.snapshot.lock().expect("snapshot mutex").clone();
         }
         if !worker.thread.as_ref().expect("worker thread").is_finished() {
@@ -766,19 +786,18 @@ impl LivePanel {
         let command = worker.command;
         let same_device = self.device.as_ref() == Some(&worker.device);
         let stopped = worker.stop.load(Ordering::Acquire);
-        if command == ReadCommand::Tuner {
-            self.snapshot.tuner = None;
-        }
         let result = worker
             .thread
             .take()
             .expect("worker thread")
             .join()
             .unwrap_or_else(|_| Err("PODxt reader stopped unexpectedly.".into()));
-        if !same_device {
+        if command == ReadCommand::Tuner {
+            self.tuner.finished(stopped, result);
+            ctx.request_repaint();
+        } else if !same_device {
             return;
-        }
-        if requires_library(command) {
+        } else if requires_library(command) {
             let result = if stopped {
                 result.and(Err("PODxt Live read cancelled.".into()))
             } else {
@@ -806,7 +825,6 @@ impl LivePanel {
             });
         } else {
             self.message = Some(match result {
-                Ok(()) if command == ReadCommand::Tuner => "Tuner stopped.".into(),
                 Ok(()) => format!("{} complete.", title(command)),
                 Err(error) => error,
             });
@@ -1022,25 +1040,6 @@ impl LivePanel {
                 connected && self.worker.is_none() && !self.store.busy(),
             );
         }
-        if self.visible() {
-            let running = self
-                .worker
-                .as_ref()
-                .is_some_and(|worker| worker.command == ReadCommand::Tuner);
-            if ui
-                .add_enabled(
-                    running || connected && idle && Self::admitted(ReadCommand::Tuner),
-                    egui::Button::new(if running { "Stop tuner" } else { "Tuner" }),
-                )
-                .clicked()
-            {
-                if running {
-                    self.cancel();
-                } else {
-                    self.start(ReadCommand::Tuner, ui.ctx());
-                }
-            }
-        }
         if self.visible() && *current {
             let selected = self.panel == Some(StagePanel::Store);
             let enabled = connected
@@ -1062,18 +1061,49 @@ impl LivePanel {
         }
     }
 
+    pub(super) fn initialize_tuner(&mut self, preferences: Option<&Path>) {
+        self.tuner = tuner::Tuner::with_preferences(preferences);
+    }
+
+    pub(super) fn tuner_command(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
+        if !self.visible() {
+            return None;
+        }
+        let available = self.device_ready() && !self.busy() && Self::admitted(ReadCommand::Tuner);
+        let response = ui.add_enabled(available, egui::Button::new("Tuner"));
+        if response.clicked() && !self.tuner.is_open() {
+            let result = self.start_read(ReadCommand::Tuner, ui.ctx(), false);
+            if result.is_ok() {
+                self.snapshot.tuner_mode = false;
+            }
+            self.tuner.started(result);
+            ui.ctx().request_repaint();
+        }
+        Some(response)
+    }
+
+    pub(super) fn show_tuner(
+        &mut self,
+        ctx: &egui::Context,
+        button: Option<&egui::Response>,
+        heading: &egui::Response,
+    ) {
+        self.tuner.show(
+            ctx,
+            self.worker
+                .as_ref()
+                .filter(|worker| worker.command == ReadCommand::Tuner),
+            button
+                .filter(|response| response.enabled())
+                .unwrap_or(heading),
+        );
+    }
+
     pub(super) fn stage_status(&self, ui: &mut egui::Ui) {
         if !self.visible() {
             return;
         }
-        if let Some(reading) = self.snapshot.tuner {
-            let note = reading.note.map_or("—", podxt::tuner_note_name);
-            let deviation = reading.deviation.map(podxt::tuner_cents);
-            ui.label(deviation.map_or_else(
-                || format!("Tuner {note}"),
-                |cents| format!("Tuner {note} · {cents:+.0} cents"),
-            ));
-        } else if self.snapshot.tuner_mode {
+        if self.snapshot.tuner_mode {
             ui.weak("Tuner active on POD");
         }
         if let Some(worker) = &self.worker
@@ -1316,14 +1346,6 @@ impl LivePanel {
                 ui.label(format!("Playing {}", channel.label()));
             }
         });
-        if let Some(reading) = self.snapshot.tuner {
-            let note = reading.note.map_or("—", podxt::tuner_note_name);
-            let deviation = reading.deviation.map(podxt::tuner_cents);
-            ui.label(deviation.map_or_else(
-                || format!("Tuner {note}"),
-                |cents| format!("Tuner {note} · {cents:+.0} cents"),
-            ));
-        }
         if let Some(packs) = self.snapshot.packs {
             let names = packs.names();
             if names.is_empty() {

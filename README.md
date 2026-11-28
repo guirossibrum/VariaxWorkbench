@@ -31,7 +31,8 @@ Earlier captures from floating windows using test presets with device discovery 
   channels beside the stage. Offline, the editor opens a remembered library
   backup or a labelled default. Edit amp, cab, and effect settings and save copies.
   Open Tone Locker to browse local files and the PODxt Live tones and setup
-  banks side by side, including imported library backups offline.
+  banks side by side, including imported library backups offline. On a supported
+  connection, Tuner offers Digital and Analog views.
 - **HD500X files (early).** Opens HD Edit presets, setlists, and bundles and
   saves copies. Only a few settings on nine effect models can be edited; the
   rest is kept as is. There is no HD editor page or device support yet.

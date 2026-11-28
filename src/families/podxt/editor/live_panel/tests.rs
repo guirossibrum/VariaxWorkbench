@@ -680,3 +680,5 @@ fn tone_locker_keeps_staged_destination_without_device_requests() {
     assert_eq!(app.podxt().live.device_requests, requests);
     assert!(app.podxt().live.locker_dirty());
 }
+
+mod tuner_popup;
