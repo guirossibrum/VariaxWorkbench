@@ -45,7 +45,7 @@ pub(super) struct DiscoveryProfile {
     pub discovery: DeviceDiscovery,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct AttachmentKey {
     pub path: String,
     address: Option<u8>,
@@ -64,7 +64,7 @@ impl AttachmentKey {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct DeviceKey {
     pub attachment: AttachmentKey,
     pub family_id: &'static str,
@@ -85,6 +85,7 @@ impl DeviceKey {
 pub(super) enum DeviceSupport {
     IdentityPending,
     UsbOnly,
+    PresenceUncertain,
     Verified(&'static str),
     Refreshing(&'static str),
     UnverifiedGuitarFirmware(FirmwareNotice),
@@ -307,7 +308,7 @@ struct Attachment {
     identity_started: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum GuitarIdentity {
     Verified(&'static str),
     Unverified(FirmwareNotice),
@@ -361,6 +362,10 @@ impl Bridge {
 
     fn can_refresh(&self) -> bool {
         self.pod.is_some() && !self.pending() && !self.suspended
+    }
+
+    fn can_retry_guitar(&self) -> bool {
+        self.can_refresh() && !matches!(self.guitar, Some((_, GuitarIdentity::Verified(_))))
     }
 
     fn complete(&mut self, job: &Job, outcome: Outcome, generation: &mut u64) {
@@ -460,7 +465,7 @@ impl Bridge {
                                     "Two Variax identity requests went unanswered"
                                 };
                                 let recovery = if kind == JobKind::RefreshGuitar {
-                                    "Check the VDI cable, then use Refresh guitar."
+                                    "Check the VDI cable, then use Retry guitar connection."
                                 } else {
                                     "Check the VDI cable while Workbench continues checking."
                                 };
@@ -496,14 +501,18 @@ impl Bridge {
         if self.last_notice == Some(Notice::Disconnected) {
             self.last_notice = Some(Notice::Connected);
         }
-        // A new assessment of the same attachment updates its existing tab.
-        let linked = self.guitar.map_or_else(
-            || {
-                *generation += 1;
-                *generation
-            },
-            |(linked, _)| linked,
-        );
+        // A different identity revokes the prior guitar generation, even
+        // when the relay's USB coordinates never changed.
+        let linked = self
+            .guitar
+            .filter(|(_, previous)| *previous == identity)
+            .map_or_else(
+                || {
+                    *generation += 1;
+                    *generation
+                },
+                |(linked, _)| linked,
+            );
         self.guitar = Some((linked, identity));
     }
 
@@ -1228,7 +1237,11 @@ impl DetectionService {
                         };
                         if !attachment.open_candidate {
                             (
-                                DeviceSupport::UsbOnly,
+                                if bridge.pod.is_some() {
+                                    DeviceSupport::PresenceUncertain
+                                } else {
+                                    DeviceSupport::UsbOnly
+                                },
                                 if mac {
                                     Some(bridge.label_with_status(
                                         attachment.readiness_reason.as_deref(),
@@ -1254,7 +1267,7 @@ impl DetectionService {
                                 ),
                                 bridge.firmware_warning,
                                 bridge.pod_warning,
-                                bridge.can_refresh(),
+                                bridge.can_retry_guitar(),
                             )
                         }
                     }
@@ -1265,7 +1278,7 @@ impl DetectionService {
                         (DeviceSupport::FileEditingOnly, None, None, None, false)
                     }
                     DeviceDiscovery::ViaBridge(id) if id == attached_id => {
-                        let Some(bridge) = bridge.filter(|_| attachment.open_candidate) else {
+                        let Some(bridge) = bridge else {
                             continue;
                         };
                         let Some((generation, identity)) = bridge.guitar else {
@@ -1273,6 +1286,9 @@ impl DetectionService {
                         };
                         key.linked_generation = Some(generation);
                         let (support, refresh) = match identity {
+                            _ if !attachment.open_candidate => {
+                                (DeviceSupport::PresenceUncertain, false)
+                            }
                             GuitarIdentity::Verified(firmware) if bridge.pending() => {
                                 (DeviceSupport::Refreshing(firmware), false)
                             }
@@ -1283,7 +1299,13 @@ impl DetectionService {
                                 (DeviceSupport::UnverifiedGuitarFirmware(notice), false)
                             }
                         };
-                        (support, Some(bridge.label()), None, None, refresh)
+                        (
+                            support,
+                            attachment.open_candidate.then(|| bridge.label()),
+                            None,
+                            None,
+                            refresh,
+                        )
                     }
                     _ => continue,
                 };

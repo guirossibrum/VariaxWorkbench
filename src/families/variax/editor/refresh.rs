@@ -305,6 +305,9 @@ impl VariaxEditor {
         {
             ui.weak(reason);
         }
+        let button = button.on_hover_text(
+            "Read the guitar library. The guitar temporarily switches presets during the download.",
+        );
         if button.clicked() {
             self.request_refresh(read);
         }
@@ -342,7 +345,9 @@ impl VariaxEditor {
         if !self.can_request_download() || self.download_capability().is_err() {
             return;
         }
-        if FamilyTab::dirty(self) {
+        if self.has_historical_guitar_library() {
+            self.start_refresh(read, false);
+        } else if FamilyTab::dirty(self) {
             self.refresh.confirmation = Some(read);
         } else {
             self.start_refresh(read, self.untouched_startup_view());
@@ -440,7 +445,21 @@ impl VariaxEditor {
         self.start_refresh(read, true);
     }
 
+    pub(super) fn has_session_library(&self) -> bool {
+        self.refresh.latest_download.is_some()
+    }
+
     pub(super) fn connection_sync_admission(&self, consent: bool) -> SyncAdmission {
+        if self
+            .refresh
+            .latest_download
+            .as_ref()
+            .is_some_and(|download| {
+                self.connected_library_attachment() == Some(&download.attachment)
+            })
+        {
+            return SyncAdmission::Complete;
+        }
         if let Err(reason) = self.download_capability() {
             return SyncAdmission::Unavailable(reason);
         }
@@ -1440,6 +1459,47 @@ pub(super) mod tests {
             EditorDocument::open(&new).unwrap().banks().unwrap().len(),
             12
         );
+    }
+
+    #[test]
+    fn refresh_after_reconnect_keeps_the_selected_bank_edit_and_recovers_a_separate_library() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        editor.document = None;
+        editor.source_path = None;
+        let mut rig = verified_rig();
+        let first = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&first));
+        editor.request_refresh(complete_capture);
+        wait_for_completion(editor, &ctx);
+        editor.document.as_mut().unwrap().select(4, 2).unwrap();
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let before = editor.document.as_ref().unwrap().as_bytes().to_vec();
+
+        let profiles = crate::editor::registry::DEVICE_PROFILES;
+        rig.report_guitar_disconnect(&first.device.key, profiles)
+            .unwrap();
+        assert!(rig.queue_guitar_refresh(&first.device.key.attachment, false));
+        let second = verified_tab_for(&mut rig);
+        editor.observe_device(Some(&second));
+        assert!(editor.has_session_library());
+        assert!(editor.has_historical_guitar_library());
+        assert!(!editor.has_current_guitar_library());
+
+        editor.request_refresh(complete_capture);
+        assert!(!editor.refresh.confirming());
+        wait_for_completion(editor, &ctx);
+
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.as_bytes(), before);
+        assert_eq!(document.selection(), Some((4, 2)));
+        assert!(document.is_dirty() && document.can_undo());
+        assert!(editor.has_historical_guitar_library());
+        assert_eq!(
+            editor.refresh.latest_download.as_ref().unwrap().attachment,
+            second.device.key
+        );
+        assert!(editor.status.contains("ready to open"));
     }
 
     #[test]

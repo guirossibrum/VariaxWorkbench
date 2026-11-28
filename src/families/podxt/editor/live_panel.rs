@@ -44,6 +44,7 @@ pub(super) struct LivePanel {
     locker: locker::Locker,
     snapshot: Snapshot,
     historical_library: std::collections::BTreeMap<u16, EditBuffer>,
+    historical_bank: Option<(detection::DeviceKey, usize)>,
     show_values: bool,
     startup: Option<Startup>,
     sync_result: Option<Result<(), String>>,
@@ -113,6 +114,12 @@ struct Snapshot {
 }
 
 impl Snapshot {
+    fn complete_tone_bank(&self) -> Option<usize> {
+        self.library_count.filter(|_| {
+            Location::all(&[BankKind::Tones]).all(|slot| self.library.contains_key(&slot.address()))
+        })
+    }
+
     fn apply(&mut self, update: ReadUpdate, now: Instant) {
         match update {
             ReadUpdate::Current(tone) => self.tone = Some(tone),
@@ -484,7 +491,7 @@ impl LivePanel {
         if let Some(tab) = verified {
             self.editor.reply_pending = Arc::clone(&tab.device.podxt_reply_pending);
         }
-        self.device = key.cloned();
+        let previous_device = std::mem::replace(&mut self.device, key.cloned());
         self.startup = self.device.as_ref().map(|_| Startup::Current);
         self.sync_result = None;
         self.live_editing = false;
@@ -495,8 +502,20 @@ impl LivePanel {
             self.panel = None;
         }
         self.editor.set_live(false);
-        self.historical_library.append(&mut self.snapshot.library);
-        let previous = std::mem::take(&mut self.snapshot);
+        let mut previous = std::mem::take(&mut self.snapshot);
+        if let Some((device, count)) = previous_device.zip(previous.complete_tone_bank()) {
+            self.historical_library = std::mem::take(&mut previous.library);
+            self.historical_bank = Some((device, count));
+        } else if self.historical_bank.is_none() {
+            self.historical_library.append(&mut previous.library);
+        }
+        if let Some((source, count)) = self.historical_bank.as_ref()
+            && key == Some(source)
+        {
+            self.snapshot.library = std::mem::take(&mut self.historical_library);
+            self.snapshot.library_count = Some(*count);
+            self.historical_bank = None;
+        }
         if self.editor.has_pending() {
             self.snapshot.tone = previous.tone;
             self.snapshot.channel = previous.channel;
@@ -628,23 +647,30 @@ impl LivePanel {
             return None;
         }
         let request = self.startup.take()?;
-        if request == Startup::Current {
+        if request == Startup::Current && !self.has_session_library() {
             self.startup = Some(Startup::Tones);
         }
         Some(request)
     }
 
+    pub(super) fn has_session_library(&self) -> bool {
+        self.snapshot.complete_tone_bank().is_some() || self.historical_bank.is_some()
+    }
+
     pub(super) fn connection_sync_admission(&self) -> SyncAdmission {
-        if !Self::admitted(ReadCommand::ToneBank) {
-            return SyncAdmission::Unavailable(
-                "PODxt library download is unavailable in this build.",
-            );
-        }
         if let Some(reason) = self.pending_reply_message() {
             return SyncAdmission::Blocked(reason);
         }
         if self.busy() || self.startup == Some(Startup::Current) {
             return SyncAdmission::Busy;
+        }
+        if self.snapshot.complete_tone_bank().is_some() {
+            return SyncAdmission::Complete;
+        }
+        if !Self::admitted(ReadCommand::ToneBank) {
+            return SyncAdmission::Unavailable(
+                "PODxt library download is unavailable in this build.",
+            );
         }
         SyncAdmission::Ready(
             library_total(ReadCommand::ToneBank)

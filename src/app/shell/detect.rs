@@ -73,6 +73,7 @@ impl Workbench {
             Err(error) => {
                 self.connections
                     .detection(connections::Detection::Failed(error.to_string()));
+                self.mark_connection_inventory_uncertain();
                 self.tabs.mark_presence_uncertain();
                 self.detection_status = Some(format!("Device detection: {error}."));
             }
@@ -118,15 +119,14 @@ impl Workbench {
         }
     }
 
-    pub(super) fn refresh_guitar_button(&mut self, ui: &mut egui::Ui, enabled: bool) -> bool {
+    pub(super) fn retry_guitar_button(&mut self, ui: &mut egui::Ui, enabled: bool) -> bool {
         let response = ui.add_enabled(
             enabled,
-            egui::Button::new(egui::RichText::new("Refresh guitar").size(theme::BODY))
+            egui::Button::new(egui::RichText::new("Retry guitar connection").size(theme::BODY))
                 .min_size(egui::vec2(theme::TARGET, theme::TARGET)),
         );
         #[cfg(test)]
-        self.detection_buttons
-            .insert("refresh-guitar", response.rect);
+        self.detection_buttons.insert("retry-guitar", response.rect);
         response.clicked()
     }
 

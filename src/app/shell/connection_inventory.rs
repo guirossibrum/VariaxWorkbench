@@ -30,6 +30,7 @@ enum Sync {
 #[derive(Default)]
 pub(in crate::editor) struct ConnectionInventory {
     rows: BTreeMap<RowKey, Row>,
+    devices: BTreeMap<DeviceKey, DetectedDevice>,
 }
 
 impl Workbench {
@@ -39,20 +40,59 @@ impl Workbench {
         };
         let mut devices: BTreeMap<_, _> = service
             .offline_inventory(registry::DEVICE_PROFILES)
-            .map(|(key, name)| (key, (name, Verification::Unsupported)))
+            .map(|(key, name)| (key, (name, Some(Verification::Unsupported))))
             .collect();
         devices.extend(detected.iter().map(|device| {
-            let name = match device.key.family_id {
-                "variax" => "Variax 300/600",
-                _ => device.model,
-            };
-            (device.key.clone(), (name, verification(device)))
+            (
+                device.key.clone(),
+                (device_name(device), verification(device)),
+            )
         }));
+        self.connection_inventory.devices = detected
+            .iter()
+            .map(|device| (device.key.clone(), device.clone()))
+            .collect();
         self.connection_inventory.reconcile(
             &mut self.connections,
             devices,
             self.startup_connection,
         );
+    }
+
+    pub(super) fn mark_connection_inventory_uncertain(&mut self) {
+        self.connection_inventory.devices.clear();
+        for row in self.connection_inventory.rows.values() {
+            if row.current.is_some() {
+                self.connections.presence_uncertain(row.attachment);
+            }
+        }
+    }
+
+    pub(super) fn open_connected_editor(&mut self, key: &DeviceKey) -> Option<super::TabId> {
+        let device = self.connection_inventory.devices.get(key)?;
+        if !matches!(device.support, DeviceSupport::Verified(_)) {
+            return None;
+        }
+        match self
+            .tabs
+            .open_device(device.clone(), registry::FAMILIES, &self.defaults)
+        {
+            Ok((id, needs_library)) => {
+                if needs_library
+                    && let Some(row) = self.connection_inventory.rows.get_mut(&row_key(key))
+                    && row.current.as_ref() == Some(key)
+                    && self.connections.request_download(row.attachment)
+                {
+                    row.startup = false;
+                    row.sync = Sync::Pending;
+                }
+                Some(id)
+            }
+            Err(error) => {
+                self.shell_error = Some(error);
+                None
+            }
+        }
     }
 
     pub(super) fn poll_connection_sync(&mut self, ctx: &egui::Context) {
@@ -100,6 +140,9 @@ impl Workbench {
                 let update = update.unwrap_or_else(|| {
                     SyncUpdate::Finished(Err("The download is no longer active.".into()))
                 });
+                if matches!(update, SyncUpdate::Finished(Ok(()))) {
+                    entry.connection_library_complete = true;
+                }
                 row.apply_update(&mut self.connections, read, update);
                 continue;
             }
@@ -116,10 +159,25 @@ impl Workbench {
                 ctx.request_repaint_after(std::time::Duration::from_millis(60));
                 continue;
             }
-            match entry
+            let admission = entry
                 .editor
-                .connection_sync_admission(row.startup || matches!(row.sync, Sync::Approved))
+                .connection_sync_admission(row.startup || matches!(row.sync, Sync::Approved));
+            if entry.has_session_library()
+                && !matches!(admission, SyncAdmission::Busy | SyncAdmission::Complete)
             {
+                self.connections.skip(
+                    row.attachment,
+                    "Session library kept locally. Use the editor’s download action to refresh it.",
+                );
+                row.sync = Sync::Settled;
+                continue;
+            }
+            match admission {
+                SyncAdmission::Complete => {
+                    self.connections.library_restored(row.attachment);
+                    entry.connection_library_complete = true;
+                    row.sync = Sync::Settled;
+                }
                 SyncAdmission::Busy => {
                     self.connections.waiting_for_editor(row.attachment);
                     ctx.request_repaint_after(std::time::Duration::from_millis(80));
@@ -265,6 +323,18 @@ impl Row {
 }
 
 impl ConnectionInventory {
+    pub(super) fn verified_devices(&self) -> impl Iterator<Item = &DetectedDevice> {
+        self.devices
+            .values()
+            .filter(|device| matches!(device.support, DeviceSupport::Verified(_)))
+    }
+
+    pub(super) fn guitar_retry_routes(&self) -> impl Iterator<Item = &DetectedDevice> {
+        self.devices
+            .values()
+            .filter(|device| device.key.family_id == "podxt" && device.refresh_guitar)
+    }
+
     #[cfg(test)]
     pub(super) fn attachment_for_test(&self, path: &str, family: &'static str) -> Attachment {
         self.rows[&(path.to_owned(), family)].attachment
@@ -273,7 +343,7 @@ impl ConnectionInventory {
     fn reconcile(
         &mut self,
         connections: &mut Connections,
-        devices: BTreeMap<DeviceKey, (&'static str, Verification)>,
+        devices: BTreeMap<DeviceKey, (&'static str, Option<Verification>)>,
         startup: bool,
     ) {
         for row in self.rows.values_mut() {
@@ -337,6 +407,10 @@ impl ConnectionInventory {
                 row.startup = automatic;
                 row.sync = Sync::Pending;
             }
+            let Some(verification) = verification else {
+                connections.presence_uncertain(row.attachment);
+                continue;
+            };
             if !matches!(verification, Verification::Verified) && !matches!(row.sync, Sync::Skipped)
             {
                 row.sync = Sync::Pending;
@@ -350,13 +424,21 @@ impl ConnectionInventory {
     }
 }
 
+pub(super) fn device_name(device: &DetectedDevice) -> &'static str {
+    match device.key.family_id {
+        "variax" => "Variax 300/600",
+        _ => device.model,
+    }
+}
+
 fn row_key(key: &DeviceKey) -> RowKey {
     (key.attachment.path.clone(), key.family_id)
 }
 
-fn verification(device: &DetectedDevice) -> Verification {
-    match device.support {
-        DeviceSupport::Verified(_) | DeviceSupport::Refreshing(_) => Verification::Verified,
+fn verification(device: &DetectedDevice) -> Option<Verification> {
+    Some(match device.support {
+        DeviceSupport::Verified(_) => Verification::Verified,
+        DeviceSupport::Refreshing(_) | DeviceSupport::PresenceUncertain => return None,
         DeviceSupport::IdentityPending => Verification::Checking,
         DeviceSupport::FileEditingOnly => Verification::Unsupported,
         DeviceSupport::UnverifiedGuitarFirmware(notice) => {
@@ -368,5 +450,5 @@ fn verification(device: &DetectedDevice) -> Verification {
                 "No verified identity is available for this connection.".into()
             })),
         },
-    }
+    })
 }

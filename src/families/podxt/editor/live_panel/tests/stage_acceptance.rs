@@ -857,6 +857,115 @@ fn connection_sync_adopts_only_a_complete_released_result() {
 }
 
 #[test]
+fn same_verified_attachment_recovers_current_without_downloading_the_completed_bank() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = current_fixture(&ctx);
+    let mut panel = std::mem::take(&mut app.podxt_mut().live);
+    let device = app.tabs.entries[0].device.as_ref();
+    let saved = panel.snapshot.library.clone();
+
+    assert!(panel.has_session_library());
+    assert!(!panel.set_device(None));
+    assert!(panel.has_session_library());
+    assert!(panel.snapshot.library.is_empty());
+    assert_eq!(panel.historical_library, saved);
+    assert!(panel.set_device(device));
+    assert!(panel.has_session_library());
+    assert_eq!(panel.snapshot.library, saved);
+    assert!(panel.historical_library.is_empty());
+    assert!(!panel.has_current());
+    assert!(matches!(
+        panel.connection_sync_admission(),
+        SyncAdmission::Busy
+    ));
+
+    panel.editor.use_fake_get();
+    let requests = panel.device_requests;
+    panel.poll(&ctx);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while panel.editor.busy() {
+        assert!(Instant::now() < deadline, "current read did not finish");
+        std::thread::yield_now();
+        panel.poll(&ctx);
+    }
+    assert_eq!(panel.device_requests, requests + 1);
+    assert!(panel.has_current());
+    assert!(panel.live_editing);
+    assert!(matches!(
+        panel.connection_sync_admission(),
+        SyncAdmission::Complete
+    ));
+    assert_eq!(panel.next_startup(), None);
+    assert_eq!(panel.snapshot.library, saved);
+}
+
+#[test]
+fn home_reopen_checks_the_current_tone_before_checked_recall() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = current_fixture(&ctx);
+    app.connections.dismiss();
+    let tab = app.tabs.active.unwrap();
+    let old_key = app.podxt().live.device.clone().unwrap();
+    let requests = app.podxt().live.device_requests;
+    app.podxt_mut().live.editor.use_fake_get();
+    app.podxt_mut()
+        .live
+        .editor
+        .use_fake_recall_after_current_read();
+
+    render_stage(&ctx, &mut app, vec![]);
+    let close = ctx.data(|data| {
+        data.get_temp::<egui::Rect>(egui::Id::new(("test-close-tab", tab)))
+            .unwrap()
+            .center()
+    });
+    for pressed in [true, false] {
+        render_stage(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(close),
+                egui::Event::PointerButton {
+                    pos: close,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert!(app.tabs.entries.is_empty());
+    click_text(&ctx, &mut app, "Open PODxt Live");
+    assert_eq!(app.tabs.active, Some(tab));
+    render_stage(&ctx, &mut app, vec![]);
+    finish_playing_read(&ctx, &mut app, requests + 1);
+    let panel = &app.podxt().live;
+    assert!(panel.live_editing);
+    assert_eq!(panel.device.as_ref(), Some(&old_key));
+    assert_eq!(panel.snapshot.library_count, Some(128));
+    assert!(matches!(
+        panel.connection_sync_admission(),
+        SyncAdmission::Complete
+    ));
+
+    click_text(&ctx, &mut app, "1B  Saved Channel");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.podxt().live.editor.busy() {
+        assert!(Instant::now() < deadline, "fake recall did not finish");
+        std::thread::yield_now();
+        render_stage(&ctx, &mut app, vec![]);
+    }
+    let panel = &app.podxt().live;
+    assert_eq!(panel.device_requests, requests + 2);
+    assert_eq!(panel.playing_channel(), Location::tone_from_label("1B"));
+    assert_eq!(
+        panel.snapshot.tone.as_ref().unwrap().name(),
+        "Recalled tone"
+    );
+    assert_eq!(panel.snapshot.library_count, Some(128));
+}
+
+#[test]
 fn same_port_replacement_keeps_failed_and_cancelled_downloads_as_historical() {
     let ctx = egui::Context::default();
     let (mut app, presence) = current_fixture(&ctx);
@@ -873,6 +982,13 @@ fn same_port_replacement_keeps_failed_and_cancelled_downloads_as_historical() {
     assert_eq!(app.tabs.active, Some(tab));
     assert_eq!(replacement.attachment.path, old.attachment.path);
     assert_ne!(replacement, old);
+    assert!(app.podxt().live.has_session_library());
+    assert!(!matches!(
+        app.podxt().live.connection_sync_admission(),
+        SyncAdmission::Complete
+    ));
+
+    assert_ne!(app.podxt().live.startup, Some(Startup::Tones));
 
     for (result, cancelled) in [(Err("failed read".into()), false), (Ok(()), true)] {
         let panel = &mut app.podxt_mut().live;

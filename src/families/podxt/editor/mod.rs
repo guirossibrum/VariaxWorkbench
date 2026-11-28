@@ -4001,6 +4001,10 @@ impl FamilyTab for PodxtEditor {
         self.live.connection_sync_admission()
     }
     #[cfg(feature = "usb")]
+    fn has_session_library(&self) -> bool {
+        self.live.has_session_library()
+    }
+    #[cfg(feature = "usb")]
     fn start_connection_sync(&mut self, ctx: &egui::Context) -> Result<(), String> {
         self.live.start_connection_sync(ctx)
     }

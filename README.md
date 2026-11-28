@@ -46,6 +46,7 @@ Earlier captures from floating windows using test presets with device discovery 
   automatically. The linked guitar waits for the PODxt download, then
   temporarily switches presets during its read. Open a completed device’s
   editor while the other download continues in the movable connection window.
+  Home lists verified devices with actions to open or reopen their editors.
   Offline editing is available from the splash and from Home.
 - **Rig Check.** Rehearse the checks in Practice or run the guided checks on a
   supported rig. Open a saved report at launch to continue a compatible run
