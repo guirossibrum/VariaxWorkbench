@@ -21,3 +21,31 @@ The [stage and librarian mockups](podxt-268-mockups.html) propose these changes
 for owner review. The offline captures establish layout and labels. The
 channel-selection flow is code-derived, and the comparison did not exercise
 a live recall, send, or store. CustomTone was a separate online service.
+
+## Unsaved playing tones on PODxt Live
+
+This is a static trace of the Windows and macOS Line 6 Edit 3.06 Java
+implementations for [#242](https://github.com/guirossibrum/VariaxWorkbench/issues/242)
+and [#268](https://github.com/guirossibrum/VariaxWorkbench/issues/268).
+
+- On its initial refresh, `L6SharcToneEditor.OnPostRefresh` queries the current
+  program and the hardware edited flag. `L6SharcToneDevice.QueryCurrentProgramNumber`
+  uses global 17 and `QueryEditedState` uses global 28. If the flag is set, the
+  editor reads the playing buffer and uses `L6PatchManager.SetCurrentPatchData`
+  to import its model data into the local channel copy and mark that copy
+  unsynchronized. The import call does not send the buffer or store a channel.
+- Edits in the editor also mark the channel's local copy unsynchronized.
+  `L6Editor.SetCurrentPatch` and `L6PatchManager.SendEditBufferOrPC` select clean
+  destinations by Program Change and send unsynchronized destinations from the
+  local copy into the temporary playing buffer. The incoming program event
+  path can reapply that local copy after a physical channel selection.
+- `L6EditorApp.Quit` warns about unsynchronized local tones. Explicit
+  synchronization controls write saved memory.
+
+On Build 565, the owner verified that Workbench relaunch reads the PODxt's
+existing unsaved playing buffer. Restoring saved 2A on the PODxt removed
+the unsynchronized marker and restored ordinary app channel switching. The
+Workbench fix tracks the hardware playing buffer, saved slot and in-session
+draft separately. It targets a verified switch that preserves the outgoing
+tone as a draft where possible. Native automatic draft replay remains under
+the separate owner acceptance procedure.
