@@ -320,6 +320,37 @@ fn app_quit_checks_every_dirty_tab_and_keeps_all_tabs_when_cancelled() {
 }
 
 #[test]
+fn question_mark_opens_help_without_blocking_the_frame() {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ctx = egui::Context::default();
+        let mut app = empty_shell(&ctx);
+        let _ = ctx.run(layout_input(1120.0, 760.0, 1.0), |ctx| app.render(ctx));
+        assert!(!app.help);
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Questionmark,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..layout_input(1120.0, 760.0, 1.0)
+            },
+            |ctx| app.render(ctx),
+        );
+        send.send(app.help).unwrap();
+    });
+
+    assert!(
+        receive
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Help frame did not finish")
+    );
+}
+
+#[test]
 fn control_q_uses_the_existing_quit_prompt_and_plain_q_does_nothing() {
     let ctx = egui::Context::default();
     let mut app = empty_shell(&ctx);

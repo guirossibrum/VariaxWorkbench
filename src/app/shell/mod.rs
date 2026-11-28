@@ -490,6 +490,7 @@ impl Workbench {
                 }
             }
         }
+        let wants_keyboard_input = ctx.wants_keyboard_input();
         let (open, save, save_as, undo, redo, quit, help) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::O) && i.modifiers.command,
@@ -498,7 +499,7 @@ impl Workbench {
                 i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift,
                 i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift,
                 i.key_pressed(egui::Key::Q) && i.modifiers.matches_exact(egui::Modifiers::CTRL),
-                i.key_pressed(egui::Key::Questionmark) && !ctx.wants_keyboard_input(),
+                i.key_pressed(egui::Key::Questionmark) && !wants_keyboard_input,
             )
         });
         if !self.has_prompt() {
