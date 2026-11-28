@@ -1,11 +1,20 @@
 # Windows x64 package
 
 The unsigned offline alpha ZIP contains **Variax Workbench.exe**,
-**Rig Check.exe**, **How to open.txt**, build information and a SHA-256
+**Rig Check.exe**, **How to open.txt**, **BUILD.txt** and a SHA-256
 manifest. Extract the entire ZIP into a folder you can write to, then open
 either executable. An installer, Line 6 driver and separate C runtime
-installation are unnecessary. Native packages use the MSVC target with a
-static C runtime. [Rust linkage reference](https://doc.rust-lang.org/reference/linkage.html)
+installation are unnecessary.
+
+Both package variants use the same archive name. Check `BUILD.txt` for the
+build number, source commit and target.
+
+| Package | Rust target | Verification |
+| --- | --- | --- |
+| Local owner delivery (`--owner-delivery`) | `x86_64-pc-windows-gnu` | Linux MinGW-w64 cross-build. Static package checks, with native Windows smoke pending. |
+| Authorized hosted release | `x86_64-pc-windows-msvc` | Native Windows runner. Static C runtime and packaged command-line smoke. |
+
+[Release build guide](release-build.md) · [Rust linkage reference](https://doc.rust-lang.org/reference/linkage.html)
 
 If Windows SmartScreen shows **Windows protected your PC**, select
 **More info → Run anyway** for a download you trust. The ZIP download
@@ -53,7 +62,7 @@ The collector uses no MIDI endpoint query. Native validation of the command
 output and the Windows desktop report remains pending. See the
 [Windows transport findings](driver-windows-podxt.md).
 
-## Build locally or download an artifact
+## Build natively or download a hosted artifact
 
 On x64 Windows, use Rust via rustup, Git, Python 3.9 or newer, and Visual
 Studio C++ build tools with a Windows SDK. Install the pinned Rust toolchain
@@ -74,7 +83,7 @@ Use the [unified release command](release-build.md) for the hosted offline
 set. Its native Windows runner executes the offline suite and packages the
 Windows x64 ZIP from the same commit as the Linux and macOS jobs.
 
-## Native verification
+## Hosted MSVC verification
 
 The workflow exercises Workbench version output, Rig Check's catalogue,
 a simulated Practice step, and the offline engine report. The packaged
@@ -84,7 +93,35 @@ recognized processor architecture from Rig Check step 0.1 in
 were skipped, device steps reported the Windows connection notice, and
 This computer recorded zero device messages. The inventory parsers and
 command selection have offline unit coverage.
-On the owner's Windows system, verify SmartScreen, both graphical launches,
-opening and saving a synthetic preset, and the USB and audio inventory
-screens without connecting the rig. Live transport and audio streams remain
-outside this package.
+Native desktop validation of the USB and audio inventory screens remains
+pending.
+
+## Owner smoke test on Windows
+
+For Build 526, use the GNU ZIP in the owner set's `windows/` directory.
+Its source commit is
+`b60e7367b52e9f814268631803f22105c6434c5d` and its profile is `offline`
+with `gui,portable-math`. Static verification covered both unsigned x64 PE
+executables, their Windows system DLL imports, the ZIP contents, and both
+layers of SHA-256 checksums. See `windows-verification.txt` beside the ZIP
+and `release-manifest.json` at the root of the owner set. The steps below
+are the pending native Windows check.
+
+1. Keep the PODxt Live and Variax disconnected. In PowerShell, run
+   `Get-FileHash .\Variax-Workbench-0.9.0-windows-x64.zip -Algorithm SHA256`
+   and compare the result with the adjacent `.zip.sha256` file. Build 526
+   should match
+   `a301a1f706b85040e862d2e4e4fd59ab04078b1ea56c63036d1de61b8e9c942d`.
+   After a match, extract the whole ZIP. Check that `BUILD.txt` says
+   Build number 526 and `x86_64-pc-windows-gnu`.
+2. Launch **Variax Workbench.exe** from the extracted folder. Follow the
+   SmartScreen guidance above if prompted. In the Variax editor, use
+   **Open…** with a local copy of `synthetic-host-preset.vwm`. If you only
+   have the ZIP, create a scratch preset with **New Variax file → New Model…**,
+   then reopen it with **Open…**. Change a control, use
+   **Save As…** to write a new `.vwm`, and reopen the saved copy to confirm
+   the change persisted. [Synthetic preset fixture](../tests/fixtures/synthetic-host-preset.vwm)
+3. Launch **Rig Check.exe** from the same folder. Choose **Practice**,
+   follow the prompts to run a simulated device step, and confirm it
+   displays a result. Practice uses simulated devices. Live USB, MIDI and
+   audio transport are outside the smoke test.
