@@ -9,6 +9,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    task::Poll,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -141,6 +142,16 @@ struct Worker {
     retry_allowed: Arc<AtomicBool>,
     progress: Arc<Mutex<WorkerProgress>>,
     thread: JoinHandle<Result<ListenEnd, String>>,
+}
+
+impl Worker {
+    fn finish(self) -> (Attachment, Result<ListenEnd, String>) {
+        let result = self
+            .thread
+            .join()
+            .unwrap_or_else(|_| Err("The Variax Follow worker stopped unexpectedly.".into()));
+        (self.attachment, result)
+    }
 }
 
 #[derive(Default)]
@@ -420,6 +431,29 @@ impl Follow {
         Ok(())
     }
 
+    pub(super) fn begin_close(&mut self) {
+        self.stop();
+        self.device_event = None;
+    }
+
+    pub(super) fn poll_close(&mut self) -> Poll<Option<String>> {
+        let Some(worker) = &self.worker else {
+            return Poll::Ready(None);
+        };
+        if !worker.thread.is_finished() {
+            return Poll::Pending;
+        }
+        // Only collect the checked result. Observations from the departing
+        // listener must never be applied to a document or a replacement rig.
+        let (attachment, result) = self.worker.take().expect("finished Follow worker").finish();
+        Poll::Ready(result.err().map(|error| {
+            format!(
+                "Variax Follow cleanup on USB {} (address {}): {error}",
+                attachment.path, attachment.address,
+            )
+        }))
+    }
+
     fn listen(&mut self, ctx: &egui::Context) {
         let Some(worker) = &self.worker else {
             return;
@@ -460,15 +494,12 @@ impl Follow {
 
         if finished {
             let worker = self.worker.take().expect("finished Follow worker");
-            let result = worker
-                .thread
-                .join()
-                .unwrap_or_else(|_| Err("The Variax Follow worker stopped unexpectedly.".into()));
             let cancelled = worker.stop.load(Ordering::Relaxed);
-            if self.attachment.as_ref() != Some(&worker.attachment) {
+            let (attachment, result) = worker.finish();
+            if self.attachment.as_ref() != Some(&attachment) {
                 if self.attachment.is_none()
                     && self.disconnected()
-                    && self.device_key.as_ref() == Some(&worker.attachment.key)
+                    && self.device_key.as_ref() == Some(&attachment.key)
                     && let Err(error) = result
                 {
                     self.error = Some(error);
@@ -957,6 +988,9 @@ fn read_updates(
         }
     })
 }
+
+#[cfg(test)]
+mod close_tests;
 
 #[cfg(test)]
 mod tests {

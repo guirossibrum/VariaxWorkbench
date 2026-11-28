@@ -1347,14 +1347,19 @@ impl FamilyTab for VariaxEditor {
     }
     fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         #[cfg(feature = "usb")]
-        {
-            self.follow.stop();
-            self.live_edit.stop();
-        }
+        self.live_edit.stop();
         if self.pending.is_none() {
             self.pending = Some(GuitarPending::Quit);
         }
         self.variax_pending_dialog(services, ctx);
+    }
+    #[cfg(feature = "usb")]
+    fn begin_close(&mut self) {
+        self.follow.begin_close();
+    }
+    #[cfg(feature = "usb")]
+    fn poll_close(&mut self) -> std::task::Poll<Option<String>> {
+        self.follow.poll_close()
     }
     fn status(&self) -> (&str, Option<&str>) {
         (&self.status, self.error.as_deref())
