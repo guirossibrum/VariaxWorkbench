@@ -48,6 +48,8 @@ Earlier captures from floating windows using test presets with device discovery 
   editor while the other download continues in the movable connection window.
   Home lists verified devices with actions to open or reopen their editors.
   Offline editing is available from the splash and from Home.
+- **Session diagnostics.** Open Help → Diagnostics to see the current session
+  log and minimum level, open its folder, or export a copy. [Log locations](docs/session-log.md).
 - **Rig Check.** Rehearse the checks in Practice or run the guided checks on a
   supported rig. Open a saved report at launch to continue a compatible run
   after verifying its starting state and backup evidence. On Mac, new reports

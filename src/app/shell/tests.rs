@@ -867,6 +867,9 @@ fn painted_text(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
     found
 }
 
+#[path = "session_log_tests.rs"]
+mod session_log;
+
 fn text_overlaps(left: egui::Rect, right: egui::Rect) -> bool {
     let shared = left.intersect(right);
     shared.width() > 1.0 && shared.height() > 1.0

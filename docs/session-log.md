@@ -11,6 +11,8 @@ Workbench writes one local JSON Lines file per desktop session under the configu
 
 The file name is `workbench-session-<20-digit Unix milliseconds>-<unique suffix>.jsonl`. A supplied `--data-dir` takes precedence over the absolute `VARIAX_WORKBENCH_DATA_DIR` override and the platform defaults. The log folder is `logs/` under that root. If Workbench cannot resolve or write the folder, logging is unavailable and Workbench can continue.
 
+In Workbench, open **Help → Diagnostics** to see the current file, log folder, active minimum level and sink status. **Open log folder** opens the folder in the system file manager. **Export session log…** uses the app's save picker to copy the current log while Workbench stays open. Choose a new file name if one already exists. The panel shows canceled, completed and failed exports. Rig Check reports and exports have their own locations.
+
 Development and local owner builds record TRACE, DEBUG, INFO, WARN, ERROR and CRITICAL, including optimized owner builds. The public package profile records WARN, ERROR and CRITICAL. Local owner delivery selects TRACE on Linux and macOS USB and on Windows GNU offline. A combined delivery that reuses a hosted Windows distribution package inherits that package's WARN level.
 
 The worker discards events when the queue is full and records the drop count when it can write again. Each file is capped at 4 MiB. Its final 64 KiB are reserved for WARN and above when ordinary records reach the limit. Workbench keeps eight recent sessions and protects files that active writers still hold open. More than eight concurrent processes can temporarily exceed the history count. An export is an explicit, non-overwriting copy to a user-selected destination. Records contain typed facts such as device family, action, disposition, duration and bounded control comparisons. The schema excludes free-form device errors, paths, preset names, serial numbers and raw preset or transport data. Workbench does not upload logs.
@@ -29,4 +31,4 @@ PODxt recall records zero-based Program Change indices and uses the saved-slot r
 
 The Variax step 3 fixture exercises the existing identity retry and expected-reply logic with a scripted link. PODxt headless editor tests exercise the actual sidebar, confirmation controls, Drive knob and amp switch through the scripted device transaction and inspect the JSON Lines records.
 
-Lane 1 owns the Help/Diagnostics placement. The shell can use `session_log::status()` for the effective level, current file, folder and sink state, and `session_log::export_current(destination)` to queue a copy and poll its result without blocking the UI. Rig Check's report files and exports use their existing locations.
+The headless Help → Diagnostics checks exercise the normal toolbar and panel controls with offline log sinks and the app-owned picker. Native picker and file-manager acceptance remains pending.

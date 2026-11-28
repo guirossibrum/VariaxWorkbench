@@ -133,6 +133,7 @@ impl FileDialogs for FakeDialogs {
                 debug_assert!(!name.is_empty() && !extension.is_empty());
                 self.save.pop_front().expect("unexpected save picker")
             }
+            PickRequest::SaveSessionLog => self.save.pop_front().expect("unexpected log picker"),
             PickRequest::Artwork => self.artwork.pop_front().expect("unexpected artwork picker"),
             PickRequest::OpenWav => self.open_wav(),
             PickRequest::SaveAudio { name, aiff: true } => self.save_aiff(&name),
@@ -176,6 +177,7 @@ type TabPickerResult =
 
 enum PickerAction {
     OpenFile,
+    ExportSessionLog,
     Backup(BackupChoice, Option<detection::DeviceKey>),
     SaveReport {
         restart: bool,
@@ -290,6 +292,7 @@ struct Workbench {
     dialogs: Box<dyn FileDialogs>,
     picker: Picker<PickerAction>,
     help: bool,
+    session_log_panel: shell::SessionLogPanel,
     permit_close: bool,
     theme_polled: Instant,
     theme_text: String,
