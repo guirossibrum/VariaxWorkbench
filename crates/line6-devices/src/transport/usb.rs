@@ -99,6 +99,25 @@ impl UsbInterfaceLink {
             UsbInterfaceLink::open_device(spec, &device, rig)
         })
     }
+
+    /// Borrow only PODxt Live's Variax interface and verify its descriptors.
+    /// Revalidate the paired attachment after obtaining the USB handle and
+    /// before any detach, claim, or alternate-setting change.
+    #[cfg(target_os = "linux")]
+    pub fn open_variax_attachment_borrowed_checked<'rig>(
+        path: &str,
+        address: u8,
+        rig: &'rig DeviceLock,
+        before_claim: impl FnOnce() -> Result<(), String>,
+    ) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
+        let spec = VARIAX_VIA_PODXT_LIVE;
+        with_matching_attachment(rig, spec, path, address, |device| {
+            podxt::verify_descriptor(&device, spec)?;
+            let link = UsbInterfaceLink::open_handle(spec, &device, rig)?;
+            before_claim()?;
+            link.prepare_checked(UsbInterfaceLink::prepare)
+        })
+    }
 }
 
 impl<Rig> UsbInterfaceLink<Rig> {

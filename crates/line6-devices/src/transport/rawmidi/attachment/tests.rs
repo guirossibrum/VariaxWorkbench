@@ -486,3 +486,80 @@ fn synthetic_inventory_rejects_detached_and_ambiguous_topology() {
             .contains("multiple PODxt Live USB attachments")
     );
 }
+
+#[test]
+fn scoped_input_opens_read_only_and_finishes_under_the_held_rig() {
+    let fixture = Fixture::new();
+    let rig = fixture.lock();
+    let device = fixture.0.join("fake-midi");
+    fs::write(&device, [0xc0, 127]).unwrap();
+    let mut selected = selection();
+    selected.identity.device = device;
+    let expected = || {
+        let mut observed = identity();
+        observed.device.clone_from(&selected.identity.device);
+        Ok(observed)
+    };
+    let port = open_verified_port(
+        &selected,
+        || false,
+        expected,
+        open_read_only,
+        |mut port| {
+            assert_eq!(
+                port.write(&[0xff]).unwrap_err().raw_os_error(),
+                Some(libc::EBADF)
+            );
+            Ok(node())
+        },
+        |_| unreachable!(),
+    )
+    .unwrap();
+    let mut input = ScopedRawMidiInput {
+        port: Some(port),
+        device: selected.identity.device.clone(),
+        _rig: &rig,
+    };
+    assert_eq!(input.read(Duration::ZERO).unwrap(), Some(vec![0xc0, 127]));
+    input
+        .finish_with(|port| {
+            fixture.assert_locked();
+            close_once(port)
+        })
+        .unwrap();
+    assert_eq!(fs::read(selected.identity.device).unwrap(), [0xc0, 127]);
+    fixture.assert_locked();
+}
+
+#[test]
+fn scoped_input_rejects_a_symlink_and_preserves_a_checked_close_failure() {
+    let fixture = Fixture::new();
+    let rig = fixture.lock();
+    let node_path = fixture.0.join("node");
+    let alias = fixture.0.join("alias");
+    fs::write(&node_path, []).unwrap();
+    symlink(node_path, &alias).unwrap();
+    assert_eq!(
+        open_read_only(&alias).unwrap_err().raw_os_error(),
+        Some(libc::ELOOP)
+    );
+
+    let (port, peer) = pair();
+    let input = ScopedRawMidiInput {
+        port: Some(port),
+        device: alias,
+        _rig: &rig,
+    };
+    let fd = input.port.as_ref().unwrap().as_raw_fd();
+    let error = input
+        .finish_with(|port| {
+            fixture.assert_locked();
+            assert_eq!(port.as_raw_fd(), fd);
+            close_once(port)?;
+            Err(io::Error::from_raw_os_error(libc::EINTR))
+        })
+        .unwrap_err();
+    assert_eq!(error.source.raw_os_error(), Some(libc::EINTR));
+    assert_closed_without_traffic(&peer);
+    fixture.assert_locked();
+}

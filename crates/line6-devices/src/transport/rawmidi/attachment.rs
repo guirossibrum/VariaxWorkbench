@@ -5,7 +5,7 @@ mod native;
 #[cfg(test)]
 mod tests;
 
-use super::{RawMidiLink, open_port};
+use super::{RawMidiLink, open_port, read_port};
 use crate::{
     device_lock::DeviceLock,
     family::podxt::transport::PODXT_LIVE_MIDI,
@@ -15,7 +15,7 @@ use inventory::{AttachmentIdentity, NodeIdentity, probe};
 use std::fs::File;
 use std::{
     fmt, io,
-    os::fd::OwnedFd,
+    os::{fd::OwnedFd, unix::fs::OpenOptionsExt},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -45,6 +45,22 @@ impl RawMidiAttachment {
             address,
             identity,
         })
+    }
+
+    /// Recheck the recorded attachment under the same rig lease.
+    pub fn revalidate(&self, _rig: &DeviceLock) -> Result<(), String> {
+        self.matches(probe(&self.usb_path, self.address)?)
+    }
+
+    fn matches(&self, observed: AttachmentIdentity) -> Result<(), String> {
+        if observed == self.identity {
+            Ok(())
+        } else {
+            Err(format!(
+                "selected PODxt Live USB {} address {} or its ALSA MIDI node changed",
+                self.usb_path, self.address
+            ))
+        }
     }
 }
 
@@ -178,62 +194,19 @@ impl<'rig> ScopedRawMidiLink<'rig> {
     fn open_with(
         selected: &RawMidiAttachment,
         rig: &'rig DeviceLock,
-        mut cancelled: impl FnMut() -> bool,
-        mut probe: impl FnMut() -> Result<AttachmentIdentity, String>,
+        cancelled: impl FnMut() -> bool,
+        probe: impl FnMut() -> Result<AttachmentIdentity, String>,
         open: impl FnOnce(&std::path::Path) -> io::Result<File>,
         inspect: impl FnOnce(&File) -> io::Result<NodeIdentity>,
         close: impl FnOnce(OwnedFd) -> io::Result<()>,
     ) -> Result<Self, RawMidiOpenError> {
-        use RawMidiOpenFailure::{Attachment, Cancelled, Descriptor, Open, WrongDescriptor};
-        let device = &selected.identity.device;
-        let error = |failure, cleanup| RawMidiOpenError {
-            device: device.clone(),
-            failure,
-            cleanup,
-        };
-        let mut verify = || {
-            let observed = probe().map_err(Attachment)?;
-            if observed == selected.identity {
-                Ok(())
-            } else {
-                Err(Attachment(format!(
-                    "selected PODxt Live USB {} address {} or its ALSA MIDI node changed",
-                    selected.usb_path, selected.address
-                )))
-            }
-        };
-        if cancelled() {
-            return Err(error(Cancelled, None));
-        }
-        verify().map_err(|failure| error(failure, None))?;
-        if cancelled() {
-            return Err(error(Cancelled, None));
-        }
-        let port = open(device).map_err(|source| error(Open(source), None))?;
-        let verified = (|| {
-            if cancelled() {
-                return Err(Cancelled);
-            }
-            if inspect(&port).map_err(Descriptor)? != selected.identity.node {
-                return Err(WrongDescriptor);
-            }
-            verify()?;
-            if cancelled() {
-                return Err(Cancelled);
-            }
-            Ok(())
-        })();
-        if let Err(failure) = verified {
-            let cleanup = checked_close(device.clone(), port, close).err();
-            return Err(error(failure, cleanup));
-        }
-
+        let port = open_verified_port(selected, cancelled, probe, open, inspect, close)?;
         Ok(Self {
             link: Some(RawMidiLink {
                 port,
                 opened: Instant::now(),
                 path: PODXT_LIVE_MIDI.path,
-                device: device.clone(),
+                device: selected.identity.device.clone(),
             }),
             _rig: rig,
         })
@@ -290,6 +263,142 @@ impl Link for ScopedRawMidiLink<'_> {
             .expect("scoped link is open")
             .pause(duration);
     }
+}
+
+/// A verified read-only ALSA descriptor which borrows the rig through close.
+/// The caller supplies the appropriate gates and must check the result of
+/// [Self::finish] before releasing the rig, even on cancellation.
+///
+/// ```compile_fail,E0505
+/// use line6_devices::{device_lock::DeviceLock, transport::rawmidi::{RawMidiAttachment, ScopedRawMidiInput}};
+/// fn unlock_early(rig: DeviceLock, selected: &RawMidiAttachment) {
+///     let input = ScopedRawMidiInput::open_attachment_borrowed(selected, &rig, || false).unwrap();
+///     drop(rig);
+///     input.finish().unwrap();
+/// }
+/// ```
+///
+/// ```compile_fail,E0505
+/// use line6_devices::{device_lock::DeviceLock, transport::rawmidi::{RawMidiAttachment, ScopedRawMidiInput}};
+/// fn unlock_before_drop(rig: DeviceLock, selected: &RawMidiAttachment) {
+///     let _input = ScopedRawMidiInput::open_attachment_borrowed(selected, &rig, || false).unwrap();
+///     drop(rig);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use line6_devices::transport::rawmidi::ScopedRawMidiInput;
+/// fn send(mut input: ScopedRawMidiInput<'_>) {
+///     input.write(&[0xc0, 0]).unwrap();
+/// }
+/// ```
+#[must_use = "the input must be finished to establish checked cleanup"]
+pub struct ScopedRawMidiInput<'rig> {
+    port: Option<File>,
+    device: PathBuf,
+    _rig: &'rig DeviceLock,
+}
+
+impl<'rig> ScopedRawMidiInput<'rig> {
+    pub fn open_attachment_borrowed(
+        selected: &RawMidiAttachment,
+        rig: &'rig DeviceLock,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, RawMidiOpenError> {
+        let port = open_verified_port(
+            selected,
+            cancelled,
+            || probe(&selected.usb_path, selected.address),
+            open_read_only,
+            |port| NodeIdentity::from_metadata(&port.metadata()?),
+            native::close_once,
+        )?;
+        Ok(Self {
+            port: Some(port),
+            device: selected.identity.device.clone(),
+            _rig: rig,
+        })
+    }
+
+    pub fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        read_port(self.port.as_mut().expect("scoped input is open"), wait)
+    }
+
+    pub fn finish(self) -> Result<(), RawMidiCloseError> {
+        self.finish_with(native::close_once)
+    }
+
+    fn finish_with(
+        mut self,
+        close: impl FnOnce(OwnedFd) -> io::Result<()>,
+    ) -> Result<(), RawMidiCloseError> {
+        let port = self.port.take().expect("scoped input is open");
+        checked_close(std::mem::take(&mut self.device), port, close)
+    }
+}
+
+impl Drop for ScopedRawMidiInput<'_> {
+    fn drop(&mut self) {
+        // The fallback still runs under the borrowed rig. Checked finish
+        // consumes the descriptor so even a failed close is never retried.
+        drop(self.port.take());
+    }
+}
+
+fn open_read_only(device: &std::path::Path) -> io::Result<File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(device)
+}
+
+fn open_verified_port(
+    selected: &RawMidiAttachment,
+    mut cancelled: impl FnMut() -> bool,
+    mut probe: impl FnMut() -> Result<AttachmentIdentity, String>,
+    open: impl FnOnce(&std::path::Path) -> io::Result<File>,
+    inspect: impl FnOnce(&File) -> io::Result<NodeIdentity>,
+    close: impl FnOnce(OwnedFd) -> io::Result<()>,
+) -> Result<File, RawMidiOpenError> {
+    use RawMidiOpenFailure::{Attachment, Cancelled, Descriptor, Open, WrongDescriptor};
+    let device = &selected.identity.device;
+    let error = |failure, cleanup| RawMidiOpenError {
+        device: device.clone(),
+        failure,
+        cleanup,
+    };
+    let mut verify = || {
+        selected
+            .matches(probe().map_err(Attachment)?)
+            .map_err(Attachment)
+    };
+    if cancelled() {
+        return Err(error(Cancelled, None));
+    }
+    verify().map_err(|failure| error(failure, None))?;
+    if cancelled() {
+        return Err(error(Cancelled, None));
+    }
+    let port = open(device).map_err(|source| error(Open(source), None))?;
+    let verified = (|| {
+        if cancelled() {
+            return Err(Cancelled);
+        }
+        if inspect(&port).map_err(Descriptor)? != selected.identity.node {
+            return Err(WrongDescriptor);
+        }
+        verify()?;
+        if cancelled() {
+            return Err(Cancelled);
+        }
+        Ok(())
+    })();
+    if let Err(failure) = verified {
+        let cleanup = checked_close(device.clone(), port, close).err();
+        return Err(error(failure, cleanup));
+    }
+
+    Ok(port)
 }
 
 fn checked_close(
