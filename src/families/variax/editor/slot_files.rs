@@ -21,7 +21,8 @@ impl VariaxEditor {
             return;
         };
         let library = self.library_label();
-        if self.parked_library.is_some() || document.selection().is_none() {
+        let selection = document.selection();
+        if self.parked_library.is_some() || selection.is_none() {
             // Clear the selector reference when there is no active bank.
             self.factory_selector_reference(ui);
             if let Some(library) = library {
@@ -59,6 +60,24 @@ impl VariaxEditor {
                             if replace.clicked() {
                                 self.choose_slot_replacement(ui.ctx(), services);
                                 ui.close();
+                            }
+                            #[cfg(feature = "usb")]
+                            if let Some(position) =
+                                selection.filter(|_| self.has_current_guitar_library())
+                            {
+                                use super::device_sync::Action;
+
+                                let action = Action::ReadUnmodified;
+                                let revert = ui.add_enabled(
+                                    self.sync_ready(action),
+                                    egui::Button::new("Revert to unmodified model…"),
+                                );
+                                #[cfg(test)]
+                                self.slot_file_buttons.insert("revert-model", revert.rect);
+                                if revert.clicked() {
+                                    self.confirm_position_action(action, position);
+                                    ui.close();
+                                }
                             }
                             ui.separator();
                             self.model_transfer_actions(ui);
@@ -389,13 +408,56 @@ mod tests {
         };
         frame(ctx, app, vec![]);
         frame(ctx, app, vec![]);
-        if matches!(id, "save-model" | "replace-slot") {
+        if matches!(id, "save-model" | "replace-slot" | "revert-model") {
             click(
                 app,
                 app.variax().slot_file_buttons["slot-transfers"].center(),
             );
         }
         click(app, app.variax().slot_file_buttons[id].center());
+    }
+
+    #[cfg(all(feature = "usb", target_os = "linux"))]
+    #[test]
+    fn model_actions_opens_the_existing_revert_confirmation() {
+        use super::super::refresh::tests::{attach, download};
+
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        attach(editor);
+        download(editor, &ctx);
+        let document = editor.document.as_mut().unwrap();
+        document.select(1, 2).unwrap();
+        let saved = document.as_bytes().to_vec();
+        editor.change(|model| model.rename("Local draft"));
+        let edited = editor.document.as_ref().unwrap().as_bytes().to_vec();
+
+        click_slot_action(&ctx, &mut app, "revert-model");
+        assert!(app.variax().device_sync.prompting());
+        assert!(!app.variax().device_sync.busy());
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), edited);
+
+        crate::editor::tests::prompt_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let editor = app.variax_mut();
+        assert!(!editor.device_sync.prompting());
+        assert!(!editor.device_sync.busy());
+        let document = editor.document.as_ref().unwrap();
+        assert_eq!(document.selection(), Some((1, 2)));
+        assert_eq!(document.as_bytes(), edited);
+        editor.undo();
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), saved);
+        editor.redo();
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), edited);
     }
 
     #[test]

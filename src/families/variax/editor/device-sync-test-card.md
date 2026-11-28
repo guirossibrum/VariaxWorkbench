@@ -15,7 +15,9 @@ the [approved restore procedure](../../../../docs/variax-any-selection-test-card
 1. Select **Spank 1** on the guitar and confirm the normal sound. In the
    editor, prepare the tuning-enabled variant on Spank 1. Right-click **Copy**
    on Spank 1 and **Paste** on **Spank 2**. Both positions should be marked
-   modified. Right-click Spank 1 and **Read unmodified from device**.
+   modified. Select Spank 1 and choose **Model actions → Revert to unmodified
+   model…**, or right-click Spank 1 and choose **Read unmodified from device**.
+   Confirm the named slot before starting the read.
    Confirm that the original Spank 1 plays and that its marker clears.
 2. Right-click **Spank 2** and choose **Write to device**. Check that the
    confirmation names Spank 2 and the intended model, then select
