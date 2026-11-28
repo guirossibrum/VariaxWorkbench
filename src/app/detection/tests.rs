@@ -705,3 +705,150 @@ fn linux_program_notices_follow_the_verified_attachment_and_do_not_change_guitar
         Some(Notice::Connected)
     );
 }
+
+#[cfg(all(feature = "usb", target_os = "linux"))]
+#[test]
+fn linux_linked_follow_inputs_share_one_exclusive_rig_lease() {
+    use line6_devices::{
+        device_lock::{FollowDeviceLock, LockError, PassiveDeviceLock},
+        family::variax::{FollowUpdate, Preset, follow},
+        gate::{GatePolicy, Operation},
+        session::{Link, Path, Quiet, Session},
+    };
+    use variax_workbench::identity_stage::guitar_reply;
+
+    // Use the production lock API against a private runtime directory. A
+    // subprocess keeps the environment separate from parallel test workers
+    // and from any owner's local rig lock.
+    const CHILD: &str = "VARIAX_TEST_LINKED_FOLLOW_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let runtime = tempfile::tempdir().unwrap();
+        let (_, module) = module_path!().split_once("::").unwrap();
+        let exact = format!("{module}::linux_linked_follow_inputs_share_one_exclusive_rig_lease");
+        let executable = std::env::args_os().next().unwrap();
+        let output = std::process::Command::new(executable)
+            .args(["--exact", &exact])
+            .env(CHILD, runtime.path())
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert_eq!(std::env::var_os(CHILD), std::env::var_os("XDG_RUNTIME_DIR"));
+
+    struct GuitarInput(std::collections::VecDeque<Vec<u8>>);
+    impl Link for GuitarInput {
+        fn path(&self) -> Path {
+            Path::VariaxViaPodxt
+        }
+        fn write(&mut self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn read(&mut self, _: Duration) -> Result<Option<Vec<u8>>, String> {
+            self.0
+                .pop_front()
+                .map(Some)
+                .ok_or("Fake guitar input exhausted".into())
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn pause(&mut self, _: Duration) {}
+    }
+
+    struct ReadOnly;
+    impl GatePolicy for ReadOnly {
+        fn allows(&self, op: Operation) -> bool {
+            matches!(op, Operation::VariaxIdentity | Operation::VariaxRead)
+        }
+    }
+
+    fn podxt_input(job: &Job, cancel: &AtomicBool) -> Outcome {
+        assert_eq!(job.kind, JobKind::Listen);
+        let Ok(lease) = PassiveDeviceLock::acquire() else {
+            return Outcome::Notices(Vec::new());
+        };
+        Outcome::Notices(notice::read_notices(
+            |_| {
+                assert!(matches!(FollowDeviceLock::acquire(), Err(LockError::Busy)));
+                Ok(Some(vec![0xc0, 127]))
+            },
+            || cancel.load(Ordering::Relaxed) || lease.yield_requested(),
+            |_| unreachable!("valid PODxt program change"),
+        ))
+    }
+
+    let (mut service, _, mut job, now) = in_flight_with_registry(JobKind::RefreshGuitar, None);
+    let bridge = service.bridge_mut(&job.attachment).unwrap();
+    bridge.running = None;
+    bridge.guitar = Some((42, GuitarIdentity::Verified("3.10")));
+    job.kind = JobKind::Listen;
+    let profiles = super::super::registry::DEVICE_PROFILES;
+    let mut listen_for_podxt = || {
+        service.worker = Some(Worker::start(job.clone(), podxt_input).unwrap());
+        await_worker(&service);
+        let devices = service.refresh_at(Scan::Automatic, profiles, now).unwrap();
+        let pod = devices
+            .iter()
+            .find(|item| item.key.family_id == "podxt")
+            .unwrap();
+        let guitar = devices
+            .iter()
+            .find(|item| item.key.family_id == "variax")
+            .unwrap();
+        assert_eq!(pod.support, DeviceSupport::Verified("3.01"));
+        assert_eq!(guitar.support, DeviceSupport::Verified("3.10"));
+        assert_eq!(guitar.key.linked_generation, Some(42));
+        assert_eq!(guitar.key.attachment, pod.key.attachment);
+        assert!(guitar.podxt_program.is_none());
+        pod.podxt_program.map(|program| program.channel)
+    };
+
+    let guitar_lease = FollowDeviceLock::acquire().unwrap();
+    let mut quiet = Quiet;
+    let input = GuitarInput(
+        [
+            guitar_reply(),
+            vec![0xc0, 77],
+            vec![0xb0, 7, 63],
+            vec![0xb0, 79, 96],
+        ]
+        .into(),
+    );
+    let mut session = Session::new(input, &ReadOnly, &mut quiet);
+    let updates = std::cell::RefCell::new(Vec::new());
+    follow(
+        guitar_lease.rig(),
+        &mut session,
+        || updates.borrow().len() == 3,
+        |update| {
+            if matches!(update, FollowUpdate::ProgramChange(_)) {
+                // A PODxt movement on interface 0 cannot reach its decoder
+                // while the active guitar session owns the sole rig lease.
+                assert_eq!(listen_for_podxt(), None);
+                assert!(!guitar_lease.yield_requested());
+            }
+            updates.borrow_mut().push(update);
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        updates.into_inner(),
+        [
+            FollowUpdate::ProgramChange(Preset::new(4, 2).unwrap()),
+            FollowUpdate::Volume(63),
+            FollowUpdate::TonePosition(96),
+        ]
+    );
+    drop(guitar_lease);
+
+    // A fresh physical movement can reach the same verified PODxt when
+    // passive input owns the rig, even if Follow tries to acquire it.
+    assert_eq!(listen_for_podxt(), Some(127));
+}

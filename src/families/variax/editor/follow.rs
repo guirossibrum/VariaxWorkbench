@@ -15,6 +15,8 @@ const SLOT_SETTLE: Duration = Duration::from_millis(300);
 const EDITED_SLOT_SETTLE: Duration = Duration::from_secs(1);
 const CLIP_PULSE: Duration = Duration::from_millis(200);
 const RESUME_DELAY: Duration = Duration::from_millis(100);
+const RIG_RETRY: Duration = Duration::from_millis(150);
+const PAUSE_NOTICE_DELAY: Duration = Duration::from_millis(350);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConnectionNotice {
@@ -62,6 +64,7 @@ impl Snapshot {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ListenEnd {
+    Busy,
     Stopped,
     Yielded,
 }
@@ -69,13 +72,27 @@ enum ListenEnd {
 type Source = fn(
     &Attachment,
     &AtomicBool,
+    &mut dyn FnMut(),
     &mut dyn FnMut(FollowUpdate, Instant),
 ) -> Result<ListenEnd, String>;
+
+#[derive(Clone, Copy)]
+enum ListenProgress {
+    Starting,
+    Waiting(Instant),
+    Listening,
+}
+
+struct WorkerProgress {
+    snapshot: Snapshot,
+    state: ListenProgress,
+}
 
 struct Worker {
     attachment: Attachment,
     stop: Arc<AtomicBool>,
-    snapshot: Arc<Mutex<Snapshot>>,
+    retry_allowed: Arc<AtomicBool>,
+    progress: Arc<Mutex<WorkerProgress>>,
     thread: JoinHandle<Result<ListenEnd, String>>,
 }
 
@@ -86,6 +103,7 @@ pub(super) struct Follow {
     worker: Option<Worker>,
     opted_out: bool,
     resume: Option<Instant>,
+    paused_since: Option<Instant>,
     #[cfg(test)]
     test_source: Option<Source>,
     snapshot: Snapshot,
@@ -99,7 +117,7 @@ impl Follow {
     #[cfg(test)]
     pub(super) fn queue_disconnect(&mut self, ctx: &egui::Context) {
         self.start(
-            |_, _, publish| {
+            |_, _, _, publish| {
                 publish(FollowUpdate::Disconnected, Instant::now());
                 Ok(ListenEnd::Stopped)
             },
@@ -144,9 +162,9 @@ impl Follow {
     }
 
     pub(super) fn active(&self) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(|worker| !worker.stop.load(Ordering::Relaxed))
+        // Keep the surrounding connection and tuning layout stable while
+        // a requested Follow session gives up or reacquires the rig.
+        self.wants_follow()
     }
 
     pub(super) fn take_device_event(&mut self) -> Option<DeviceEvent> {
@@ -192,10 +210,15 @@ impl Follow {
     pub(super) fn stop(&mut self) {
         if let Some(worker) = &self.worker {
             worker.stop.store(true, Ordering::Relaxed);
+            worker.thread.thread().unpark();
         }
         self.resume = None;
+        self.paused_since = None;
         self.snapshot = Snapshot::default();
         self.consumed_program = None;
+        if self.notice == Some(ConnectionNotice::Connected) {
+            self.notice = None;
+        }
     }
 
     fn start(&mut self, source: Source, ctx: &egui::Context) -> Result<(), String> {
@@ -212,28 +235,62 @@ impl Follow {
         let worker_attachment = attachment.clone();
         let worker_ctx = ctx.clone();
         let stop = Arc::new(AtomicBool::new(false));
-        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let retry_allowed = Arc::new(AtomicBool::new(true));
+        let progress = Arc::new(Mutex::new(WorkerProgress {
+            snapshot: self.snapshot,
+            state: ListenProgress::Starting,
+        }));
         let worker_stop = stop.clone();
-        let worker_snapshot = snapshot.clone();
+        let worker_retry_allowed = retry_allowed.clone();
+        let worker_progress = progress.clone();
         let thread = std::thread::Builder::new()
             .name("variax-follow".into())
             .spawn(move || {
-                let result = source(&worker_attachment, &worker_stop, &mut |update, at| {
-                    if let Ok(mut state) = worker_snapshot.lock() {
-                        state.receive(update, at);
+                let mut ready = || {
+                    if let Ok(mut state) = worker_progress.lock() {
+                        state.state = ListenProgress::Listening;
                     }
                     worker_ctx.request_repaint();
-                });
+                };
+                let mut publish = |update, at| {
+                    if let Ok(mut state) = worker_progress.lock() {
+                        state.snapshot.receive(update, at);
+                    }
+                    worker_ctx.request_repaint();
+                };
+                let result = loop {
+                    if worker_stop.load(Ordering::Relaxed) {
+                        break Ok(ListenEnd::Stopped);
+                    }
+                    if !worker_retry_allowed.load(Ordering::Relaxed) {
+                        std::thread::park_timeout(RIG_RETRY);
+                        continue;
+                    }
+                    let result = source(&worker_attachment, &worker_stop, &mut ready, &mut publish);
+                    if result != Ok(ListenEnd::Busy) {
+                        break result;
+                    }
+
+                    // A busy acquisition has opened no device. Keep one
+                    // worker waiting until the foreground releases the rig.
+                    if let Ok(mut state) = worker_progress.lock()
+                        && !matches!(state.state, ListenProgress::Waiting(_))
+                    {
+                        state.state = ListenProgress::Waiting(Instant::now());
+                        worker_ctx.request_repaint();
+                    }
+                    std::thread::park_timeout(RIG_RETRY);
+                };
                 worker_ctx.request_repaint();
                 result
             })
-            .map_err(|error| format!("Could not start Variax Follow: {error}"))?;
+            .map_err(|error| format!("Could not start the listener: {error}"))?;
         self.error = None;
-        self.notice = None;
         self.worker = Some(Worker {
             attachment,
             stop,
-            snapshot,
+            retry_allowed,
+            progress,
             thread,
         });
         ctx.request_repaint();
@@ -246,11 +303,11 @@ impl Follow {
         };
         let stopping = worker.stop.load(Ordering::Relaxed);
         let finished = worker.thread.is_finished();
-        let update = worker.snapshot.lock().ok().map(|mut snapshot| {
-            let notice = snapshot.notice.take();
-            (*snapshot, notice)
+        let update = worker.progress.lock().ok().map(|mut progress| {
+            let notice = progress.snapshot.notice.take();
+            (progress.snapshot, notice, progress.state)
         });
-        if let Some((snapshot, notice)) = update
+        if let Some((snapshot, notice, state)) = update
             && self.attachment.as_ref() == Some(&worker.attachment)
         {
             match notice {
@@ -266,6 +323,13 @@ impl Follow {
                         self.notice = notice;
                     }
                     self.snapshot = snapshot;
+                    match state {
+                        ListenProgress::Listening => self.paused_since = None,
+                        ListenProgress::Waiting(since) => {
+                            self.paused_since.get_or_insert(since);
+                        }
+                        ListenProgress::Starting => {}
+                    }
                 }
                 _ => {}
             }
@@ -278,25 +342,42 @@ impl Follow {
                 .join()
                 .unwrap_or_else(|_| Err("The Variax Follow worker stopped unexpectedly.".into()));
             let cancelled = worker.stop.load(Ordering::Relaxed);
-            self.stop();
             if self.attachment.as_ref() != Some(&worker.attachment) {
                 return;
             }
             match result {
                 Ok(ListenEnd::Yielded) if !cancelled => {
-                    self.resume = Some(Instant::now() + RESUME_DELAY);
+                    let now = Instant::now();
+                    self.paused_since.get_or_insert(now);
+                    self.resume = Some(now + RESUME_DELAY);
+                    // Retain the display, but do not apply a queued selector
+                    // from before the foreground operation to the document.
+                    self.consumed_program = self.snapshot.program;
                     ctx.request_repaint_after(RESUME_DELAY);
                 }
                 Ok(ListenEnd::Stopped) if !cancelled => {
-                    self.error = Some("Guitar Follow ended. Turn Follow on to try again.".into());
+                    self.stop();
+                    self.error = Some("The listener ended. Turn Follow on to try again.".into());
                 }
                 Ok(_) => {}
-                Err(error) => self.error = Some(error),
+                Err(error) => {
+                    self.stop();
+                    self.error = Some(error);
+                }
             }
         } else {
             // Also repaint on reap if the last worker repaint arrived just
             // before the thread's result became joinable.
             ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn allow_retry(&self, allowed: bool) {
+        if let Some(worker) = &self.worker
+            && !worker.retry_allowed.swap(allowed, Ordering::Relaxed)
+            && allowed
+        {
+            worker.thread.thread().unpark();
         }
     }
 
@@ -352,7 +433,7 @@ impl Follow {
         Some((bank, slot))
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, available: bool) {
+    fn show(&mut self, ui: &mut egui::Ui, available: bool, now: Instant) {
         if !self.device_tab {
             return;
         }
@@ -360,8 +441,8 @@ impl Follow {
             .worker
             .as_ref()
             .is_some_and(|worker| worker.stop.load(Ordering::Relaxed));
-        let mut following = self.wants_follow();
-        ui.horizontal_wrapped(|ui| {
+        let mut following = self.active();
+        ui.horizontal(|ui| {
             let enabled = following || (!stopping && available && self.can_follow());
             if ui
                 .add_enabled(enabled, egui::Checkbox::new(&mut following, "Follow"))
@@ -370,51 +451,85 @@ impl Follow {
                 self.set_following(following);
                 ui.ctx().request_repaint();
             }
-            if stopping {
-                ui.weak("Stopping Follow…");
-            } else if following && (self.resume.is_some() || !available && !self.active()) {
-                ui.weak("Follow paused while the rig is in use.");
-            } else if following && self.active() {
-                let snapshot = self.snapshot;
-                match snapshot.program {
-                    Some((preset, _)) => {
-                        ui.label(format!(
-                            "Guitar preset · {} {}",
-                            preset.bank_name(),
-                            preset.slot() + 1
-                        ));
+
+            let (message, color) = if let Some(error) = &self.error {
+                (
+                    format!("Follow failed. {error}"),
+                    Some(egui::Color32::LIGHT_RED),
+                )
+            } else if self.disconnected() {
+                ("Follow stopped. Guitar disconnected.".into(), None)
+            } else if stopping {
+                ("Stopping Follow…".into(), None)
+            } else if following {
+                let paused_since = if !available && !self.busy() {
+                    Some(*self.paused_since.get_or_insert(now))
+                } else {
+                    self.paused_since
+                };
+                let pause = paused_since.is_some_and(|since| {
+                    let remaining = (since + PAUSE_NOTICE_DELAY).saturating_duration_since(now);
+                    if !remaining.is_zero() {
+                        ui.ctx().request_repaint_after(remaining);
                     }
-                    None => {
-                        ui.weak("Waiting for a guitar preset change");
-                    }
-                }
-                ui.label(control_position("Volume", snapshot.volume));
-                ui.label(control_position("Live tone", snapshot.tone));
-                let now = Instant::now();
-                if let Some(until) = snapshot.clip_until.filter(|until| *until > now) {
-                    ui.colored_label(super::FRET_MARKER, "Clip");
-                    ui.ctx().request_repaint_after(until - now);
-                }
-                if snapshot.dsp_overload {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "DSP overload");
-                }
-                if snapshot.queue_overflow {
-                    ui.colored_label(super::FRET_MARKER, "MIDI queue overflow");
-                }
+                    remaining.is_zero()
+                });
+                self.live_status(ui.ctx(), now, pause)
+            } else {
+                return;
+            };
+
+            // Keep the toolbar at one line at every width. egui exposes
+            // the full text on hover when it has to truncate the label.
+            let mut label = egui::RichText::new(message);
+            if let Some(color) = color {
+                label = label.color(color);
             }
+            ui.add(egui::Label::new(label).truncate());
         });
-        match self.notice {
-            Some(ConnectionNotice::Connected) if following => {
-                ui.weak("Guitar connected via PODxt Live.");
-            }
-            Some(ConnectionNotice::Disconnected) => {
-                ui.weak("Guitar disconnected.");
-            }
-            _ => {}
+    }
+
+    fn live_status(
+        &self,
+        ctx: &egui::Context,
+        now: Instant,
+        paused: bool,
+    ) -> (String, Option<egui::Color32>) {
+        let snapshot = self.snapshot;
+        let mut fields = vec![
+            control_position("Volume", snapshot.volume),
+            control_position("Live tone", snapshot.tone),
+        ];
+        if let Some((preset, _)) = snapshot.program {
+            fields.push(format!(
+                "Guitar preset · {} {}",
+                preset.bank_name(),
+                preset.slot() + 1
+            ));
+        } else if !paused {
+            fields.push("Waiting for a guitar preset change".into());
         }
-        if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        if paused {
+            fields.push("Follow paused while the rig is in use.".into());
         }
+        if self.notice == Some(ConnectionNotice::Connected) {
+            fields.push("Guitar connected via PODxt Live.".into());
+        }
+        let mut color = None;
+        if let Some(until) = snapshot.clip_until.filter(|until| *until > now) {
+            fields.push("Clip".into());
+            color = Some(super::FRET_MARKER);
+            ctx.request_repaint_after(until - now);
+        }
+        if snapshot.queue_overflow {
+            fields.push("MIDI queue overflow".into());
+            color = Some(super::FRET_MARKER);
+        }
+        if snapshot.dsp_overload {
+            fields.push("DSP overload".into());
+            color = Some(egui::Color32::LIGHT_RED);
+        }
+        (fields.join("  ·  "), color)
     }
 }
 
@@ -436,11 +551,15 @@ fn control_position(label: &str, value: Option<u8>) -> String {
 
 impl VariaxEditor {
     pub(super) fn follow_panel(&mut self, ui: &mut egui::Ui) {
-        let available = !self.device_sync.stopped_after_store()
+        let available = self.follow_available();
+        self.follow.show(ui, available, Instant::now());
+    }
+
+    fn follow_available(&self) -> bool {
+        !self.device_sync.stopped_after_store()
             && !self.is_reading()
             && !self.blocking_prompt()
-            && !self.live_edit.busy();
-        self.follow.show(ui, available);
+            && !self.live_edit.busy()
     }
 
     pub(super) fn observe_follow(&mut self, ctx: &egui::Context) {
@@ -454,11 +573,9 @@ impl VariaxEditor {
     }
 
     pub(super) fn advance_follow(&mut self, ctx: &egui::Context) {
-        if !self.device_sync.stopped_after_store()
-            && !self.is_reading()
-            && !self.live_edit.busy()
-            && !self.blocking_prompt()
-        {
+        let available = self.follow_available();
+        self.follow.allow_retry(available);
+        if available {
             self.follow.start_if_ready(ctx, Instant::now());
         }
         if self.is_reading()
@@ -491,6 +608,7 @@ impl VariaxEditor {
 fn read_updates(
     attachment: &Attachment,
     stop: &AtomicBool,
+    ready: &mut dyn FnMut(),
     publish: &mut dyn FnMut(FollowUpdate, Instant),
 ) -> Result<ListenEnd, String> {
     use line6_devices::{
@@ -521,7 +639,7 @@ fn read_updates(
         }
         let lease = match FollowDeviceLock::acquire() {
             Ok(lease) => lease,
-            Err(LockError::Busy | LockError::BusyHere) => return Ok(ListenEnd::Yielded),
+            Err(LockError::Busy | LockError::BusyHere) => return Ok(ListenEnd::Busy),
             Err(error) => return Err(error.to_string()),
         };
         let yielded = Cell::new(false);
@@ -543,6 +661,7 @@ fn read_updates(
                 lease.rig(),
                 (&attachment.path, attachment.address),
             )?;
+            ready();
             let mut log = Quiet;
             let mut session = Session::new(link, &Policy, &mut log);
             session.log_packets = false;
@@ -579,12 +698,14 @@ mod tests {
     fn fake_source(
         attachment: &Attachment,
         stop: &AtomicBool,
+        ready: &mut dyn FnMut(),
         publish: &mut dyn FnMut(FollowUpdate, Instant),
     ) -> Result<ListenEnd, String> {
         assert_eq!(
             (attachment.path.as_str(), attachment.address),
             ("8-2.1", 10)
         );
+        ready();
         let now = Instant::now();
         let changed = now - Duration::from_secs(2);
         let preset = Preset::new(4, 2).unwrap();
@@ -801,7 +922,7 @@ mod tests {
         assert_ne!(selected, Some((4, 2)));
         assert_ne!(selected, Some((5, 1)));
 
-        let old_source: Source = |_, _, publish| {
+        let old_source: Source = |_, _, _, publish| {
             let now = Instant::now();
             publish(
                 FollowUpdate::ProgramChange(Preset::new(5, 1).unwrap()),
@@ -893,24 +1014,41 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
 
         static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+        static ACQUIRE_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
         static DEVICE_CHECK_HOLDS_RIG: AtomicBool = AtomicBool::new(false);
 
         fn yielding_source(
             attachment: &Attachment,
             stop: &AtomicBool,
+            ready: &mut dyn FnMut(),
             publish: &mut dyn FnMut(FollowUpdate, Instant),
         ) -> Result<ListenEnd, String> {
             assert_eq!(
                 (attachment.path.as_str(), attachment.address),
                 ("8-2.1", 10)
             );
-            if OPEN_COUNT.fetch_add(1, Ordering::SeqCst) == 0
-                || DEVICE_CHECK_HOLDS_RIG.load(Ordering::SeqCst)
-            {
-                return Ok(ListenEnd::Yielded);
+            ACQUIRE_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            if DEVICE_CHECK_HOLDS_RIG.load(Ordering::SeqCst) {
+                return Ok(ListenEnd::Busy);
             }
             let now = Instant::now();
+            if OPEN_COUNT.fetch_add(1, Ordering::SeqCst) == 0 {
+                ready();
+                publish(
+                    FollowUpdate::ProgramChange(Preset::new(3, 2).unwrap()),
+                    now - SLOT_SETTLE,
+                );
+                publish(FollowUpdate::Volume(35), now);
+                publish(FollowUpdate::TonePosition(44), now);
+                return Ok(ListenEnd::Yielded);
+            }
+            ready();
+            publish(
+                FollowUpdate::ProgramChange(Preset::new(4, 2).unwrap()),
+                now - SLOT_SETTLE,
+            );
             publish(FollowUpdate::Volume(64), now);
+            publish(FollowUpdate::TonePosition(105), now);
             while !stop.load(Ordering::Relaxed) && now.elapsed() < Duration::from_secs(2) {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -921,13 +1059,15 @@ mod tests {
             const PAUSE: &str = "Follow paused while the rig is in use.";
             fn contains(shape: &egui::Shape) -> bool {
                 match shape {
-                    egui::Shape::Text(text) => text.galley.text() == PAUSE,
+                    egui::Shape::Text(text) => text.galley.text().contains(PAUSE),
                     egui::Shape::Vec(shapes) => shapes.iter().any(contains),
                     _ => false,
                 }
             }
             ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| follow.show(ui, true));
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    follow.show(ui, true, Instant::now() + PAUSE_NOTICE_DELAY)
+                });
             })
             .shapes
             .iter()
@@ -959,12 +1099,17 @@ mod tests {
             },
         ] {
             OPEN_COUNT.store(0, Ordering::SeqCst);
+            ACQUIRE_ATTEMPTS.store(0, Ordering::SeqCst);
             let (ctx, mut app) = app();
             let editor = app.variax_mut();
-            super::super::refresh::tests::attach(editor);
+            refresh_tests::attach(editor);
+            refresh_tests::download(editor, &ctx);
+            let document = editor.document.as_ref().unwrap();
+            let selected = document.selection();
+            let original = document.as_bytes().to_vec();
             editor.follow.test_source = Some(yielding_source);
             poll_follow(editor, &ctx);
-            assert!(editor.follow.active());
+            assert!(editor.follow.busy());
             let started = Instant::now();
             while editor.follow.resume.is_none() {
                 editor.follow.listen(&ctx);
@@ -986,18 +1131,49 @@ mod tests {
                     editor.follow.resume = Some(Instant::now());
                     poll_follow(editor, &ctx);
                     poll_until(editor, &ctx, |follow| {
-                        !follow.busy() && follow.resume.is_some()
+                        follow.worker.as_ref().is_some_and(|worker| {
+                            matches!(
+                                worker.progress.lock().unwrap().state,
+                                ListenProgress::Waiting(_)
+                            )
+                        })
                     });
                     assert!(shows_pause(&ctx, &mut editor.follow));
-                    assert!(editor.follow.snapshot.volume.is_none());
-                    assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 2);
+                    assert_eq!(editor.follow.snapshot.volume, Some(35));
+                    assert_eq!(editor.follow.snapshot.tone, Some(44));
+                    assert_eq!(editor.document.as_ref().unwrap().selection(), selected);
+                    assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+                    let waiter = editor
+                        .follow
+                        .worker
+                        .as_ref()
+                        .unwrap()
+                        .thread
+                        .thread()
+                        .clone();
+                    waiter.unpark();
+                    let attempts = ACQUIRE_ATTEMPTS.load(Ordering::SeqCst);
+                    poll_until(editor, &ctx, |_| {
+                        ACQUIRE_ATTEMPTS.load(Ordering::SeqCst) > attempts
+                    });
+                    assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+                    assert_eq!(
+                        editor.follow.worker.as_ref().unwrap().thread.thread().id(),
+                        waiter.id()
+                    );
+                    assert!(shows_pause(&ctx, &mut editor.follow));
 
                     let mut check = ProbeSession::new(SimulatedRig::new(Scenario::Connected));
                     check.answer(Consent::Yes);
                     assert_eq!(check.status(Stage::UsbRecognition), StageStatus::Passed);
                     DEVICE_CHECK_HOLDS_RIG.store(false, Ordering::SeqCst);
-                    editor.follow.resume = Some(Instant::now());
-                    (None, false, 3)
+                    waiter.unpark();
+                    poll_until(editor, &ctx, |follow| follow.snapshot.volume == Some(64));
+                    assert_eq!(
+                        editor.follow.worker.as_ref().unwrap().thread.thread().id(),
+                        waiter.id()
+                    );
+                    (None, false, 2)
                 }
                 Foreground::LiveEdit => {
                     let finish = editor.hold_fake_edit();
@@ -1039,10 +1215,107 @@ mod tests {
                 assert!(editor.follow.resume.is_none() && !editor.follow.busy());
                 assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
             } else {
-                poll_until(editor, &ctx, |follow| follow.snapshot.volume == Some(64));
+                poll_until(editor, &ctx, |follow| follow.snapshot.tone == Some(105));
+                assert_eq!(editor.follow.snapshot.volume, Some(64));
+                assert!(editor.follow.paused_since.is_none());
+                assert_eq!(editor.document.as_ref().unwrap().selection(), Some((4, 2)));
                 assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), opens_after_resume);
             }
+            assert_eq!(editor.document.as_ref().unwrap().as_bytes(), original);
             assert_eq!(editor.error.as_deref(), expected_error);
+        }
+    }
+
+    #[test]
+    fn follow_status_changes_keep_the_real_editor_workspace_in_place() {
+        fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
+            fn contains(shape: &egui::Shape, expected: &str) -> bool {
+                match shape {
+                    egui::Shape::Text(text) => text.galley.text().contains(expected),
+                    egui::Shape::Vec(shapes) => {
+                        shapes.iter().any(|shape| contains(shape, expected))
+                    }
+                    _ => false,
+                }
+            }
+            output
+                .shapes
+                .iter()
+                .any(|item| contains(&item.shape, expected))
+        }
+
+        for (width, density) in [(960.0, 1.0), (1120.0, 2.0)] {
+            let (ctx, mut app) = app();
+            ctx.style_mut(|style| style.animation_time = 0.0);
+            app.clear_window_controls = true;
+            let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+            app.tabs.entries[index].device = Some(refresh_tests::verified_tab());
+            let editor = app.variax_mut();
+            refresh_tests::attach(editor);
+            refresh_tests::download(editor, &ctx);
+            editor.follow.test_source = Some(fake_source);
+
+            let now = Instant::now();
+            editor.follow.resume = Some(now + Duration::from_secs(10));
+            let frame = |app: &mut crate::editor::Workbench| {
+                let mut input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 760.0),
+                    )),
+                    ..Default::default()
+                };
+                input
+                    .viewports
+                    .get_mut(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .native_pixels_per_point = Some(density);
+                ctx.run(input, |ctx| app.render(ctx))
+            };
+            let layout = |app: &crate::editor::Workbench| {
+                let editor = app.variax();
+                (
+                    editor.workspace_cards.unwrap(),
+                    editor.workspace_tuning.unwrap(),
+                )
+            };
+
+            let _ = frame(&mut app);
+            let waiting = frame(&mut app);
+            assert!(has_text(&waiting, "Waiting for a guitar preset change"));
+            let original = layout(&app);
+            let tuning_widgets = app.variax().tuning_widgets.clone();
+
+            for (time_paused, should_show_pause) in [
+                (Some(Duration::ZERO), false),
+                (Some(PAUSE_NOTICE_DELAY), true),
+                (None, false),
+            ] {
+                let follow = &mut app.variax_mut().follow;
+                follow.paused_since = time_paused.map(|elapsed| Instant::now() - elapsed);
+                follow.snapshot.volume = Some(35);
+                follow.snapshot.tone = Some(44);
+                follow.snapshot.program = Some((Preset::new(3, 2).unwrap(), now - SLOT_SETTLE));
+                follow.snapshot.clip_until = Some(now + Duration::from_secs(10));
+                let output = frame(&mut app);
+                assert!(has_text(&output, "Volume 28%"));
+                assert!(has_text(&output, "Live tone 35%"));
+                assert!(has_text(&output, "Guitar preset"));
+                assert_eq!(
+                    has_text(&output, "Follow paused while the rig is in use."),
+                    should_show_pause,
+                );
+                assert_eq!(layout(&app), original);
+                assert_eq!(app.variax().tuning_widgets, tuning_widgets);
+            }
+
+            app.variax_mut().follow.error = Some("Injected transport failure ".repeat(20));
+            let failed = frame(&mut app);
+            assert!(has_text(
+                &failed,
+                "Follow failed. Injected transport failure"
+            ));
+            assert_eq!(layout(&app), original);
         }
     }
 
@@ -1053,7 +1326,7 @@ mod tests {
         super::super::refresh::tests::attach(editor);
         editor.change(|preset| preset.rename("Keep this edit"));
         let before = editor.document.as_ref().unwrap().as_bytes().to_vec();
-        let source: Source = |_, _, publish| {
+        let source: Source = |_, _, _, publish| {
             publish(FollowUpdate::Connected, Instant::now());
             publish(FollowUpdate::Disconnected, Instant::now());
             publish(FollowUpdate::Connected, Instant::now());
