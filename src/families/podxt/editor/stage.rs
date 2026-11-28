@@ -181,7 +181,8 @@ pub(super) struct Stage {
     block: Block,
     connection: Option<(tabs::Connection, detection::DeviceSupport)>,
     art: HashMap<&'static str, assets::UiImage>,
-    tap: Option<(usize, Instant)>,
+    tap: Option<(ToneControlScope, Instant)>,
+    tempo_drag: Option<(ToneControlScope, f64)>,
     preferences: Option<PathBuf>,
     pub(super) backup: Option<LoadedPodxt>,
     source: StageSource,
@@ -207,6 +208,16 @@ impl Stage {
     pub(super) fn reveal_playing_channel(&mut self) {
         self.library_highlight = None;
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ToneControlScope {
+    File {
+        generation: u64,
+        index: usize,
+    },
+    #[cfg(feature = "usb")]
+    Playing(Option<u16>),
 }
 
 fn ordered_blocks(is_pre: impl Fn(Block) -> bool) -> Vec<Block> {
@@ -471,6 +482,7 @@ impl PodxtEditor {
                     });
                     ui.vertical(|ui| {
                         ui.set_min_width(ui.available_width());
+                        self.stage_tone_strip(ui, index, &rows);
                         self.stage_editor(ui, index, &tone, &rows);
                         self.stage_settings(ui, index, &rows);
                     });
@@ -715,6 +727,16 @@ impl PodxtEditor {
                 {
                     self.apply_pod_name();
                 }
+                ui.vertical(|ui| {
+                    ui.push_id((self.pod_document_generation, index), |ui| {
+                        let spacing = ui.spacing_mut();
+                        spacing.interact_size.y = 24.0;
+                        spacing.item_spacing.y = 4.0;
+                        spacing.button_padding.y = 2.0;
+                        spacing.text_edit_width = 208.0;
+                        self.metadata_panel(ui, index);
+                    });
+                });
                 controls::readout(ui, &context);
                 if self.pod_dirty() {
                     controls::readout(ui, "Unsaved");
@@ -1355,39 +1377,177 @@ impl PodxtEditor {
         }
     }
 
-    fn stage_settings(&mut self, ui: &mut egui::Ui, index: usize, rows: &[PodControl<'static>]) {
-        ui.horizontal_wrapped(|ui| {
-            if let Some(row) = get(rows, "TEMPO") {
-                if let Some(bpm) = value(row) {
-                    controls::readout(ui, &format!("{bpm:.1} BPM"));
+    fn tone_control_scope(&self, index: usize) -> ToneControlScope {
+        #[cfg(feature = "usb")]
+        if index == CURRENT_STAGE {
+            return ToneControlScope::Playing(self.live.playing_channel().map(Location::index));
+        }
+        ToneControlScope::File {
+            generation: self.pod_document_generation,
+            index,
+        }
+    }
+
+    fn stage_tone_strip(&mut self, ui: &mut egui::Ui, index: usize, rows: &[PodControl<'static>]) {
+        let scope = self.tone_control_scope(index);
+        if self.stage.tap.is_some_and(|(prior, _)| prior != scope) {
+            self.stage.tap = None;
+        }
+        egui::Frame::new()
+            .fill(theme::PANEL)
+            .corner_radius(theme::RADIUS_PANEL)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .inner_margin(8)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.push_id(scope, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(row) = get(rows, "TEMPO") {
+                            self.stage_strip_tempo(ui, index, scope, row);
+                        }
+                        for (key, label, width) in [
+                            ("PEDAL_ASSIGN", "Pedal assignment", 135.0),
+                            ("TWEAK_PARAM", "Tweak", 138.0),
+                            ("VARIAX_FAMILY", "Variax family", 142.0),
+                        ] {
+                            if let Some(row) = get(rows, key) {
+                                self.stage_strip_choice(ui, index, row, label, width);
+                            }
+                        }
+                        if let Some(model) = linked_model_row(rows) {
+                            self.stage_strip_choice(ui, index, model, "Linked model", 134.0);
+                        } else {
+                            ui.vertical(|ui| {
+                                ui.label("Linked model");
+                                let empty =
+                                    match get(rows, "VARIAX_FAMILY").and_then(|row| row.bits) {
+                                        None | Some(127) => "No linked model",
+                                        Some(_) => "Unavailable",
+                                    };
+                                controls::readout(ui, empty);
+                            });
+                        }
+                    });
+                });
+            });
+    }
+
+    fn stage_strip_tempo(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        scope: ToneControlScope,
+        row: &PodControl<'_>,
+    ) {
+        let enabled = self.stage_control_enabled(index, row);
+        ui.vertical(|ui| {
+            let label = ui.label("Tempo");
+            ui.horizontal(|ui| {
+                if let Some([min, max]) = row.display_range() {
+                    ui.scope(|ui| {
+                        ui.spacing_mut().interact_size.x = 92.0;
+                        let widget = ui.next_auto_id();
+                        let dragging = ui.ctx().dragged_id().or_else(|| ui.ctx().drag_stopped_id())
+                            == Some(widget);
+                        let mut bpm = self
+                            .stage
+                            .tempo_drag
+                            .take()
+                            .filter(|&(prior_scope, _)| enabled && dragging && prior_scope == scope)
+                            .map(|(_, value)| value)
+                            .or_else(|| value(row))
+                            .or_else(|| row.neutral_bits().and_then(|bits| row.displayed(bits)))
+                            .unwrap_or(min);
+                        let tempo = ui
+                            .add_enabled(
+                                enabled,
+                                egui::DragValue::new(&mut bpm)
+                                    .range(min..=max)
+                                    .clamp_existing_to_range(false)
+                                    .speed(0.1)
+                                    .fixed_decimals(1)
+                                    .custom_formatter(|bpm, _| {
+                                        // Keep text focus alone from rounding an existing file value.
+                                        let bpm = bpm as f32;
+                                        if bpm.fract() == 0.0 {
+                                            format!("{bpm:.1}")
+                                        } else {
+                                            bpm.to_string()
+                                        }
+                                    })
+                                    .suffix(" BPM")
+                                    .update_while_editing(false),
+                            )
+                            .labelled_by(label.id);
+                        if tempo.dragged() || tempo.drag_started() {
+                            self.stage.tempo_drag = Some((scope, bpm));
+                        } else if (tempo.drag_stopped() || tempo.changed())
+                            && let Some(bits) = row.bits_from_display(bpm)
+                        {
+                            self.edit_stage_value_with_ui(ui, index, row, bits);
+                        }
+                    });
                 }
-                if chrome::toolbar_button(ui, "Tap", self.stage_control_enabled(index, row), "")
-                    .on_hover_text("Set tone tempo")
-                    .clicked()
-                {
+                let tap =
+                    chrome::toolbar_button(ui, "Tap", enabled, "").on_hover_text("Set tone tempo");
+                if tap.clicked() {
                     let now = Instant::now();
-                    let prior = self.stage.tap.replace((index, now));
-                    if let Some((_, prior)) = prior.filter(|(prior_index, _)| *prior_index == index)
+                    let prior = self.stage.tap.replace((scope, now));
+                    if let Some((_, prior)) = prior.filter(|(previous, _)| *previous == scope)
                         && let Some(bits) =
                             row.bits_from_display(60.0 / now.duration_since(prior).as_secs_f64())
                     {
                         self.edit_stage_value_with_ui(ui, index, row, bits);
                     }
                 }
+            });
+        });
+    }
+
+    fn stage_strip_choice(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        row: &PodControl<'_>,
+        name: &str,
+        width: f32,
+    ) {
+        let enabled = self.stage_control_enabled(index, row) && !row.choices.is_empty();
+        ui.vertical(|ui| {
+            ui.set_max_width(width);
+            ui.spacing_mut().button_padding.x = 8.0;
+            let label = ui.label(name);
+            let current = choice(row).unwrap_or("Select…");
+            let combo = ui
+                .add_enabled_ui(enabled, |ui| {
+                    egui::ComboBox::from_id_salt(&row.parameter.key)
+                        .selected_text(current)
+                        .width(width)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            let mut selected = row.bits;
+                            for (bits, text) in &row.choices {
+                                ui.selectable_value(&mut selected, Some(*bits), text.as_ref());
+                            }
+                            selected.filter(|selected| Some(*selected) != row.bits)
+                        })
+                })
+                .inner;
+            let response = combo.response.labelled_by(label.id).on_hover_text(current);
+            #[cfg(feature = "usb")]
+            if index == CURRENT_STAGE && row.live_control().is_none() {
+                response.on_disabled_hover_text("Available in a file copy");
             }
-            controls::readout(ui, linked_label(rows));
-            if let Some(row) = get(rows, "TWEAK_PARAM") {
-                ui.label("Tweak");
-                let enabled = self.stage_control_enabled(index, row);
-                if let Some(bits) = ui
-                    .add_enabled_ui(enabled, |ui| stage_selector(ui, row))
-                    .inner
-                {
-                    self.edit_stage_value_with_ui(ui, index, row, bits);
-                }
+            #[cfg(not(feature = "usb"))]
+            let _ = response;
+            if let Some(bits) = combo.inner.flatten() {
+                self.edit_stage_value_with_ui(ui, index, row, bits);
             }
         });
-        ui.collapsing("Tone settings", |ui| {
+    }
+
+    fn stage_settings(&mut self, ui: &mut egui::Ui, index: usize, rows: &[PodControl<'static>]) {
+        ui.collapsing("More tone settings", |ui| {
             if index != CURRENT_STAGE {
                 ui.horizontal_wrapped(|ui| {
                     let mut amp_defaults = !self.parameter_panel.keep_amp_settings;
@@ -1421,32 +1581,28 @@ impl PodxtEditor {
                     matches!(
                         row.parameter.block.as_str(),
                         "system" | "tempo" | "Variax link"
-                    ) && row
-                        .parameter
-                        .variax_family
-                        .is_none_or(|value| Some(value) == family)
+                    ) && !matches!(
+                        row.parameter.key.as_str(),
+                        "TEMPO" | "PEDAL_ASSIGN" | "TWEAK_PARAM" | "VARIAX_FAMILY"
+                    ) && !(row.parameter.variax_family.is_some()
+                        && row.parameter.key.ends_with("_MODEL"))
+                        && row
+                            .parameter
+                            .variax_family
+                            .is_none_or(|value| Some(value) == family)
                 }) {
                     self.stage_control(ui, index, row);
                 }
             });
         });
-        if index != CURRENT_STAGE {
-            self.metadata_panel(ui, index);
-        }
     }
 }
 
-fn linked_label<'a>(rows: &'a [PodControl<'static>]) -> &'a str {
-    match get(rows, "VARIAX_FAMILY").and_then(|row| row.bits) {
-        None | Some(127) => "No linked model",
-        Some(family) => rows
-            .iter()
-            .find(|row| {
-                row.parameter.variax_family == Some(family) && row.parameter.key.ends_with("_MODEL")
-            })
-            .and_then(choice)
-            .unwrap_or("Linked model unavailable"),
-    }
+fn linked_model_row<'a>(rows: &'a [PodControl<'static>]) -> Option<&'a PodControl<'static>> {
+    let family = get(rows, "VARIAX_FAMILY")?.bits?;
+    rows.iter().find(|row| {
+        row.parameter.variax_family == Some(family) && row.parameter.key.ends_with("_MODEL")
+    })
 }
 
 fn stage_selector(ui: &mut egui::Ui, row: &PodControl<'_>) -> Option<u32> {
@@ -1752,3 +1908,6 @@ fn eq_graph(ui: &mut egui::Ui, bands: &[(f64, f64)]) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compact_tone_controls_tests;
