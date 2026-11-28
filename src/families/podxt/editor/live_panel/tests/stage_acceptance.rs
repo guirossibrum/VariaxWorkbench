@@ -1,7 +1,7 @@
 use super::*;
 use crate::editor::FakeDialogs;
 
-fn click_text(ctx: &egui::Context, app: &mut Workbench, label: &str) {
+fn visible_text(frame: &egui::FullOutput, label: &str) -> Option<Pos2> {
     fn find(shape: &egui::epaint::Shape, label: &str) -> Option<Pos2> {
         match shape {
             egui::epaint::Shape::Text(text) if text.galley.text() == label => {
@@ -11,14 +11,15 @@ fn click_text(ctx: &egui::Context, app: &mut Workbench, label: &str) {
             _ => None,
         }
     }
+    frame.shapes.iter().find_map(|item| {
+        let pos = find(&item.shape, label)?;
+        item.clip_rect.contains(pos).then_some(pos)
+    })
+}
+
+fn click_text(ctx: &egui::Context, app: &mut Workbench, label: &str) {
     let frame = render_stage(ctx, app, vec![]);
-    let pos = frame
-        .shapes
-        .iter()
-        .find_map(|item| {
-            let pos = find(&item.shape, label)?;
-            item.clip_rect.contains(pos).then_some(pos)
-        })
+    let pos = visible_text(&frame, label)
         .unwrap_or_else(|| panic!("no visible {label:?}: {}", stage_frame(ctx, app)));
 
     for pressed in [true, false] {
@@ -130,7 +131,7 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
     rendered(
         &ctx,
         &mut app,
-        &["Connected", "Channel 1A", "Playing Tone", "On PODxt Live"],
+        &["Connected", "Playing · 1A", "Playing Tone", "On PODxt Live"],
     );
     let before = app.podxt().live.snapshot.tone.clone();
     let requests = app.podxt().live.device_requests;
@@ -144,11 +145,35 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
     rendered(
         &ctx,
         &mut app,
-        &["File editor", "Local Document", "Current POD tone"],
+        &["File editor", "Local Document", "Back to playing tone"],
     );
     assert!(!app.podxt().stage_is_current());
-
+    let editor = app.podxt_mut();
+    editor.pod_name = "Dirty Document".into();
+    editor.apply_pod_name();
     click_text(&ctx, &mut app, "2A  Saved Channel");
+    rendered(
+        &ctx,
+        &mut app,
+        &[
+            "Open another PODxt document",
+            "Dirty Document",
+            "Playing · 1A",
+        ],
+    );
+    click_text(&ctx, &mut app, "Cancel");
+
+    click_text(&ctx, &mut app, "Back to playing tone");
+    assert!(app.podxt().stage_is_current());
+    assert!(app.podxt().dirty());
+    app.podxt_mut().show_file_stage();
+    rendered(
+        &ctx,
+        &mut app,
+        &["Dirty Document", "Unsaved", "Playing · 1A"],
+    );
+    click_text(&ctx, &mut app, "2A  Saved Channel");
+    click_text(&ctx, &mut app, "Discard and open");
     rendered(&ctx, &mut app, &["Device library copy", "Saved Channel"]);
     assert_eq!(app.podxt().live.snapshot.tone, before);
     assert_eq!(
@@ -157,7 +182,7 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
     );
     assert_eq!(app.podxt().live.device_requests, requests);
 
-    click_text(&ctx, &mut app, "Current POD tone");
+    click_text(&ctx, &mut app, "Back to playing tone");
     assert!(app.podxt().stage_is_current());
     rendered(&ctx, &mut app, &["Playing Tone", "Channel 1A"]);
 
@@ -169,6 +194,8 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
         &["Disconnected", "Device library copy", "Saved Channel"],
     );
     assert!(!visible.contains("Playing Tone"), "{visible}");
+    assert!(!visible.contains("Playing ·"), "{visible}");
+    assert!(!visible.contains("Back to playing tone"), "{visible}");
     assert!(app.podxt().live.snapshot.tone.is_none());
     assert!(app.podxt().live.snapshot.library.is_empty());
     assert_eq!(app.podxt().live.historical_library.len(), 128);
@@ -179,7 +206,49 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
 }
 
 #[test]
-fn offline_startup_imports_and_browses_all_three_backup_banks_without_device_requests() {
+fn playing_channel_update_reveals_the_row_and_live_click_uses_checked_recall() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = current_fixture(&ctx);
+    let final_row = "32D  Saved Channel";
+    let initial = render_stage(&ctx, &mut app, vec![]);
+    assert!(visible_text(&initial, final_row).is_none());
+
+    let panel = &mut app.podxt_mut().live;
+    let slot = Location::tone_from_label("32D").unwrap();
+    // Inject a completed physical program-change publication, without a device.
+    panel.snapshot.channel = Some(slot);
+    panel.snapshot.tone = panel.stored_tone(slot).cloned();
+    panel.live_editing = true;
+    panel.reveal_playing = true;
+
+    let mut revealed = false;
+    for _ in 0..24 {
+        ctx.request_repaint();
+        let frame = render_stage(&ctx, &mut app, vec![]);
+        assert!(visible_text(&frame, "Playing · 32D").is_some());
+        if visible_text(&frame, final_row).is_some() {
+            revealed = true;
+            break;
+        }
+    }
+    assert!(
+        revealed,
+        "physical update should scroll to the playing channel"
+    );
+
+    let requests = app.podxt().live.device_requests;
+    click_text(&ctx, &mut app, "32C  Saved Channel");
+    let panel = &app.podxt().live;
+    assert_eq!(panel.device_requests, requests + 1);
+    assert_eq!(panel.playing_channel(), Some(slot));
+    assert_eq!(
+        panel.message.as_deref(),
+        Some("Refresh the playing tone before selecting a channel.")
+    );
+}
+
+#[test]
+fn offline_startup_imports_full_backup_and_browses_only_channels_in_stage() {
     let ctx = egui::Context::default();
     let directory = tempfile::tempdir().unwrap();
     let preferences = directory.path().join("preferences.json");
@@ -222,21 +291,17 @@ fn offline_startup_imports_and_browses_all_three_backup_banks_without_device_req
     click_text(&ctx, &mut app, "Open tone or bank…");
     rendered(&ctx, &mut app, &["Local Document", "File editor"]);
 
-    click_text(&ctx, &mut app, "Tones");
-    click_text(&ctx, &mut app, "Amp Setups");
-    rendered(&ctx, &mut app, &["Recallable amp", "AMP 1  Backup Amp"]);
-    click_text(&ctx, &mut app, "AMP 1  Backup Amp");
-    let amp = app.podxt().pod_library.tone(0).unwrap();
-    assert_eq!(amp.name(), "Backup Amp");
-    assert_eq!(amp.container(), pod_preset::ContainerKind::L6as);
-
-    click_text(&ctx, &mut app, "Amp Setups");
-    click_text(&ctx, &mut app, "FX Setups");
-    rendered(&ctx, &mut app, &["Recallable effect", "FX 1  Backup FX"]);
-    click_text(&ctx, &mut app, "FX 1  Backup FX");
-    let fx = app.podxt().pod_library.tone(0).unwrap();
-    assert_eq!(fx.name(), "Backup FX");
-    assert_eq!(fx.container(), pod_preset::ContainerKind::L6fs);
+    let visible = rendered(&ctx, &mut app, &["Tone channels", "1A  Backup Tone"]);
+    for hidden in [
+        "Amp Setups",
+        "FX Setups",
+        "Backup Amp",
+        "Backup FX",
+        "Playing ·",
+        "Back to playing tone",
+    ] {
+        assert!(!visible.contains(hidden), "{visible}");
+    }
 
     assert!(!app.podxt().busy());
     assert!(!app.podxt().dirty());
@@ -286,10 +351,8 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
         );
     }
     let library_before = panel.snapshot.library.clone();
-    click_text(&ctx, &mut app, "Tones");
-    click_text(&ctx, &mut app, "FX Setups");
-    rendered(&ctx, &mut app, &["Edited File", "Unsaved", "FX 12  Old FX"]);
-    click_text(&ctx, &mut app, "Current POD tone");
+    rendered(&ctx, &mut app, &["Edited File", "Unsaved", "Playing · 5B"]);
+    click_text(&ctx, &mut app, "Back to playing tone");
 
     // Keep the worker present while each publication goes through the real
     // editor poll. The test drives its transaction synchronously for exact
@@ -355,7 +418,7 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
             snapshot.lock().unwrap().apply(update, Instant::now());
             match phase {
                 "initial" => {
-                    let visible = rendered(&ctx, &mut app, &["Stage Current", "FX 12  Old FX"]);
+                    let visible = rendered(&ctx, &mut app, &["Stage Current", "Playing · 5B"]);
                     assert!(!visible.contains("Tuner active on POD"));
                 }
                 "tuner on" => {
@@ -372,7 +435,7 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
                     click_text(&ctx, &mut app, "Open file editor");
                 }
                 "recall" => {
-                    rendered(&ctx, &mut app, &["Edited File", "Unsaved", "FX 12  Old FX"]);
+                    rendered(&ctx, &mut app, &["Edited File", "Unsaved", "Playing · 5B"]);
                     assert!(!app.podxt().stage_is_current());
                     let panel = &app.podxt().live;
                     assert_eq!(panel.snapshot.tone.as_ref(), Some(&recalled));
@@ -387,12 +450,11 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
                         request_time - notice_time.unwrap(),
                         Duration::from_millis(2500)
                     );
-                    let visible = rendered(
-                        &ctx,
-                        &mut app,
-                        &["Edited File", "Unsaved", "FX 12  New FX", "FX 13  Other FX"],
-                    );
-                    assert!(!visible.contains("Old FX"));
+                    let visible =
+                        rendered(&ctx, &mut app, &["Edited File", "Unsaved", "Playing · 5B"]);
+                    for hidden in ["FX Setups", "Old FX", "New FX", "Other FX"] {
+                        assert!(!visible.contains(hidden), "{visible}");
+                    }
                     let editor = app.podxt();
                     assert!(!editor.stage_is_current());
                     assert_eq!(editor.pod_library.tone(0).unwrap().as_bytes(), edited_bytes);
@@ -414,11 +476,11 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
     assert!(!held.get());
     assert_eq!(fs::read(path).unwrap(), disk_bytes);
 
-    click_text(&ctx, &mut app, "Current POD tone");
+    click_text(&ctx, &mut app, "Back to playing tone");
     rendered(
         &ctx,
         &mut app,
-        &["Stage Current", "Channel 5B", "FX 12  New FX"],
+        &["Stage Current", "Channel 5B", "Playing · 5B"],
     );
     let editor = app.podxt_mut();
     assert!(editor.stage_is_current());

@@ -187,7 +187,6 @@ pub(super) struct Stage {
     source: StageSource,
     pub(super) path: Option<PathBuf>,
     pending_document: Option<StageDocument>,
-    bank: usize,
     #[cfg(feature = "usb")]
     pub(super) view_current: bool,
     #[cfg(feature = "usb")]
@@ -206,9 +205,6 @@ impl Stage {
 
     #[cfg(feature = "usb")]
     pub(super) fn reveal_playing_channel(&mut self) {
-        // Tone channels occupy bank index zero. Scrolling and the bank picker
-        // otherwise keep their own position.
-        self.bank = 0;
         self.library_highlight = None;
     }
 }
@@ -717,7 +713,31 @@ impl PodxtEditor {
     }
 
     fn stage_side_library(&mut self, ui: &mut egui::Ui, current: bool) {
-        let bank = BankKind::ALL[self.stage.bank];
+        #[cfg(feature = "usb")]
+        let playing_channel = if self.live.connected() {
+            self.live.playing_channel()
+        } else {
+            None
+        };
+        #[cfg(feature = "usb")]
+        let can_show_current = self.live.connected() && self.live.has_current();
+        #[cfg(not(feature = "usb"))]
+        let can_show_current = false;
+        #[cfg(feature = "usb")]
+        if can_show_current {
+            if let Some(slot) = playing_channel {
+                ui.strong(format!("Playing · {}", slot.slot_name()));
+            }
+            if !current && ui.button("Back to playing tone").clicked() {
+                self.stage.view_current = true;
+                self.stage.reveal_playing_channel();
+            }
+        }
+        if !current && self.pod_bundle.is_some() {
+            self.stage_library(ui);
+            return;
+        }
+        let bank = BankKind::Tones;
         let mut rows = Vec::new();
         #[cfg(feature = "usb")]
         let on_device = self.live.connected() && self.live.has_library_bank(bank);
@@ -758,31 +778,13 @@ impl PodxtEditor {
                 rows.push((slot, dump.clone()));
             }
         }
-        #[cfg(feature = "usb")]
-        let can_show_current = self.live.connected() && self.live.has_current();
-        #[cfg(not(feature = "usb"))]
-        let can_show_current = false;
-        if !current && self.pod_bundle.is_some() {
-            #[cfg(feature = "usb")]
-            if can_show_current && ui.button("Current POD tone").clicked() {
-                self.stage.view_current = true;
-            }
+        if rows.is_empty() && self.stage.backup.is_none() && !can_show_current {
             self.stage_library(ui);
             return;
         }
-        if rows.is_empty() && self.stage.backup.is_none() && !on_device && !can_show_current {
-            self.stage_library(ui);
-            return;
-        }
-        chrome::section_panel(ui, "Library", |ui| {
+        chrome::section_panel(ui, "Tone channels", |ui| {
             ui.set_min_width(153.0);
             ui.set_max_width(185.0);
-            if can_show_current && ui.selectable_label(current, "Current POD tone").clicked() {
-                #[cfg(feature = "usb")]
-                {
-                    self.stage.view_current = true;
-                }
-            }
             ui.weak(if on_device {
                 "On PODxt Live"
             } else if self.stage.backup.is_some() {
@@ -790,26 +792,14 @@ impl PodxtEditor {
             } else if historical {
                 "Previous PODxt library · offline"
             } else {
-                "Reading PODxt library"
-            });
-            egui::ComboBox::from_id_salt("stage-saved-bank")
-                .selected_text(bank.name())
-                .show_ui(ui, |ui| {
-                    for (index, kind) in BankKind::ALL.into_iter().enumerate() {
-                        ui.selectable_value(&mut self.stage.bank, index, kind.name());
-                    }
-                });
-            ui.small(match bank {
-                BankKind::Tones => "Complete presets on channels 1A–32D.",
-                BankKind::AmpSetups => "Recallable amp, cab and mic settings.",
-                BankKind::FxSetups => "Recallable effect settings and routing.",
+                "PODxt tone channels not loaded"
             });
             let mut selected = None;
             let mut file_copy = None;
             egui::ScrollArea::vertical().id_salt("saved-tones").max_height(330.0).show(ui, |ui| {
                 for (slot, dump) in &rows {
                     #[cfg(feature = "usb")]
-                    let playing = on_device && current && self.live.playing_channel() == Some(*slot);
+                    let playing = on_device && current && playing_channel == Some(*slot);
                     #[cfg(not(feature = "usb"))]
                     let playing = false;
                     let browsing = matches!(
@@ -852,7 +842,6 @@ impl PodxtEditor {
             if let Some((slot, _)) = selected
                 && on_device
                 && self.live.live_editing
-                && slot.kind() == BankKind::Tones
             {
                 self.live.recall(slot, ui.ctx());
                 self.stage.view_current = true;
@@ -861,7 +850,7 @@ impl PodxtEditor {
             if let Some((slot, dump)) =
                 file_copy.or_else(|| (!current || historical).then_some(selected).flatten())
             {
-                if let Some(tone) = decode_tone(dump, slot.kind()) {
+                if let Some(tone) = decode_tone(dump, bank) {
                     self.open_stage_copy(
                         tone,
                         if on_device {
