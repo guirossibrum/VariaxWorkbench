@@ -1,7 +1,7 @@
 # Linux paired Follow input and handoff
 
-**Pending Gatekeeper review and direct owner authorization.** Only the owner
-runs the hardware portion. This is the isolated
+**Gatekeeper review complete in `6bec9c1`. Direct owner authorization is pending.**
+Only the owner runs the hardware portion. This is the isolated
 [#275](https://github.com/guirossibrum/VariaxWorkbench/issues/275#issuecomment-7231520627)
 probe for the two existing Linux input routes.
 

@@ -1295,6 +1295,13 @@ impl PodxtEditor {
         false
     }
 
+    fn streams_stage_drags(&self, _index: usize) -> bool {
+        #[cfg(feature = "usb")]
+        return _index == CURRENT_STAGE && self.live.live_editing;
+        #[cfg(not(feature = "usb"))]
+        false
+    }
+
     fn stage_control(&mut self, ui: &mut egui::Ui, index: usize, row: &PodControl<'_>) {
         let selector = row.parameter.selector.expect("editable table control");
         let label = match row.parameter.key.as_str() {
@@ -1347,15 +1354,13 @@ impl PodxtEditor {
                             .suffix(suffix)
                             .enabled(enabled)
                             .show(ui);
-                        if output.response.dragged() || output.response.drag_started() {
+                        let streaming = self.streams_stage_drags(index);
+                        if stage_drag_active(&output.response) {
                             self.parameter_panel.slider = Some((index, selector, current));
-                            None
                         } else if output.response.drag_stopped() || output.changed {
                             self.parameter_panel.slider = None;
-                            row.bits_from_display(current)
-                        } else {
-                            None
                         }
+                        stage_drag_value(&output.response, output.changed, streaming, current, row)
                     } else {
                         ui.label(label);
                         None
@@ -1481,11 +1486,16 @@ impl PodxtEditor {
                                     .update_while_editing(false),
                             )
                             .labelled_by(label.id);
-                        if tempo.dragged() || tempo.drag_started() {
+                        if stage_drag_active(&tempo) {
                             self.stage.tempo_drag = Some((scope, bpm));
-                        } else if (tempo.drag_stopped() || tempo.changed())
-                            && let Some(bits) = row.bits_from_display(bpm)
-                        {
+                        }
+                        if let Some(bits) = stage_drag_value(
+                            &tempo,
+                            tempo.changed(),
+                            self.streams_stage_drags(index),
+                            bpm,
+                            row,
+                        ) {
                             self.edit_stage_value_with_ui(ui, index, row, bits);
                         }
                     });
@@ -1598,6 +1608,31 @@ impl PodxtEditor {
             });
         });
     }
+}
+
+fn stage_drag_active(response: &egui::Response) -> bool {
+    response.dragged() || response.drag_started()
+}
+
+fn stage_drag_value(
+    response: &egui::Response,
+    changed: bool,
+    streaming: bool,
+    value: f64,
+    row: &PodControl<'_>,
+) -> Option<u32> {
+    let submit = if stage_drag_active(response) {
+        streaming && changed
+    } else {
+        response.drag_stopped() || changed
+    };
+    if !submit {
+        return None;
+    }
+    // Live rows include the latest queued or in-flight value. Avoid sending
+    // the same quantized value again when the pointer moves or is released.
+    row.bits_from_display(value)
+        .filter(|bits| !streaming || row.bits != Some(*bits))
 }
 
 fn linked_model_row<'a>(rows: &'a [PodControl<'static>]) -> Option<&'a PodControl<'static>> {

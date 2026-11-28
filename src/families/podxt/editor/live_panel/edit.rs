@@ -941,7 +941,7 @@ impl LiveEditor {
             && !self.needs_get;
         for (action, title, enabled) in [
             (Action::Send, "Apply to playing tone", self.has_pending()),
-            (Action::Undo, "Undo live edits", !self.has_pending()),
+            (Action::Undo, "Undo live edits", self.can_undo()),
         ] {
             let response = ui.add_enabled(
                 ready && enabled && Self::admitted(action),

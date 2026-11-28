@@ -426,3 +426,63 @@ fn tabbing_past_tempo_preserves_existing_file_precision() {
     assert_eq!(gui.bits(0, "TEMPO"), Some(exact));
     assert_eq!(gui.tone(0).as_bytes(), tone.as_bytes());
 }
+
+#[test]
+fn drive_drag_emits_values_before_release_only_for_live_streaming() {
+    let tone = PodTone::new_podxt_tone("Drive drag").unwrap();
+    let rows = tone.table_controls(0);
+    let drive = rows
+        .iter()
+        .find(|row| row.parameter.key == "DRIVE")
+        .unwrap();
+    let [min, max] = drive.display_range().unwrap();
+
+    for streaming in [false, true] {
+        let ctx = egui::Context::default();
+        let mut value = (min + max) / 2.0;
+        let mut frame = |events| {
+            let mut result = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let output = Knob::percent("Drive", &mut value).range(min..=max).show(ui);
+                        let bits = stage_drag_value(
+                            &output.response,
+                            output.changed,
+                            streaming,
+                            value,
+                            drive,
+                        );
+                        result = Some((
+                            output.response.rect.center(),
+                            output.response.dragged(),
+                            bits,
+                        ));
+                    });
+                },
+            );
+            result.unwrap()
+        };
+
+        let (start, _, _) = frame(vec![]);
+        frame(vec![Event::PointerMoved(start), pointer(start, true)]);
+        let first = start - egui::vec2(0.0, 18.0);
+        let second = start - egui::vec2(0.0, 36.0);
+        let (_, first_held, first_bits) = frame(vec![Event::PointerMoved(first)]);
+        let (_, second_held, second_bits) = frame(vec![Event::PointerMoved(second)]);
+        assert!(first_held && second_held);
+        if streaming {
+            assert!(first_bits.is_some());
+            assert!(second_bits.is_some());
+            assert_ne!(first_bits, second_bits);
+        } else {
+            assert_eq!((first_bits, second_bits), (None, None));
+            assert!(frame(vec![pointer(second, false)]).2.is_some());
+        }
+    }
+}
