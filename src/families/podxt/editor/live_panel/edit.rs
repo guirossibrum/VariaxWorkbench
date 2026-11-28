@@ -1,6 +1,7 @@
 use super::*;
 use podxt::{
-    EditorBuffer, EditorRecall, LiveTarget, RecallConfirmation, Target, VerifiedToneBackup,
+    EditorBuffer, EditorRecall, LiveTarget, RecallConfirmation, Target, TonePayload,
+    VerifiedToneBackup,
 };
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use podxt::{EditorEdit, WholeToneSource};
@@ -13,6 +14,7 @@ const WHOLE_TONE_SEND_APPROVED: bool = false;
 pub(super) struct LiveEditor {
     pub(super) reply_pending: Arc<AtomicBool>,
     session: Option<ActiveEdit>,
+    drafts: Drafts,
     worker: Option<EditWorker>,
     pending: Pending,
     queued_undo: Option<QueuedUndo>,
@@ -35,6 +37,7 @@ impl Default for LiveEditor {
         Self {
             reply_pending: Arc::default(),
             session: None,
+            drafts: Drafts::default(),
             worker: None,
             pending: Pending::default(),
             queued_undo: None,
@@ -57,6 +60,44 @@ impl Default for LiveEditor {
 struct ActiveEdit {
     original: EditorBuffer,
     current: EditorBuffer,
+}
+
+#[derive(Default)]
+struct Drafts {
+    // LivePanel rotates this map whenever the verified attachment changes.
+    attached: HashMap<u16, TonePayload>,
+    previous_attachments: Vec<HashMap<u16, TonePayload>>,
+}
+
+impl Drafts {
+    fn end_attachment(&mut self) {
+        if !self.attached.is_empty() {
+            self.previous_attachments
+                .push(std::mem::take(&mut self.attached));
+        }
+    }
+
+    fn record_edit(&mut self, active: &ActiveEdit, observed: &EditorBuffer) {
+        let slot = observed.channel;
+        if active.current.channel != slot || slot.kind() != BankKind::Tones {
+            return;
+        }
+        let (Ok(before), Ok(after), Ok(original)) = (
+            TonePayload::from_dump(&active.current.tone),
+            TonePayload::from_dump(&observed.tone),
+            TonePayload::from_dump(&active.original.tone),
+        ) else {
+            return;
+        };
+        // A readback of a no-op must leave a previously retained draft alone.
+        if before != after {
+            if after == original {
+                self.attached.remove(&slot.address());
+            } else {
+                self.attached.insert(slot.address(), after);
+            }
+        }
+    }
 }
 
 struct QueuedUndo {
@@ -404,6 +445,7 @@ impl LiveEditor {
             worker.device = None;
         }
         self.session = None;
+        self.drafts.end_attachment();
         self.whole_tone_backup = None;
         self.pending.0.clear();
         self.needs_get = false;
@@ -428,6 +470,22 @@ impl LiveEditor {
     }
 
     #[cfg(test)]
+    pub(super) fn publish_test_edit(
+        &mut self,
+        device: &detection::DeviceKey,
+        before: EditorBuffer,
+        after: EditorBuffer,
+    ) {
+        self.accept_follow(before);
+        self.complete_job(
+            Action::Controls,
+            device,
+            false,
+            Ok(EditOutcome::Buffer(after)),
+        );
+    }
+
+    #[cfg(test)]
     pub(super) fn use_fake_get(&mut self) {
         self.fake_get = true;
     }
@@ -448,6 +506,49 @@ impl LiveEditor {
         };
         self.detach();
         self.pending = staged;
+    }
+
+    pub(super) fn draft(&self, slot: Location) -> Option<&TonePayload> {
+        self.drafts.attached.get(&slot.address())
+    }
+
+    pub(super) fn draft_counts(&self) -> (usize, usize) {
+        (
+            self.drafts.attached.len(),
+            self.drafts
+                .previous_attachments
+                .iter()
+                .map(HashMap::len)
+                .sum(),
+        )
+    }
+
+    pub(super) fn discard_drafts(&mut self) {
+        self.drafts = Drafts::default();
+    }
+
+    pub(super) fn reconcile_stored(&mut self, stored: &podxt::StoredTone) {
+        if let Ok(saved) = TonePayload::from_dump(&stored.tone)
+            && self.draft(stored.location) == Some(&saved)
+        {
+            self.drafts.attached.remove(&stored.location.address());
+        }
+    }
+
+    pub(super) fn playing_draft_status(&self, slot: Location) -> Option<&'static str> {
+        let draft = self.draft(slot)?;
+        let confirmed = self.session.as_ref().filter(|active| {
+            active.current.channel == slot
+                && !self.needs_get
+                && !self.reply_pending.load(Ordering::Acquire)
+        });
+        Some(match confirmed {
+            Some(active) if TonePayload::from_dump(&active.current.tone).as_ref() == Ok(draft) => {
+                "Session draft · playing"
+            }
+            Some(_) => "Draft retained · playing tone differs",
+            None => "Draft retained · playing tone unverified",
+        })
     }
 
     pub(super) fn discard_staged(&mut self) {
@@ -700,7 +801,16 @@ impl LiveEditor {
         match result {
             Ok(
                 EditOutcome::Buffer(buffer) | EditOutcome::Recall(EditorRecall::Playing(buffer)),
-            ) => self.completed(action, Ok(buffer)),
+            ) => {
+                if matches!(action, Action::Controls | Action::Send | Action::Undo)
+                    && !stopped
+                    && !self.reply_pending.load(Ordering::Acquire)
+                    && let Some(active) = &self.session
+                {
+                    self.drafts.record_edit(active, &buffer);
+                }
+                self.completed(action, Ok(buffer))
+            }
             Ok(EditOutcome::Recall(EditorRecall::ConfirmationRequired(confirmation))) => {
                 let playing = confirmation.playing().clone();
                 self.completed(Action::Get, Ok(playing));

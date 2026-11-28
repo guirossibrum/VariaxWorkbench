@@ -602,6 +602,33 @@ impl PodxtEditor {
                 self.pod_amp_quit_dialog(services, ctx);
                 return;
             }
+            #[cfg(feature = "usb")]
+            {
+                let (attached, previous) = self.live.draft_counts();
+                let count = attached + previous;
+                if count > 0 {
+                    egui::Window::new("PODxt session drafts")
+                        .collapsible(false)
+                        .resizable(false)
+                        .show(ctx, |ui| {
+                            ui.label(if count == 1 {
+                                "Closing discards one retained PODxt channel draft.".into()
+                            } else {
+                                format!("Closing discards {count} retained PODxt channel drafts.")
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Keep drafts").clicked() {
+                                    services.close = CloseResult::Cancelled;
+                                }
+                                if ui.button("Discard drafts and close").clicked() {
+                                    self.live.discard_drafts();
+                                    services.finish_close_if(!self.needs_close());
+                                }
+                            });
+                        });
+                    return;
+                }
+            }
             services.finish_close_if(!self.needs_close());
             return;
         };
@@ -3863,7 +3890,10 @@ impl PodxtEditor {
 
     fn needs_close(&self) -> bool {
         #[cfg(feature = "usb")]
-        if self.live.locker_dirty() || self.live.has_staged_edits() {
+        if self.live.locker_dirty()
+            || self.live.has_staged_edits()
+            || self.live.draft_counts() != (0, 0)
+        {
             return true;
         }
         self.pod_dirty() || self.pod_has_staged_edit()

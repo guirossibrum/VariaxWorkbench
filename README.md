@@ -28,8 +28,9 @@ Earlier captures from floating windows using test presets with device discovery 
   include a [model library](assets/variax-models/SOURCES.md) for rendering programs. The
   editor also uses it to offer standard pickup positions offline.
 - **PODxt editor.** Verified connections open on the playing tone, with saved
-  channels beside the stage. Offline, the editor opens a remembered library
-  backup or a labelled default. Edit amp, cab, and effect settings and save copies.
+  channels beside the stage. Verified edits are retained as per-channel session
+  drafts. Channel switches still play the saved tone. Offline, the editor opens a
+  remembered library backup or a labelled default. Edit amp, cab, and effect settings and save copies.
   Open Tone Locker to browse local files and the PODxt Live tones and setup
   banks side by side, including imported library backups offline. On a supported
   connection, Tuner offers Digital and Analog views.
