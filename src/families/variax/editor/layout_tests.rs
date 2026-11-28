@@ -207,7 +207,7 @@ fn compact_toolbar_keeps_route_in_footer_and_device_actions_keyboard_reachable()
             for label in [
                 "Download from guitar…",
                 "Send Edit Buffer",
-                "Get Edit Buffer",
+                "Read current model from guitar…",
                 "String Volume Setup…",
             ] {
                 assert!(text_rect(&output, label).is_none());

@@ -2,7 +2,7 @@
 use super::{
     PresetFile,
     device_sync::{Report, Target},
-    live_edit::Previous,
+    live_edit::{Previous, Recall},
 };
 use line6_devices::{
     family::variax::{
@@ -55,6 +55,22 @@ fn send_on<L: Link>(
     )
 }
 
+fn recall_on<L: Link>(
+    session: &mut Session<L>,
+    request: &Recall,
+    cancel: &AtomicBool,
+) -> Result<Image, String> {
+    let stopping = || cancel.load(Ordering::Relaxed) || !request.current.still_valid();
+    let starting = procedures::read_buffer(session, stopping, |_| Ok(()))?;
+    procedures::compare_image(&starting, &request.starting_image, "Starting guitar buffer")?;
+    let recalled = procedures::read_unmodified(session, request.target, stopping, |_| Ok(()))
+        .and_then(|words| {
+            procedures::compare_image(&words, &request.target_image, "Saved model recall")?;
+            Ok(procedures::pack(&words))
+        });
+    recalled.map_err(|error| format!("{error} The active guitar model could not be verified."))
+}
+
 fn decode_model(image: &Image) -> Result<PresetFile, String> {
     let metadata = variax_workbench::PresetMetadata::from_bytes(
         image[procedures::METADATA]
@@ -90,7 +106,10 @@ fn sync_on<L: Link>(
         let result = procedures::read_unmodified(session, target.position, stopping, |_| Ok(()))
             .and_then(|words| {
                 let Some(images) = stores.map(|images| &images[index]) else {
-                    return decode_model(&procedures::pack(&words));
+                    let image = procedures::pack(&words);
+                    let model = decode_model(&image)?;
+                    report.images.push((target.position, Box::new(image)));
+                    return Ok(model);
                 };
                 procedures::compare_image(
                     &words,
@@ -263,6 +282,7 @@ mod linux {
         BufferRead,
         BufferWrite,
         LibraryRead,
+        Recall,
         LibraryWrite,
     }
 
@@ -272,6 +292,9 @@ mod linux {
                 Operation::VariaxIdentity => Gate::IdentityRequest,
                 Operation::VariaxRead => Gate::CurrentSettingsRead,
                 Operation::VariaxEditBufferWrite if matches!(self, Self::BufferWrite) => {
+                    Gate::EditBufferWrite
+                }
+                Operation::VariaxPresetSwitch if matches!(self, Self::Recall) => {
                     Gate::EditBufferWrite
                 }
                 Operation::VariaxPresetSwitch
@@ -295,12 +318,7 @@ mod linux {
         Ok(())
     }
 
-    fn session<T>(
-        attachment: &Attachment,
-        cancel: &AtomicBool,
-        policy: Mode,
-        execute: impl FnOnce(&mut Session<'_, UsbInterfaceLink<&DeviceLock>>) -> Result<T, String>,
-    ) -> Result<T, String> {
+    fn lock(cancel: &AtomicBool, policy: Mode) -> Result<DeviceLock, String> {
         for gate in [
             Gate::OsDiscovery,
             Gate::IdentityRequest,
@@ -309,7 +327,7 @@ mod linux {
             run_if_unlocked(gate, || Ok(()))?;
         }
         match policy {
-            Mode::BufferWrite => run_if_unlocked(Gate::EditBufferWrite, || Ok(()))?,
+            Mode::BufferWrite | Mode::Recall => run_if_unlocked(Gate::EditBufferWrite, || Ok(()))?,
             Mode::LibraryRead => run_if_unlocked(Gate::FullBackupRead, || Ok(()))?,
             Mode::LibraryWrite => {
                 run_if_unlocked(Gate::FullBackupRead, || Ok(()))?;
@@ -318,12 +336,31 @@ mod linux {
             Mode::BufferRead => {}
         }
         check_cancel(cancel)?;
+        DeviceLock::acquire().map_err(|error| error.to_string())
+    }
+
+    fn session<T>(
+        attachment: &Attachment,
+        cancel: &AtomicBool,
+        policy: Mode,
+        execute: impl FnOnce(&mut Session<'_, UsbInterfaceLink<&DeviceLock>>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let rig = lock(cancel, policy)?;
+        session_on(&rig, attachment, cancel, policy, execute)
+    }
+
+    fn session_on<T>(
+        rig: &DeviceLock,
+        attachment: &Attachment,
+        cancel: &AtomicBool,
+        policy: Mode,
+        execute: impl FnOnce(&mut Session<'_, UsbInterfaceLink<&DeviceLock>>) -> Result<T, String>,
+    ) -> Result<T, String> {
         // Variax tab admission already verified PODxt Live 3.01 for this USB
         // attachment. The scoped opener also checks the physical USB address.
-        let rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
         check_cancel(cancel)?;
         let link = variax_workbench::usb::open_variax_bridge_borrowed(
-            &rig,
+            rig,
             (&attachment.path, attachment.address),
         )?;
         let mut log = Quiet;
@@ -493,6 +530,31 @@ mod linux {
                     cancel,
                 )
             })
+        }
+
+        fn recall(
+            &self,
+            attachment: &Attachment,
+            request: &Recall,
+            cancel: &AtomicBool,
+        ) -> Result<Option<Image>, String> {
+            let rig = lock(cancel, Mode::Recall)?;
+            check_cancel(cancel)?;
+            // The current native Follow source closes before the foreground
+            // lease is granted. A matching image cannot bridge that gap.
+            if !request.current.still_valid() {
+                return Ok(None);
+            }
+            let preferences = self
+                .preferences
+                .as_deref()
+                .ok_or("Variax live recall requires a local app data directory.")?;
+            require_backup(preferences)?;
+            let image = session_on(&rig, attachment, cancel, Mode::Recall, |session| {
+                recall_on(session, request, cancel)
+            })?;
+            check_cancel(cancel)?;
+            Ok(Some(image))
         }
 
         fn get(

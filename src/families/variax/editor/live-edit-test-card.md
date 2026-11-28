@@ -20,11 +20,14 @@ intermediate image for each tuning transition tested.
    stop. Confirm the edited sound and the **Modified · not stored on
    guitar** marker. Change the alternate-tuning Enable flag and verify the
    resulting tuning. Expect an acknowledged difference to the muted transition image followed by the final full upload.
-3. Select another library position. Confirm a full working-buffer upload.
-   Return to the first position and confirm the editor still holds the
-   local edits. **Get Edit Buffer** opens the current patch while keeping
-   the library accessible. Test **Send Edit Buffer** only in the build
-   approved for its separate switch.
+3. Select an edited position using the app. Confirm a full working-buffer
+   upload. Turn the guitar selector. Confirm the editor follows the bank
+   and position with zero Live sends and keeps the local edits. A clean
+   position from a normal Download is selected locally because Download
+   supplies settings only. **Read current model from guitar…** opens an
+   editable copy of the guitar working buffer and keeps the library
+   accessible. Use **Save As** to write that copy to disk. Test **Send Edit
+   Buffer** only in the build approved for its separate switch.
 4. Turn Live editing off during a local edit. Confirm it stops sending
    updates. After a disconnect and verified reconnect, confirm Live
    editing is off and local edits remain in the editor.

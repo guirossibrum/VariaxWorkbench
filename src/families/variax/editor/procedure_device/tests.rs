@@ -253,6 +253,59 @@ fn changed_buffer_blocks_writes_after_a_new_attachment_lock() {
     assert!(error.contains("Prior edit-buffer verification"), "{error}");
 }
 
+#[test]
+fn explicit_recall_checks_clean_start_then_reads_the_target_and_never_retries_selection() {
+    use super::super::follow::ObservedSlot;
+    use line6_devices::family::variax::Preset;
+
+    let start = image(1);
+    let target = image(2);
+    let request = Recall {
+        current: ObservedSlot::fake(Preset::new(0, 0).unwrap()),
+        target: Preset::new(0, 1).unwrap(),
+        starting_image: Box::new(start),
+        target_image: Box::new(target),
+    };
+
+    for (before, after, error) in [
+        (image(3), None, Some("Starting guitar buffer")),
+        (
+            start,
+            Some(image(4)),
+            Some("The active guitar model could not be verified"),
+        ),
+        (start, Some(target), None),
+    ] {
+        let mut wire = Wire::default();
+        wire.read_buffer(&before);
+        if let Some(after) = after {
+            wire.read_selected(&after, Some(request.target.program_number()));
+        }
+        let mut log = Quiet;
+        let mut session = Session::new(&mut wire, &LibraryOnly, &mut log);
+        let result = recall_on(&mut session, &request, &AtomicBool::new(false));
+        match error {
+            Some(expected) => assert!(result.unwrap_err().contains(expected)),
+            None => assert_eq!(result.unwrap(), target),
+        }
+        assert!(wire.expected.is_empty());
+        assert!(wire.inbox.is_empty());
+    }
+
+    // An identical image in a second slot cannot repair a gap in selector evidence.
+    let request = Recall {
+        target_image: Box::new(start),
+        ..request
+    };
+    request.current.interrupt();
+    let mut wire = Wire::default();
+    let mut log = Quiet;
+    let mut session = Session::new(&mut wire, &LibraryOnly, &mut log);
+    assert!(recall_on(&mut session, &request, &AtomicBool::new(false)).is_err());
+    assert!(wire.expected.is_empty());
+    assert!(wire.inbox.is_empty());
+}
+
 struct LibraryOnly;
 
 impl GatePolicy for LibraryOnly {

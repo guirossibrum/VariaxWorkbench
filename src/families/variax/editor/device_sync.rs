@@ -1,5 +1,5 @@
 use super::{FamilyTab, PresetFile, VariaxEditor, egui, live_attachment::Attachment};
-use line6_devices::family::variax::Preset;
+use line6_devices::family::variax::{Preset, procedures::Image};
 use std::{
     path::PathBuf,
     sync::{
@@ -46,6 +46,7 @@ pub(super) struct Target {
 #[derive(Default)]
 pub(super) struct Report {
     pub(super) verified: Vec<ModelUpdate>,
+    pub(super) images: Vec<(Preset, Box<Image>)>,
     pub(super) error: Option<String>,
     pub(super) store_unknown: bool,
 }
@@ -57,6 +58,7 @@ enum Prompt {
 
 struct Worker {
     action: Action,
+    document_generation: u64,
     cancel: Arc<AtomicBool>,
     status: Receiver<String>,
     thread: JoinHandle<Report>,
@@ -272,6 +274,9 @@ impl VariaxEditor {
         let cancel = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&cancel);
         self.live_edit.stop();
+        if action.writes() {
+            self.live_edit.forget_stored_images();
+        }
         let thread = std::thread::Builder::new()
             .name("variax-library-sync".into())
             .spawn(move || {
@@ -289,6 +294,7 @@ impl VariaxEditor {
         self.status = "Checking guitar library…".into();
         self.device_sync.worker = Some(Worker {
             action,
+            document_generation: self.live_edit.document_generation(),
             cancel,
             status,
             thread,
@@ -302,6 +308,7 @@ impl VariaxEditor {
         let (_progress, status) = mpsc::channel();
         self.device_sync.worker = Some(Worker {
             action: Action::WriteSelected,
+            document_generation: self.live_edit.document_generation(),
             cancel: Arc::new(AtomicBool::new(false)),
             status,
             thread: std::thread::spawn(move || {
@@ -329,7 +336,14 @@ impl VariaxEditor {
                 .take()
                 .expect("finished sync worker");
             match worker.thread.join() {
-                Ok(report) => self.finish_device_sync(worker.action, report),
+                Ok(mut report) => {
+                    if worker.cancel.load(Ordering::Relaxed)
+                        || worker.document_generation != self.live_edit.document_generation()
+                    {
+                        report.images.clear();
+                    }
+                    self.finish_device_sync(worker.action, report);
+                }
                 Err(_) => {
                     self.device_sync.unsafe_store |= worker.action.writes();
                     self.error = Some("The guitar library worker stopped unexpectedly.".into());
@@ -349,6 +363,10 @@ impl VariaxEditor {
             if let Err(error) = document.accept_guitar_models(&report.verified, !action.writes()) {
                 self.error = Some(error);
                 return;
+            }
+            if !action.writes() && report.error.is_none() {
+                self.live_edit
+                    .remember_stored_images(report.images, &report.verified);
             }
             self.clear_text_drafts();
         }

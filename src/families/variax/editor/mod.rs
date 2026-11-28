@@ -1102,7 +1102,11 @@ impl VariaxEditor {
             });
             return;
         }
-        if self.guitar_header(ui, available) {
+        #[cfg(feature = "usb")]
+        let selection_available = available && !self.live_edit.selecting();
+        #[cfg(not(feature = "usb"))]
+        let selection_available = available;
+        if self.guitar_header(ui, selection_available) {
             self.choose_library_backup(ui.ctx(), services);
         }
         self.slot_file_actions(services, ui, available);

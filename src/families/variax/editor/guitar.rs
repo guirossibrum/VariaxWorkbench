@@ -576,6 +576,12 @@ impl VariaxEditor {
                 self.clear_text_drafts();
                 self.error = None;
                 self.status = status;
+                #[cfg(feature = "usb")]
+                if !matches!(command, Some((_, SlotCommand::Rename))) {
+                    self.live_select_explicit();
+                } else {
+                    self.live_selection_followed();
+                }
             }
             Some(Err(error)) => self.error = Some(error),
             None => {}
