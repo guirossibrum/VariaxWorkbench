@@ -72,6 +72,7 @@ enum ListenEnd {
 type Source = fn(
     &Attachment,
     &AtomicBool,
+    &AtomicBool,
     &mut dyn FnMut(),
     &mut dyn FnMut(FollowUpdate, Instant),
 ) -> Result<ListenEnd, String>;
@@ -86,11 +87,54 @@ enum ListenProgress {
 struct WorkerProgress {
     snapshot: Snapshot,
     state: ListenProgress,
+    slot_program: Option<(Preset, Instant)>,
+}
+
+/// A selector event from the listener handing the rig to foreground work.
+pub(super) struct ObservedSlot {
+    pub(super) preset: Preset,
+    changed: Instant,
+    stop: Arc<AtomicBool>,
+    continuous: Arc<AtomicBool>,
+    progress: Arc<Mutex<WorkerProgress>>,
+}
+
+impl ObservedSlot {
+    #[cfg(test)]
+    pub(super) fn fake(preset: Preset) -> Self {
+        let changed = Instant::now();
+        Self {
+            preset,
+            changed,
+            stop: Arc::new(AtomicBool::new(false)),
+            continuous: Arc::new(AtomicBool::new(true)),
+            progress: Arc::new(Mutex::new(WorkerProgress {
+                snapshot: Snapshot::default(),
+                state: ListenProgress::Listening,
+                slot_program: Some((preset, changed)),
+            })),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn interrupt(&self) {
+        self.continuous.store(false, Ordering::Release);
+    }
+
+    pub(super) fn still_valid(&self) -> bool {
+        self.continuous.load(Ordering::Acquire)
+            && !self.stop.load(Ordering::Relaxed)
+            && self
+                .progress
+                .lock()
+                .is_ok_and(|progress| progress.slot_program == Some((self.preset, self.changed)))
+    }
 }
 
 struct Worker {
     attachment: Attachment,
     stop: Arc<AtomicBool>,
+    continuous: Arc<AtomicBool>,
     retry_allowed: Arc<AtomicBool>,
     progress: Arc<Mutex<WorkerProgress>>,
     thread: JoinHandle<Result<ListenEnd, String>>,
@@ -115,9 +159,42 @@ pub(super) struct Follow {
 
 impl Follow {
     #[cfg(test)]
+    pub(super) fn test_program(&mut self, preset: Preset, at: Instant) {
+        self.snapshot
+            .receive(FollowUpdate::ProgramChange(preset), at);
+    }
+
+    #[cfg(test)]
+    pub(super) fn listen_for_test_slot(&mut self, ctx: &egui::Context) {
+        self.start(
+            |_, stop, _, ready, publish| {
+                ready();
+                publish(
+                    FollowUpdate::ProgramChange(Preset::new(0, 0).unwrap()),
+                    Instant::now(),
+                );
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(ListenEnd::Stopped)
+            },
+            ctx,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self
+            .observed_slot(self.attachment.as_ref().unwrap())
+            .is_none()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn queue_disconnect(&mut self, ctx: &egui::Context) {
         self.start(
-            |_, _, _, publish| {
+            |_, _, _, _, publish| {
                 publish(FollowUpdate::Disconnected, Instant::now());
                 Ok(ListenEnd::Stopped)
             },
@@ -165,6 +242,22 @@ impl Follow {
         // Keep the surrounding connection and tuning layout stable while
         // a requested Follow session gives up or reacquires the rig.
         self.wants_follow()
+    }
+
+    pub(super) fn observed_slot(&self, attachment: &Attachment) -> Option<ObservedSlot> {
+        let worker = self.worker.as_ref()?;
+        if &worker.attachment != attachment || worker.thread.is_finished() || self.disconnected() {
+            return None;
+        }
+        let (preset, changed) = worker.progress.lock().ok()?.slot_program?;
+        let observed = ObservedSlot {
+            preset,
+            changed,
+            stop: worker.stop.clone(),
+            continuous: worker.continuous.clone(),
+            progress: worker.progress.clone(),
+        };
+        observed.still_valid().then_some(observed)
     }
 
     pub(super) fn take_device_event(&mut self) -> Option<DeviceEvent> {
@@ -235,18 +328,22 @@ impl Follow {
         let worker_attachment = attachment.clone();
         let worker_ctx = ctx.clone();
         let stop = Arc::new(AtomicBool::new(false));
+        let continuous = Arc::new(AtomicBool::new(false));
         let retry_allowed = Arc::new(AtomicBool::new(true));
         let progress = Arc::new(Mutex::new(WorkerProgress {
             snapshot: self.snapshot,
             state: ListenProgress::Starting,
+            slot_program: None,
         }));
         let worker_stop = stop.clone();
+        let worker_continuous = continuous.clone();
         let worker_retry_allowed = retry_allowed.clone();
         let worker_progress = progress.clone();
         let thread = std::thread::Builder::new()
             .name("variax-follow".into())
             .spawn(move || {
                 let mut ready = || {
+                    worker_continuous.store(true, Ordering::Release);
                     if let Ok(mut state) = worker_progress.lock() {
                         state.state = ListenProgress::Listening;
                     }
@@ -254,6 +351,13 @@ impl Follow {
                 };
                 let mut publish = |update, at| {
                     if let Ok(mut state) = worker_progress.lock() {
+                        state.slot_program = match update {
+                            FollowUpdate::ProgramChange(preset) => Some((preset, at)),
+                            FollowUpdate::Connected
+                            | FollowUpdate::Disconnected
+                            | FollowUpdate::MidiQueueOverflow => None,
+                            _ => state.slot_program,
+                        };
                         state.snapshot.receive(update, at);
                     }
                     worker_ctx.request_repaint();
@@ -266,7 +370,14 @@ impl Follow {
                         std::thread::park_timeout(RIG_RETRY);
                         continue;
                     }
-                    let result = source(&worker_attachment, &worker_stop, &mut ready, &mut publish);
+                    let result = source(
+                        &worker_attachment,
+                        &worker_stop,
+                        &worker_continuous,
+                        &mut ready,
+                        &mut publish,
+                    );
+                    worker_continuous.store(false, Ordering::Release);
                     if result != Ok(ListenEnd::Busy) {
                         break result;
                     }
@@ -281,6 +392,9 @@ impl Follow {
                     }
                     std::thread::park_timeout(RIG_RETRY);
                 };
+                if let Ok(mut state) = worker_progress.lock() {
+                    state.slot_program = None;
+                }
                 worker_ctx.request_repaint();
                 result
             })
@@ -289,6 +403,7 @@ impl Follow {
         self.worker = Some(Worker {
             attachment,
             stop,
+            continuous,
             retry_allowed,
             progress,
             thread,
@@ -398,6 +513,23 @@ impl Follow {
         }
     }
 
+    pub(super) fn pending_selection(&self, document: &EditorDocument) -> bool {
+        self.snapshot.program.is_some_and(|(preset, at)| {
+            self.consumed_program != Some((preset, at))
+                && document.selection().is_some_and(|position| {
+                    position != (usize::from(preset.bank()), usize::from(preset.slot()))
+                })
+                && Self::matches_layout(document)
+        })
+    }
+
+    fn matches_layout(document: &EditorDocument) -> bool {
+        document.extension() == "vwb"
+            && document.banks().is_some_and(|banks| {
+                banks.len() == 12 && banks.iter().all(|bank| bank.presets().len() == 5)
+            })
+    }
+
     fn take_settled_slot(
         &mut self,
         document: &EditorDocument,
@@ -411,11 +543,7 @@ impl Follow {
         let (preset, changed) = program;
         let bank = usize::from(preset.bank());
         let slot = usize::from(preset.slot());
-        let matches_layout = document.extension() == "vwb"
-            && document.banks().is_some_and(|banks| {
-                banks.len() == 12 && banks.iter().all(|bank| bank.presets().len() == 5)
-            });
-        if !matches_layout || document.selection() == Some((bank, slot)) {
+        if !Self::matches_layout(document) || document.selection() == Some((bank, slot)) {
             self.consumed_program = Some(program);
             return None;
         }
@@ -580,9 +708,6 @@ impl VariaxEditor {
         }
         if self.is_reading()
             || self.has_historical_guitar_library()
-            // A guitar-side program change must not trigger an automatic
-            // edit-buffer send through the local selection.
-            || self.live_edit.enabled()
             || self.live_edit.busy()
             || self.blocking_prompt()
             || self.name_draft.is_some()
@@ -599,6 +724,7 @@ impl VariaxEditor {
             } else {
                 self.drag_origin = None;
                 self.clear_text_drafts();
+                self.live_selection_followed();
             }
         }
     }
@@ -608,6 +734,7 @@ impl VariaxEditor {
 fn read_updates(
     attachment: &Attachment,
     stop: &AtomicBool,
+    continuous: &AtomicBool,
     ready: &mut dyn FnMut(),
     publish: &mut dyn FnMut(FollowUpdate, Instant),
 ) -> Result<ListenEnd, String> {
@@ -645,6 +772,8 @@ fn read_updates(
         let yielded = Cell::new(false);
         let cancelled = || {
             if !yielded.get() && lease.yield_requested() {
+                // Release slot authority before closing the listener or handing over the lock.
+                continuous.store(false, Ordering::Release);
                 yielded.set(true);
             }
             yielded.get() || stop.load(Ordering::Relaxed)
@@ -674,6 +803,7 @@ fn read_updates(
                 (Ok(()), Ok(())) => Ok(()),
             }
         })();
+        continuous.store(false, Ordering::Release);
         match result {
             Ok(()) if yielded.get() => Ok(ListenEnd::Yielded),
             Ok(()) => Ok(ListenEnd::Stopped),
@@ -698,6 +828,7 @@ mod tests {
     fn fake_source(
         attachment: &Attachment,
         stop: &AtomicBool,
+        _: &AtomicBool,
         ready: &mut dyn FnMut(),
         publish: &mut dyn FnMut(FollowUpdate, Instant),
     ) -> Result<ListenEnd, String> {
@@ -922,7 +1053,7 @@ mod tests {
         assert_ne!(selected, Some((4, 2)));
         assert_ne!(selected, Some((5, 1)));
 
-        let old_source: Source = |_, _, _, publish| {
+        let old_source: Source = |_, _, _, _, publish| {
             let now = Instant::now();
             publish(
                 FollowUpdate::ProgramChange(Preset::new(5, 1).unwrap()),
@@ -1020,6 +1151,7 @@ mod tests {
         fn yielding_source(
             attachment: &Attachment,
             stop: &AtomicBool,
+            _: &AtomicBool,
             ready: &mut dyn FnMut(),
             publish: &mut dyn FnMut(FollowUpdate, Instant),
         ) -> Result<ListenEnd, String> {
@@ -1326,7 +1458,7 @@ mod tests {
         super::super::refresh::tests::attach(editor);
         editor.change(|preset| preset.rename("Keep this edit"));
         let before = editor.document.as_ref().unwrap().as_bytes().to_vec();
-        let source: Source = |_, _, _, publish| {
+        let source: Source = |_, _, _, _, publish| {
             publish(FollowUpdate::Connected, Instant::now());
             publish(FollowUpdate::Disconnected, Instant::now());
             publish(FollowUpdate::Connected, Instant::now());
@@ -1357,6 +1489,55 @@ mod tests {
         assert!(!editor.follow.disconnected());
         assert!(!editor.follow.busy());
         assert_eq!(editor.document.as_ref().unwrap().as_bytes(), before);
+    }
+
+    #[test]
+    fn yielded_listener_keeps_the_display_and_expires_slot_evidence() {
+        static YIELD: AtomicBool = AtomicBool::new(false);
+
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        refresh_tests::attach(editor);
+        let follow = &mut editor.follow;
+        follow
+            .start(
+                |_, stop, _, ready, publish| {
+                    ready();
+                    let now = Instant::now();
+                    publish(FollowUpdate::Volume(64), now);
+                    publish(FollowUpdate::ProgramChange(Preset::new(0, 0).unwrap()), now);
+                    while !stop.load(Ordering::Relaxed)
+                        && !YIELD.load(Ordering::Relaxed)
+                        && now.elapsed() < Duration::from_secs(2)
+                    {
+                        std::thread::yield_now();
+                    }
+                    Ok(ListenEnd::Yielded)
+                },
+                &ctx,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let attachment = follow.attachment.clone().unwrap();
+        let observation = loop {
+            if let Some(observation) = follow.observed_slot(&attachment) {
+                break observation;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+
+        YIELD.store(true, Ordering::Relaxed);
+        while !follow.worker.as_ref().unwrap().thread.is_finished() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        follow.listen(&ctx);
+        assert_eq!(follow.snapshot.volume, Some(64));
+        assert!(follow.snapshot.program.is_some());
+        assert_eq!(follow.consumed_program, follow.snapshot.program);
+        assert!(!observation.still_valid());
+        assert!(follow.observed_slot(&attachment).is_none());
     }
 
     #[test]
