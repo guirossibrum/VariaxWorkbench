@@ -1,23 +1,9 @@
 #[path = "../src/gui.rs"]
 mod editor;
+mod launcher;
 
-use variax_workbench::BUILD_NUMBER;
-
-const APP_VERSION: &str = if env!("CARGO_PKG_VERSION_MINOR").len() == 1 {
-    concat!(
-        env!("CARGO_PKG_VERSION_MAJOR"),
-        ".0",
-        env!("CARGO_PKG_VERSION_MINOR")
-    )
-} else {
-    concat!(
-        env!("CARGO_PKG_VERSION_MAJOR"),
-        ".",
-        env!("CARGO_PKG_VERSION_MINOR")
-    )
-};
+pub(crate) use launcher::{APP_VERSION, BUILD_NUMBER};
 
 fn main() -> eframe::Result {
-    let title = format!("Variax Workbench {APP_VERSION} (build {BUILD_NUMBER})");
-    editor::run(&title)
+    launcher::launch(std::env::args().skip(1))
 }

@@ -20,6 +20,10 @@ Earlier captures from floating windows using test presets with device discovery 
 
 ## What works today
 
+- **Offline CLI.** Run `variax-workbench --help` for commands. Inspect or save a
+  renamed copy of an original Variax electric preset or PODxt Live tone.
+  `variax-workbench gui` opens the desktop app in builds with GUI support.
+
 - **Variax editor.** Edit models, pickups, wiring, and tuning. Browse banks and
   collections, undo changes, and save files offline. New tabs start with your
   latest complete download, factory presets from a selected firmware archive,

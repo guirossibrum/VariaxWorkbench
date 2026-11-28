@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] [#318](https://github.com/guirossibrum/VariaxWorkbench/issues/318) adds offline CLI help, routes `gui` through the existing main-thread launcher and adds `preset inspect` and `preset rename` for original Variax 300/600 and 500/700 presets and PODxt Live tones. Nine Linux command tests passed with core-only and all-feature builds, covering content-based detection, opaque bytes, ambiguous and unsupported input, non-overwriting copies, legacy output and GUI routing.
+
 - [x] Workbench embeds the three approved shell PNGs as a fallback when the artwork files are absent. Build 480's Windows ZIP has no artwork files and its loader points to the build checkout. Five offline asset tests cover exact PNG hashes and dimensions, Linux and macOS package-file precedence, and missing and invalid paths. Windows desktop verification remains pending. [Artwork sources](../assets/ui/SOURCES.md) · [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279).
 
 - [x] The Variax tuning band uses its visible height for scrolling. Headless Chime checks at 960×680 and 1120×760 at 1× and 2× reach the last string and Lock, Reset, and Zero detune by wheel, verify preset undo, and show the family Mix, Detune, and Zero detune controls on Tab focus. The shared TuningPanel also reveals Low E Shift, Lock and Reset on Tab and Shift+Tab at all four headless viewport settings. [#224](https://github.com/guirossibrum/VariaxWorkbench/issues/224).
