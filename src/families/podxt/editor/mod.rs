@@ -3905,6 +3905,13 @@ impl FamilyTab for PodxtEditor {
         if self.legacy_control_widgets() {
             self.pod_window(services, ui);
         } else {
+            #[cfg(feature = "usb")]
+            if self.stage_is_current() {
+                ui.scope(|ui| {
+                    ui.set_style(theme::style());
+                    self.live.recall_controls(ui);
+                });
+            }
             egui::ScrollArea::vertical()
                 .id_salt("podxt-stage")
                 .show(ui, |ui| {

@@ -685,3 +685,27 @@ fn recall_and_return_accept_split_and_coalesced_addressed_read_end_markers() {
         session.link.assert_finished();
     }
 }
+
+#[test]
+fn confirmed_live_recall_survives_volatile_motion_on_both_fresh_reads() {
+    let playing = buffer(&[(13, 42), (7, 11)]);
+    let target = Location::tone_from_label("2B").unwrap();
+    let consent = recall_consent(&playing, target, frame(&[(13, 41)]));
+    let moved = frame(&[(13, 42), (7, 80)]);
+    let moved_again = frame(&[(13, 42), (7, 95)]);
+    let saved_target = frame(&[(13, 77)]);
+    let mut script = begin(&moved);
+    script.extend([
+        reply(PodxtRequest::Stored(target), saved_target.raw.clone()),
+        packs(4),
+        dump(&moved_again),
+        channel(17),
+        (vec![0xc0, 5], vec![]),
+        dump(&saved_target),
+        channel(5),
+    ]);
+    assert!(matches!(
+        live_recall(script, target, Some(&consent), || false).unwrap(),
+        EditorRecall::Playing(buffer) if buffer.channel == target && buffer.tone == saved_target
+    ));
+}

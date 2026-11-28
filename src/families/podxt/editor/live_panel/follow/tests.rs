@@ -317,7 +317,7 @@ fn physical_follow_moves_the_library_view_to_the_verified_playing_channel() {
     for _ in 0..10 {
         visible = stage_frame(&ctx, &mut app);
     }
-    assert!(visible.contains("Channel 32D"), "{visible}");
+    assert!(visible.contains("Playing · 32D"), "{visible}");
     assert!(visible.contains("Physical 32D"), "{visible}");
     assert!(visible.contains("Last Saved Row"), "{visible}");
     assert_eq!(

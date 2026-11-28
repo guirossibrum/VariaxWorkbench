@@ -8,6 +8,47 @@ use super::*;
 use podxt::{Global, PodxtRequest, Value};
 use std::{cell::Cell, collections::VecDeque};
 
+pub(in crate::editor::podxt_panel::live_panel) struct ScriptedAction {
+    pub expected_target: Option<Location>,
+    pub requests: VecDeque<(PodxtRequest, Vec<u8>)>,
+    pub release: Box<dyn FnOnce() -> Result<(), String> + Send>,
+}
+
+impl ScriptedAction {
+    pub(super) fn run(self, job: &Job, stop: &AtomicBool) -> Result<EditOutcome, String> {
+        match self.expected_target {
+            Some(target) => assert_eq!(job.action, Action::Recall(target)),
+            None => assert_eq!(job.action, Action::Get),
+        }
+        let held = Cell::new(false);
+        let writes = Cell::new(0);
+        let expected = self.requests.len();
+        let result = edit_transaction(
+            job,
+            stop,
+            || {
+                assert!(!held.replace(true));
+                Ok(FakeLock(&held))
+            },
+            |_, run| {
+                let result = run(&mut FakeLink {
+                    held: &held,
+                    script: self.requests,
+                    reply: None,
+                    time: &Cell::new(Duration::ZERO),
+                    writes: &writes,
+                });
+                assert!(held.get(), "verified release must be inside the rig lock");
+                (self.release)()?;
+                result
+            },
+        );
+        assert_eq!(writes.get(), expected);
+        assert!(!held.get());
+        result
+    }
+}
+
 fn sample(drive: u8, index: u16) -> EditorBuffer {
     let mut raw = vec![0; podxt::EDIT_BUFFER_LEN];
     raw[..7].copy_from_slice(&[0xf0, 0, 1, 0x0c, 3, 0x74, 0x0a]);
@@ -147,6 +188,7 @@ pub(super) fn fake_recall(
             assert_eq!(current.channel, before);
             assert_eq!(current.tone.raw, before_tone.1);
             saved_source[39 + usize::from(Control::Drive.cc())] = 77;
+            saved_source[23] = 1;
             vec![packs, channel(before)]
         }
     };
@@ -252,7 +294,8 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         )
     };
     let job = Job {
-        recall_confirmation: None,
+        recall_authorization: None,
+        outgoing_draft: None,
         reply_pending: Arc::default(),
         action: Action::Controls,
         whole_tone_backup: None,
@@ -434,7 +477,8 @@ fn stage_get_recovers_and_recall_sends_one_selection_after_final_read() {
         let writes = Cell::new(0);
         let result = edit_transaction(
             &Job {
-                recall_confirmation: None,
+                recall_authorization: None,
+                outgoing_draft: None,
                 reply_pending: Arc::clone(&pending),
                 action,
                 whole_tone_backup: None,
@@ -483,7 +527,8 @@ pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked
     for action in [Action::Recall(target), Action::Controls] {
         let result = edit_transaction(
             &Job {
-                recall_confirmation: None,
+                recall_authorization: None,
+                outgoing_draft: None,
                 reply_pending: Arc::clone(pending),
                 action,
                 whole_tone_backup: None,
@@ -517,7 +562,8 @@ fn refusal(
     let saved = sample(20, 17);
     let result = edit_transaction(
         &Job {
-            recall_confirmation: None,
+            recall_authorization: None,
+            outgoing_draft: None,
             reply_pending: Arc::default(),
             action: Action::Recall(target),
             whole_tone_backup: None,
@@ -705,7 +751,12 @@ fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
     panel.live_editing = true;
     panel.startup = None;
     let text = super::super::tests::stage_frame(&ctx, &mut app);
-    assert_eq!(text.lines().filter(|line| *line == "Reconnect").count(), 1);
+    assert_eq!(
+        text.lines()
+            .filter(|line| *line == "Read playing tone")
+            .count(),
+        1
+    );
     assert!(!text.contains("and discard changes"), "{text}");
 }
 
@@ -785,6 +836,7 @@ fn automatic_edits_hide_progress_and_success_but_keep_errors_visible() {
     ] {
         editor.worker = Some(EditWorker {
             superseded: false,
+            program_read: false,
             replay: None,
             action,
             device: None,
@@ -1155,6 +1207,7 @@ fn undo_never_queues_behind_non_control_jobs() {
     ] {
         fixture.editor.worker = Some(EditWorker {
             superseded: false,
+            program_read: false,
             replay: None,
             action,
             device: Some(fixture.device.clone()),

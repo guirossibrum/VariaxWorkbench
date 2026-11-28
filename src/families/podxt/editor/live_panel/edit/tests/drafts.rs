@@ -66,7 +66,7 @@ fn checked_edits_keep_separate_drafts_through_failures_and_attachment_changes() 
     assert_eq!(editor.draft_counts(), (0, 1));
     assert!(editor.draft(a.channel).is_none());
     assert_eq!(
-        editor.drafts.previous_attachments[0][&a.channel.address()],
+        editor.drafts.previous_attachments[0][&a.channel.address()].payload,
         saved_draft_a
     );
 
@@ -408,20 +408,15 @@ fn dispatcher_replays_a_retained_draft_for_app_and_footswitch_selection() {
             f.expect(Action::Follow(f.b.channel), follow_script(&f.b));
             f.expect(Action::Follow(f.a.channel), follow_script(&f.a));
         } else {
-            let mut prompt = preflight(&f.draft);
-            prompt.extend([
+            let mut outgoing = recall_script(&f.draft, &f.b, true);
+            outgoing.insert(
+                3,
                 (
                     PodxtRequest::Stored(f.a.channel).bytes(),
                     f.a.tone.raw.clone(),
                 ),
-                packs(),
-                channel(f.a.channel),
-            ]);
-            f.expect(Action::Recall(f.b.channel), prompt);
-            f.expect(
-                Action::Recall(f.b.channel),
-                recall_script(&f.draft, &f.b, true),
             );
+            f.expect(Action::Recall(f.b.channel), outgoing);
             f.expect(
                 Action::Recall(f.a.channel),
                 recall_script(&f.b, &f.a, false),
@@ -434,19 +429,6 @@ fn dispatcher_replays_a_retained_draft_for_app_and_footswitch_selection() {
 
         f.select(f.b.channel, physical);
         f.finish();
-        if !physical {
-            assert_eq!(f.panel.snapshot.tone.as_ref(), Some(&f.draft.tone));
-            let device = f.panel.device.clone().unwrap();
-            let confirmation = f.panel.editor.take_recall_confirmation(&device).unwrap();
-            f.panel.editor.start_job(
-                Action::Recall(f.b.channel),
-                &device,
-                &f.ctx,
-                Some(confirmation),
-                None,
-            );
-            f.finish();
-        }
         assert!(!f.panel.busy(), "B has no draft");
         assert_eq!(f.panel.snapshot.tone.as_ref(), Some(&f.b.tone));
 
