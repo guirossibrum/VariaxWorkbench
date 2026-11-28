@@ -487,6 +487,32 @@ fn shortcut(ctx: &egui::Context, app: &mut Workbench, key: egui::Key, shift: boo
     let _ = ctx.run(shortcut_input(ctx, key, shift), |ctx| app.render(ctx));
 }
 
+const TEXT_ENTRY_ID: &str = "shell-test-text";
+
+fn text_entry_frame(
+    ctx: &egui::Context,
+    app: &mut Workbench,
+    input: egui::RawInput,
+    text: &mut String,
+) {
+    let _ = ctx.run(input, |ctx| {
+        app.render(ctx);
+        egui::Window::new("Text entry").show(ctx, |ui| {
+            ui.add(egui::TextEdit::singleline(text).id(egui::Id::new(TEXT_ENTRY_ID)));
+        });
+    });
+}
+
+fn shortcut_with_text_focus(ctx: &egui::Context, app: &mut Workbench, key: egui::Key, shift: bool) {
+    let mut text = String::new();
+    text_entry_frame(ctx, app, layout_input(1120.0, 760.0, 1.0), &mut text);
+    let id = egui::Id::new(TEXT_ENTRY_ID);
+    assert!(egui::TextEdit::load_state(ctx, id).is_some());
+    ctx.memory_mut(|memory| memory.request_focus(id));
+    assert_eq!(ctx.memory(|memory| memory.focused()), Some(id));
+    text_entry_frame(ctx, app, shortcut_input(ctx, key, shift), &mut text);
+}
+
 #[test]
 fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterward() {
     let ctx = egui::Context::default();
@@ -512,7 +538,7 @@ fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterwar
         ..Default::default()
     });
 
-    shortcut(&ctx, &mut app, egui::Key::O, false);
+    shortcut_with_text_focus(&ctx, &mut app, egui::Key::O, false);
     assert!(app.has_prompt());
     prompt_frame(&ctx, &mut app, vec![]);
     click_prompt(&ctx, &mut app, "save");
@@ -535,7 +561,7 @@ fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterwar
     );
     assert_eq!(fs::read(&other).unwrap(), GUITAR);
     guitar_editor(&mut app, id, "Saved to copy");
-    shortcut(&ctx, &mut app, egui::Key::S, false);
+    shortcut_with_text_focus(&ctx, &mut app, egui::Key::S, false);
     assert_eq!(
         EditorDocument::open(&copy).unwrap().preset().name(),
         "Saved to copy"
@@ -610,7 +636,7 @@ fn podxt_visible_open_and_shortcut_share_the_editor_and_new_tab_is_separate() {
     );
 
     ctx.set_os(egui::os::OperatingSystem::Mac);
-    shortcut(&ctx, &mut app, egui::Key::O, false);
+    shortcut_with_text_focus(&ctx, &mut app, egui::Key::O, false);
     assert_eq!(app.tabs.active, original);
     assert_eq!(app.tabs.entries.len(), 1);
     assert_eq!(
@@ -651,8 +677,8 @@ fn podxt_save_shortcuts_use_the_existing_copy_workflow() {
         pod_save: [Some(copy.clone()), Some(shifted.clone())].into(),
         ..Default::default()
     });
-    shortcut(&ctx, &mut app, egui::Key::S, false);
-    shortcut(&ctx, &mut app, egui::Key::S, true);
+    shortcut_with_text_focus(&ctx, &mut app, egui::Key::S, false);
+    shortcut_with_text_focus(&ctx, &mut app, egui::Key::S, true);
     for path in [&original, &copy, &shifted] {
         assert_eq!(fs::read(path).unwrap(), bytes);
     }
@@ -663,7 +689,7 @@ fn podxt_save_shortcuts_use_the_existing_copy_workflow() {
 }
 
 #[test]
-fn shell_shortcuts_leave_focused_text_and_document_edits_alone() {
+fn focused_text_undo_and_redo_leave_document_edits_alone() {
     let ctx = egui::Context::default();
     let mut app = empty_shell(&ctx);
     app.new_tab(registry::LEGACY_STARTUP);
@@ -671,33 +697,26 @@ fn shell_shortcuts_leave_focused_text_and_document_edits_alone() {
     guitar_editor(&mut app, tab, "Document edit");
     let title = app.tabs.entries[0].title();
     app.dialogs = Box::new(FakeDialogs::default());
-    let id = egui::Id::new("shell-test-text");
+    let id = egui::Id::new(TEXT_ENTRY_ID);
     let mut text = String::new();
-    let mut frame = |input| {
-        let _ = ctx.run(input, |ctx| {
-            app.render(ctx);
-            egui::Window::new("Text entry").show(ctx, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut text).id(id));
-            });
-        });
-    };
-    frame(layout_input(1120.0, 760.0, 1.0));
+    text_entry_frame(&ctx, &mut app, layout_input(1120.0, 760.0, 1.0), &mut text);
     ctx.memory_mut(|memory| memory.request_focus(id));
     let mut typed = layout_input(1120.0, 760.0, 1.0);
     typed.events.push(egui::Event::Text("Typed text".into()));
-    frame(typed);
-    for (key, shift) in [
-        (egui::Key::O, false),
-        (egui::Key::S, false),
-        (egui::Key::Z, false),
-    ] {
-        frame(shortcut_input(&ctx, key, shift));
+    text_entry_frame(&ctx, &mut app, typed, &mut text);
+    assert_eq!(text, "Typed text");
+    for (shift, expected) in [(false, ""), (true, "Typed text")] {
+        text_entry_frame(
+            &ctx,
+            &mut app,
+            shortcut_input(&ctx, egui::Key::Z, shift),
+            &mut text,
+        );
+        assert_eq!(text, expected);
         assert_eq!(ctx.memory(|memory| memory.focused()), Some(id));
+        assert!(app.tabs.entries[0].editor.dirty());
+        assert_eq!(app.tabs.entries[0].title(), title);
     }
-    assert!(text.is_empty(), "the focused text edit should receive Undo");
-    assert!(app.tabs.entries[0].editor.dirty());
-    assert_eq!(app.tabs.entries[0].title(), title);
-    assert!(!app.picker.is_open());
 }
 
 #[test]

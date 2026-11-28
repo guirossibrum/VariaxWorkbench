@@ -501,11 +501,7 @@ impl Workbench {
                 i.key_pressed(egui::Key::Questionmark) && !ctx.wants_keyboard_input(),
             )
         });
-        // The focused text edit owns its keyboard history.
-        let editing_text = ctx
-            .memory(|memory| memory.focused())
-            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-        if !self.has_prompt() && !editing_text {
+        if !self.has_prompt() {
             if open {
                 self.request_editor_open(ctx);
             }
@@ -526,11 +522,17 @@ impl Workbench {
                         entry.editor.save_copy(ctx, services);
                     }
                 }
-                if undo {
-                    entry.editor.undo();
-                }
-                if redo {
-                    entry.editor.redo();
+                // The focused text edit owns its keyboard history.
+                if (undo || redo)
+                    && ctx
+                        .memory(|memory| memory.focused())
+                        .is_none_or(|id| egui::TextEdit::load_state(ctx, id).is_none())
+                {
+                    if undo {
+                        entry.editor.undo();
+                    } else {
+                        entry.editor.redo();
+                    }
                 }
             });
         }
