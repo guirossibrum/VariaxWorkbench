@@ -11,8 +11,8 @@ output=$3
 [[ -z "$(git status --porcelain)" ]]
 features=gui,portable-math
 case "$profile" in
-    offline) ;;
-    owner-usb) features+=,usb ;;
+    offline) export VARIAX_LOG_PROFILE=v1 ;;
+    owner-usb) features+=,usb; export VARIAX_LOG_PROFILE=owner ;;
     *) exit 2 ;;
 esac
 export RUSTUP_TOOLCHAIN=1.99.1 CARGO_NET_OFFLINE=true

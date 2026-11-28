@@ -1,5 +1,8 @@
 use super::*;
 use variax_workbench::pod_preset::{HdEditFile, HdEditorLibrary};
+#[cfg(test)]
+use variax_workbench::session_log;
+use variax_workbench::session_log::{Control, Disposition, Endpoint, Operation, UiAction};
 
 #[cfg(test)]
 mod tests;
@@ -200,6 +203,9 @@ pub(super) struct HdEditor {
     hd_library: HdEditorLibrary,
     hd_selected: Option<usize>,
     hd_effect_slot: usize,
+    effect_slot_drag: Option<Operation>,
+    #[cfg(test)]
+    session_log: Option<session_log::SessionLog>,
     hd_default_target: pod_preset::HdDistortionDefault,
     hd_dynamics_default_target: pod_preset::HdDynamicsDefault,
     hd_reverb_default_target: pod_preset::HdReverbDefault,
@@ -234,6 +240,9 @@ impl HdEditor {
             hd_library: Session::initial_rig().new_hd_editor_library(),
             hd_selected: None,
             hd_effect_slot: 0,
+            effect_slot_drag: None,
+            #[cfg(test)]
+            session_log: None,
             hd_default_target: pod_preset::HdDistortionDefault::JetFuzz,
             hd_dynamics_default_target: pod_preset::HdDynamicsDefault::HardGate,
             hd_reverb_default_target: pod_preset::HdReverbDefault::Octo,
@@ -259,6 +268,14 @@ impl HdEditor {
         }
     }
 
+    fn log_operation(&self) -> Operation {
+        #[cfg(test)]
+        if let Some(log) = &self.session_log {
+            return Operation::with_log(log, Endpoint::Hd500x);
+        }
+        Operation::begin(Endpoint::Hd500x)
+    }
+
     pub(super) fn show_hd_panel(&mut self, services: &mut EditorServices<'_>, ui: &mut egui::Ui) {
         if self.hd_button(ui, "load-hd-file", "Open HD Edit file…") {
             self.load_hd_editor_file(services);
@@ -277,9 +294,25 @@ impl HdEditor {
                 ("enable-hd-effect", "Enable effect offline")
             };
             if self.hd_button(ui, button_id, label) {
+                let operation = self.log_operation();
+                let action = UiAction::Switch {
+                    old: enabled,
+                    new: !enabled,
+                };
+                operation.ui(Control::HdEffectEnabled, action, Disposition::Accepted);
                 let result = Session::extension(ProductProfile::PodHd500x).and_then(|session| {
                     session.set_hd_effect_enabled(&mut self.hd_library, index, slot, !enabled)
                 });
+                operation.ui(
+                    Control::HdEffectEnabled,
+                    action,
+                    if result.is_ok() {
+                        Disposition::Applied
+                    } else {
+                        Disposition::Failed
+                    },
+                );
+                operation.finished(result.is_ok());
                 match result {
                     Ok(()) => {
                         self.hd_message = format!(
@@ -1054,10 +1087,32 @@ impl HdEditor {
         match &file {
             HdEditFile::H5ep(preset) => {
                 ui.label("Single preset. Source header and unmapped body bytes are preserved.");
-                let slot_changed = ui
-                    .add(egui::Slider::new(&mut self.hd_effect_slot, 0..=7).text("Effect slot"))
-                    .changed();
-                if slot_changed {
+                let old_slot = self.hd_effect_slot;
+                let slider =
+                    ui.add(egui::Slider::new(&mut self.hd_effect_slot, 0..=7).text("Effect slot"));
+                #[cfg(test)]
+                self.hd_buttons.insert("hd-effect-slot", slider.rect);
+                if slider.drag_stopped() || !slider.dragged() {
+                    self.effect_slot_drag = None;
+                }
+                if slider.changed() && self.hd_effect_slot != old_slot {
+                    let operation = self
+                        .effect_slot_drag
+                        .clone()
+                        .unwrap_or_else(|| self.log_operation());
+                    operation.ui(
+                        Control::HdEffectSlot,
+                        UiAction::Dial {
+                            old: old_slot as i32,
+                            new: self.hd_effect_slot as i32,
+                        },
+                        Disposition::Applied,
+                    );
+                    if slider.dragged() {
+                        self.effect_slot_drag = Some(operation);
+                    }
+                }
+                if slider.changed() {
                     if self.hd_type9_pending.take().is_some() {
                         self.hd_message =
                             "Cleared the staged type-9 choice after changing FX slot.".into();
@@ -2570,17 +2625,35 @@ impl HdEditor {
     }
 
     pub(super) fn load_hd_editor_file(&mut self, services: &mut EditorServices<'_>) {
+        let operation = self.log_operation();
+        operation.ui(Control::HdOpenFile, UiAction::Button, Disposition::Accepted);
         let Some(path) = services.dialogs.open_pod_tone() else {
+            operation.ui(
+                Control::HdOpenFile,
+                UiAction::Button,
+                Disposition::Cancelled,
+            );
             self.hd_message = "Load cancelled. No file was read.".into();
             return;
         };
         let bytes = pod_preset::read_regular_hd_editor_file(pod_preset::path_facts(&path), || {
             pod_preset::open_regular_file(&path)
         });
-        if let Err(error) = bytes.and_then(|bytes| {
+        let result = bytes.and_then(|bytes| {
             self.import_hd_bytes(bytes)
                 .map_err(pod_preset::ToneError::format)
-        }) {
+        });
+        operation.ui(
+            Control::HdOpenFile,
+            UiAction::Button,
+            if result.is_ok() {
+                Disposition::Applied
+            } else {
+                Disposition::Failed
+            },
+        );
+        operation.finished(result.is_ok());
+        if let Err(error) = result {
             self.hd_message = error.detail();
         }
     }

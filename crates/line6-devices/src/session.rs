@@ -3,7 +3,7 @@
 use crate::gate::{GatePolicy, Operation};
 use crate::midi::{Assembler, ControllerTally, Event, describe_short, hex};
 use std::fmt::Debug;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The path a link reaches. A request is only ever sent on its own path.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,8 +63,44 @@ impl<L: Link + ?Sized> Link for &mut L {
     }
 }
 
+/// The existing trace text may include raw packets. Structured observers
+/// receive only this fixed set of stages and outcomes.
 pub trait Log {
     fn line(&mut self, text: String);
+
+    fn observing(&self) -> bool {
+        false
+    }
+
+    fn observe(&mut self, _: Observation) {}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Send,
+    WaitForReply,
+    Poll,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Started,
+    Sent,
+    Reply,
+    Packet,
+    NoPacket,
+    Timeout,
+    OrphanQuiet,
+    Blocked,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Observation {
+    pub stage: Stage,
+    pub request: Option<Operation>,
+    pub outcome: Outcome,
+    pub duration: Option<Duration>,
 }
 
 /// Discards everything.
@@ -96,6 +132,7 @@ pub struct Session<'a, L: Link> {
     pub log_packets: bool,
     pub packets_in: usize,
     require_expected_sysex: bool,
+    last_request: Option<Operation>,
 }
 
 impl<'a, L: Link> Session<'a, L> {
@@ -109,6 +146,7 @@ impl<'a, L: Link> Session<'a, L> {
             log_packets: true,
             packets_in: 0,
             require_expected_sysex: false,
+            last_request: None,
         }
     }
 
@@ -129,12 +167,74 @@ impl<'a, L: Link> Session<'a, L> {
 
     /// The only way bytes reach a device.
     pub fn send<R: Request>(&mut self, request: R) -> Result<(), String> {
-        self.check_request(request)?;
+        let started = self.begin_send(request)?;
         let bytes = request.bytes();
         self.note(format!("OUT {}", hex(&bytes)));
-        self.link.write(&bytes)?;
+        let result = self.link.write(&bytes);
+        self.end_send(started, result.is_ok());
+        result?;
         self.sent.push(bytes);
         Ok(())
+    }
+
+    fn begin_observation(
+        &mut self,
+        stage: Stage,
+        request: Option<Operation>,
+    ) -> Option<(Instant, Option<Operation>)> {
+        if !self.log.observing() {
+            return None;
+        }
+        self.log.observe(Observation {
+            stage,
+            request,
+            outcome: Outcome::Started,
+            duration: None,
+        });
+        Some((Instant::now(), request))
+    }
+
+    fn end_observation(
+        &mut self,
+        start: Option<(Instant, Option<Operation>)>,
+        stage: Stage,
+        outcome: Outcome,
+    ) {
+        if let Some((start, request)) = start {
+            self.log.observe(Observation {
+                stage,
+                request,
+                outcome,
+                duration: Some(start.elapsed()),
+            });
+        }
+    }
+
+    fn begin_send<R: Request>(
+        &mut self,
+        request: R,
+    ) -> Result<Option<(Instant, Option<Operation>)>, String> {
+        let started = self.begin_observation(Stage::Send, Some(request.operation()));
+        if let Err(error) = self.check_request(request) {
+            self.end_observation(started, Stage::Send, Outcome::Blocked);
+            return Err(error);
+        }
+        Ok(started)
+    }
+
+    fn end_send(&mut self, start: Option<(Instant, Option<Operation>)>, success: bool) {
+        if success && let Some((_, request)) = start {
+            self.last_request = request;
+        }
+        self.end_observation(
+            start,
+            Stage::Send,
+            if success {
+                Outcome::Sent
+            } else {
+                Outcome::Failed
+            },
+        );
     }
 
     fn check_request<R: Request>(&self, request: R) -> Result<(), String> {
@@ -160,7 +260,7 @@ impl<'a, L: Link> Session<'a, L> {
         separate_header_len: Option<usize>,
         mut check_stop: impl FnMut() -> Result<(), &'static str>,
     ) -> Result<(), String> {
-        self.check_request(request)?;
+        let started = self.begin_send(request)?;
         let bytes = request.bytes();
         self.note(format!("OUT {}", hex(&bytes)));
         let (header_end, payload_end) =
@@ -179,12 +279,19 @@ impl<'a, L: Link> Session<'a, L> {
                 Ok(()) => (self.link.write(chunk), true),
             };
             if let Err(error) = result {
-                if possibly_partial && let Err(end) = self.link.write(&[0xf7]) {
+                let cleanup = if possibly_partial {
+                    self.link.write(&[0xf7])
+                } else {
+                    Ok(())
+                };
+                self.end_send(started, false);
+                if let Err(end) = cleanup {
                     return Err(format!("{error} SysEx termination also failed: {end}"));
                 }
                 return Err(error);
             }
         }
+        self.end_send(started, true);
         self.sent.push(bytes);
         Ok(())
     }
@@ -196,6 +303,25 @@ impl<'a, L: Link> Session<'a, L> {
     }
 
     pub(crate) fn poll_with(
+        &mut self,
+        wait: Duration,
+        validate_packet: impl FnOnce(&[u8]) -> Result<(), String>,
+    ) -> Result<Option<Vec<Event>>, String> {
+        let started = self.begin_observation(Stage::Poll, self.last_request);
+        let result = self.poll_packet(wait, validate_packet);
+        self.end_observation(
+            started,
+            Stage::Poll,
+            match &result {
+                Ok(Some(_)) => Outcome::Packet,
+                Ok(None) => Outcome::NoPacket,
+                Err(_) => Outcome::Failed,
+            },
+        );
+        result
+    }
+
+    fn poll_packet(
         &mut self,
         wait: Duration,
         validate_packet: impl FnOnce(&[u8]) -> Result<(), String>,
@@ -243,6 +369,28 @@ impl<'a, L: Link> Session<'a, L> {
     }
 
     pub(crate) fn wait_for_checked(
+        &mut self,
+        window: Duration,
+        wanted: impl Fn(&[u8]) -> bool,
+        stop_on_orphan_quiet: bool,
+        check: impl Fn() -> Result<(), String>,
+    ) -> Result<Wait, String> {
+        let started = self.begin_observation(Stage::WaitForReply, self.last_request);
+        let result = self.wait_for_reply(window, wanted, stop_on_orphan_quiet, check);
+        self.end_observation(
+            started,
+            Stage::WaitForReply,
+            match &result {
+                Ok(Wait::Found(_)) => Outcome::Reply,
+                Ok(Wait::Timeout) => Outcome::Timeout,
+                Ok(Wait::OrphanQuiet) => Outcome::OrphanQuiet,
+                Err(_) => Outcome::Failed,
+            },
+        );
+        result
+    }
+
+    fn wait_for_reply(
         &mut self,
         window: Duration,
         wanted: impl Fn(&[u8]) -> bool,

@@ -4918,3 +4918,89 @@ fn second_type10_association_gui_stage_apply_and_discard() {
     assert!(app.hd().hd_type10_pending.is_none());
     assert!(app.variax().read_worker.is_none());
 }
+
+#[test]
+fn session_log_records_actual_hd_button_switch_and_drag_without_repaint_events() {
+    let (context, mut app) = app();
+    context.style_mut(|style| style.animation_time = 0.0);
+    let temp = tempfile::tempdir().unwrap();
+    let (log, guard) =
+        session_log::SessionLog::open(Some(temp.path().join("logs")), session_log::Severity::Trace);
+    app.hd_mut().session_log = Some(log.clone());
+    app.dialogs = Box::new(FakeDialogs {
+        pod_open: [None].into(),
+        ..Default::default()
+    });
+    click_hd_editor(&context, &mut app, "load-hd-file");
+
+    let mut preset = sample_hd_editor_preset();
+    let block = pod_preset::H5EP_HEADER_BYTES + 0x428;
+    preset[block + 0x0b] = 1;
+    preset[block + 8] = 0;
+    // Keep the same controls visible as the drag moves through FX slots.
+    for slot in 1..8 {
+        preset.copy_within(block..block + 0x100, block + slot * 0x100);
+    }
+    let index = app.hd_mut().hd_library.import_bytes(preset).unwrap();
+    app.hd_mut().select_hd_file(index);
+    click_hd_editor(&context, &mut app, "enable-hd-effect");
+
+    scroll_hd_editor_control_into_view(&context, &app, "hd-effect-slot");
+    hd_editor_frame(&context, &mut app, vec![]);
+    let rect = app.hd().hd_buttons["hd-effect-slot"];
+    let pos = |x| Pos2::new(rect.left() + x, rect.center().y);
+    let pointer = |x, pressed| egui::Event::PointerButton {
+        pos: pos(x),
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    hd_editor_frame(
+        &context,
+        &mut app,
+        vec![egui::Event::PointerMoved(pos(10.0)), pointer(10.0, true)],
+    );
+    for x in [32.0, 59.0, 92.0] {
+        hd_editor_frame(&context, &mut app, vec![egui::Event::PointerMoved(pos(x))]);
+        hd_editor_frame(&context, &mut app, vec![]);
+    }
+    hd_editor_frame(&context, &mut app, vec![pointer(92.0, false)]);
+    hd_editor_frame(&context, &mut app, vec![]);
+    drop(guard);
+
+    let text = std::fs::read_to_string(log.status().path.unwrap()).unwrap();
+    let ui: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|row: &serde_json::Value| row["category"] == "ui")
+        .collect();
+    assert_eq!(ui[0]["control"], "hd_open_file");
+    assert_eq!(ui[0]["operation"], ui[1]["operation"]);
+    assert_eq!(ui[1]["disposition"], "cancelled");
+    assert_eq!(ui[2]["control"], "hd_effect_enabled");
+    assert_eq!(ui[2]["operation"], ui[3]["operation"]);
+    assert_eq!(
+        ui[3]["action"],
+        serde_json::json!({"kind":"switch","old":false,"new":true})
+    );
+    assert_eq!(ui[3]["disposition"], "applied");
+    let dial = &ui[4..];
+    assert_eq!(
+        dial.len(),
+        3,
+        "expected one event for each changed frame: {dial:?}"
+    );
+    assert!(
+        dial.iter()
+            .all(|row| row["control"] == "hd_effect_slot"
+                && row["operation"] == dial[0]["operation"])
+    );
+    assert!(
+        dial.windows(2)
+            .all(|pair| pair[0]["action"]["new"] == pair[1]["action"]["old"])
+    );
+    assert_eq!(
+        dial.last().unwrap()["action"]["new"],
+        app.hd().hd_effect_slot
+    );
+}
