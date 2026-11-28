@@ -655,6 +655,40 @@ fn linux_listener_disregards_results_from_a_stale_generation() {
 
 #[cfg(feature = "usb")]
 #[test]
+fn save_evidence_does_not_cross_disconnect_with_reused_usb_coordinates() {
+    let (mut service, _, job, _) = in_flight_with_registry(JobKind::RefreshGuitar, None);
+    let old = Arc::clone(&service.attachments["1-1"].podxt_saves);
+    let listener = old.begin();
+    let slot = line6_devices::family::podxt::Location::tone_from_label("32D").unwrap();
+    listener.observe(slot);
+    let revision = old.revision();
+
+    let profiles = super::super::registry::DEVICE_PROFILES;
+    let state = Rc::new(Cell::new(InventoryState::Ready));
+    service.source = Box::new(UsbFixture(SyntheticSysfs::new(), Rc::clone(&state), None));
+    service.refresh_attachments(profiles).unwrap();
+    assert!(!listener.is_current());
+    assert!(old.revision() > revision);
+    let after_removal = old.revision();
+
+    let mut usb = SyntheticSysfs::new();
+    usb.add_device("1-1", 0x0e41, 0x4650, "PODxt Live", &[]);
+    service.source = Box::new(UsbFixture(usb, state, None));
+    service.refresh_attachments(profiles).unwrap();
+    let replacement = &service.attachments["1-1"];
+    assert_eq!(
+        replacement.key.usb_location(),
+        job.attachment.usb_location()
+    );
+    assert_ne!(replacement.key, job.attachment);
+    listener.observe(slot);
+    assert_eq!(old.revision(), after_removal);
+    assert_eq!(replacement.podxt_saves.revision(), 0);
+    assert!(!replacement.podxt_saves.saved_since(0));
+}
+
+#[cfg(feature = "usb")]
+#[test]
 fn linux_program_notices_follow_the_verified_attachment_and_do_not_change_guitar_presence() {
     let (mut service, _, job, now) = in_flight_with_registry(JobKind::RefreshGuitar, None);
     let profiles = super::super::registry::DEVICE_PROFILES;
@@ -780,6 +814,7 @@ fn linux_linked_follow_inputs_share_one_exclusive_rig_lease() {
                 Ok(Some(vec![0xc0, 127]))
             },
             || cancel.load(Ordering::Relaxed) || lease.yield_requested(),
+            |_| unreachable!("no save in this fixture"),
             |_| unreachable!("valid PODxt program change"),
         ))
     }

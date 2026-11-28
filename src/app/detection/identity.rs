@@ -208,8 +208,11 @@ pub(super) fn platform() -> Option<Identify> {
 mod macos;
 
 #[cfg(all(feature = "usb", target_os = "linux", not(test)))]
+pub(super) use live::listen;
+
+#[cfg(all(feature = "usb", target_os = "linux", not(test)))]
 mod live {
-    use super::super::notice::read_notices;
+    use super::super::notice::{SaveListener, read_notices};
     use super::*;
     use line6_devices::device_lock::{DeviceLock, LockError, PassiveDeviceLock};
     use line6_devices::transport::rawmidi::RawMidiInput;
@@ -229,9 +232,6 @@ mod live {
     use variax_workbench::usb;
 
     pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
-        if job.kind == JobKind::Listen {
-            return Outcome::Notices(listen(job, cancel).unwrap_or_default());
-        }
         if is_locked(Gate::OsDiscovery) {
             return unavailable("USB discovery is closed.");
         }
@@ -245,19 +245,29 @@ mod live {
             .unwrap_or_else(unavailable)
     }
 
-    fn listen(job: &Job, cancel: &AtomicBool) -> Option<Vec<Notice>> {
-        run_if_unlocked(Gate::OsDiscovery, || {
+    pub(in crate::editor::detection) fn listen(
+        job: &Job,
+        cancel: &AtomicBool,
+        saves: Option<&SaveListener>,
+    ) -> Outcome {
+        let notices = run_if_unlocked(Gate::OsDiscovery, || {
             run_if_unlocked(Gate::IdentityRequest, || {
                 run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, || {
-                    Ok(listen_on(job, cancel))
+                    Ok(listen_on(job, cancel, saves))
                 })
             })
         })
         .ok()
         .flatten()
+        .unwrap_or_default();
+        Outcome::Notices(notices)
     }
 
-    fn listen_on(job: &Job, cancel: &AtomicBool) -> Option<Vec<Notice>> {
+    fn listen_on(
+        job: &Job,
+        cancel: &AtomicBool,
+        saves: Option<&SaveListener>,
+    ) -> Option<Vec<Notice>> {
         let Recognition::Recognised {
             device,
             sound_cards,
@@ -286,11 +296,22 @@ mod live {
         let mut input = RawMidiInput::open(PODXT_LIVE_MIDI.device_node(card.index)).ok()?;
         // An identity request can ask this reader to yield concurrently.
         // Keep complete notices already received before releasing the input.
-        Some(read_notices(
+        let notices = read_notices(
             |wait| input.read(wait),
             || cancel.load(Ordering::Relaxed) || rig.yield_requested(),
+            |slot| {
+                if let Some(saves) = saves {
+                    saves.observe(slot);
+                }
+            },
             |message| eprintln!("PODxt Variax presence: ignored {message}"),
-        ))
+        );
+        // The ALSA descriptor closes on drop. No continuity is carried over
+        // to the next descriptor, even if this one delivered a complete batch.
+        if let Some(saves) = saves {
+            saves.gap();
+        }
+        Some(notices)
     }
 
     fn identify_on(rig: &DeviceLock, job: &Job, cancel: &AtomicBool) -> Outcome {

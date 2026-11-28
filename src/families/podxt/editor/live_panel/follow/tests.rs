@@ -56,11 +56,19 @@ fn mac_follow_settles_the_latest_program_and_publishes_after_release() {
         let clock = Cell::new(Duration::ZERO);
         let pending = AtomicBool::new(false);
         let cleanup = Cell::new(false);
+        let ingress = Arc::new(detection::PodxtSaveIngress::default());
+        let saves = ingress.begin();
+        let baseline = ingress.revision();
         let result = follow_on_link(
             || false,
             &pending,
             false,
+            &saves,
             |run| {
+                let mut packet = vec![0xb0, 0, 1, 0xc0, 2, 0xc0, 127];
+                for (bank, slot) in [(1, 127), (2, 106), (3, 63), (1, 127)] {
+                    packet.extend([0xf0, 0, 1, 12, 3, 0x24, bank, slot, 0xf7]);
+                }
                 let mut link = FakeLink {
                     held: &held,
                     writes: &writes,
@@ -68,11 +76,13 @@ fn mac_follow_settles_the_latest_program_and_publishes_after_release() {
                     script: read_script(&expected),
                     // A bank-select CC on its own doesn't select the playing
                     // tone. Two program notices in one packet settle together.
-                    reply: Some(vec![0xb0, 0, 1, 0xc0, 2, 0xc0, 127]),
+                    reply: Some(packet),
                 };
                 let outcome = run(&mut link)?;
                 assert!(held.get());
                 assert!(clock.get() >= CHANNEL_SETTLE);
+                assert!(ingress.saved_since(baseline));
+                assert_eq!(ingress.revision(), baseline + 5); // four saves and one gap
                 drop(link);
                 if checked_release_fails {
                     Err("macOS interface release failed".into())
@@ -117,6 +127,7 @@ fn yielding_while_the_program_is_settling_closes_without_requesting_a_tone() {
         || clock.get() >= CHANNEL_SETTLE * 2,
         &pending,
         false,
+        &Arc::new(detection::PodxtSaveIngress::default()).begin(),
         |run| {
             run(&mut FakeLink {
                 held: &held,
@@ -147,6 +158,8 @@ fn completion(panel: &mut LivePanel, result: Outcome) {
         std::thread::yield_now();
     }
     panel.follow.worker = Some(Worker {
+        device: panel.device.clone().expect("connected fixture"),
+        saves: Arc::new(panel.save_ingress.begin()),
         stop: Arc::default(),
         thread: Some(thread),
     });
@@ -185,6 +198,68 @@ fn startup_and_foreground_work_take_priority_and_stale_results_are_discarded() {
     assert!(panel.snapshot.tone.is_none());
     assert!(!panel.live_editing);
     assert_eq!(panel.startup, Some(Startup::Current));
+}
+
+#[test]
+fn revoked_observation_discards_a_checked_follow_result_on_the_same_attachment() {
+    let ctx = egui::Context::default();
+    let (app, _) = connected_fixture(&ctx);
+    let mut panel = LivePanel::default();
+    assert!(panel.set_device(app.tabs.entries[0].device.as_ref()));
+    let initial = buffer("Initial", 0);
+    panel.editor.accept_follow(initial.clone());
+    panel.accept_editor_read(initial.clone(), &ctx);
+    panel.startup = None;
+    completion(&mut panel, program(buffer("Revoked", 127)));
+    panel.save_ingress.interrupt();
+    assert!(panel.follow.worker.is_some());
+    panel.poll_follow(&ctx);
+    assert_eq!(panel.playing_channel(), Some(initial.channel));
+    assert!(panel.follow.worker.is_none());
+}
+
+#[test]
+fn save_during_a_download_rejects_the_superseded_result() {
+    let ctx = egui::Context::default();
+    let (app, _) = connected_fixture(&ctx);
+    let mut panel = LivePanel::default();
+    assert!(panel.set_device(app.tabs.entries[0].device.as_ref()));
+    panel.startup = None;
+    let slot = Location::tone_from_label("1B").unwrap();
+    let original = valid_dump("Previous library");
+    panel
+        .snapshot
+        .library
+        .insert(slot.address(), original.clone());
+
+    let listener = panel.save_ingress.begin();
+    let captured = Snapshot {
+        library: Location::all(&[BankKind::Tones])
+            .map(|slot| (slot.address(), valid_dump("Superseded download")))
+            .collect(),
+        library_count: Some(128),
+        library_save_baseline: panel.save_ingress.revision(),
+        ..Default::default()
+    };
+    let thread = std::thread::spawn(|| Ok(()));
+    while !thread.is_finished() {
+        std::thread::yield_now();
+    }
+    panel.worker = Some(super::super::Worker {
+        command: ReadCommand::ToneBank,
+        device: panel.device.clone().unwrap(),
+        stop: Arc::default(),
+        acquired: Some(Arc::new(AtomicBool::new(true))),
+        snapshot: Arc::new(Mutex::new(captured)),
+        thread: Some(thread),
+    });
+    listener.observe(slot);
+    panel.poll(&ctx);
+    assert!(matches!(
+        panel.connection_sync_update(),
+        Some(SyncUpdate::Finished(Err(_)))
+    ));
+    assert_eq!(panel.stored_tone(slot), Some(&original));
 }
 
 #[test]
@@ -468,7 +543,12 @@ fn closing_follow_waits_for_the_worker_to_release_the_link() {
         worker_released.store(true, Ordering::Release);
         Ok(Outcome::Stopped)
     });
+    let ctx = egui::Context::default();
+    let (app, _) = connected_fixture(&ctx);
+    let panel = &app.podxt().live;
     drop(Worker {
+        device: panel.device.clone().expect("connected fixture"),
+        saves: Arc::new(panel.save_ingress.begin()),
         stop,
         thread: Some(thread),
     });

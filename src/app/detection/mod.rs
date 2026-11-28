@@ -1,6 +1,10 @@
 //! Reconcile cached USB presence and attachment-scoped identity results.
 mod identity;
 mod notice;
+#[cfg(feature = "usb")]
+pub(super) use notice::PodxtSaveIngress;
+#[cfg(feature = "usb")]
+pub(super) use notice::SaveListener;
 use notice::{Notice, PodxtProgram};
 
 use super::ProductFamily;
@@ -91,6 +95,8 @@ pub(super) struct DetectedDevice {
     pub podxt_reply_pending: Arc<AtomicBool>,
     #[cfg(feature = "usb")]
     pub podxt_program: Option<PodxtProgram>,
+    #[cfg(feature = "usb")]
+    pub podxt_saves: Arc<PodxtSaveIngress>,
     pub model: &'static str,
     pub support: DeviceSupport,
     pub guitar_status: Option<String>,
@@ -289,6 +295,8 @@ struct Attachment {
     // when no device tab is open.
     #[cfg(feature = "usb")]
     podxt_reply_pending: Arc<AtomicBool>,
+    #[cfg(feature = "usb")]
+    podxt_saves: Arc<PodxtSaveIngress>,
     usb: UsbDevice,
     bridge: Option<Bridge>,
     open_candidate: bool,
@@ -685,6 +693,10 @@ impl DetectionService {
         now: Instant,
     ) -> Result<Vec<DetectedDevice>, MetadataError> {
         if let Err(error) = self.refresh_attachments(profiles) {
+            #[cfg(feature = "usb")]
+            for attachment in self.attachments.values() {
+                attachment.podxt_saves.interrupt();
+            }
             if let Some(worker) = &mut self.worker
                 && worker.job.attachment.registry_id.is_some()
             {
@@ -760,6 +772,10 @@ impl DetectionService {
                         && existing.key.address == address
                         && existing.key.registry_id == registry_id =>
                 {
+                    #[cfg(feature = "usb")]
+                    if !open_candidate {
+                        existing.podxt_saves.interrupt();
+                    }
                     if let Some(bridge) = &mut existing.bridge {
                         if !open_candidate {
                             // Withdraw the connection while readiness is uncertain.
@@ -782,7 +798,13 @@ impl DetectionService {
                         ..existing
                     }
                 }
-                _ => {
+                replaced => {
+                    #[cfg(feature = "usb")]
+                    if let Some(replaced) = &replaced {
+                        replaced.podxt_saves.interrupt();
+                    }
+                    #[cfg(not(feature = "usb"))]
+                    let _ = replaced;
                     self.generation += 1;
                     let key = AttachmentKey {
                         path: path.clone(),
@@ -794,6 +816,8 @@ impl DetectionService {
                         key,
                         #[cfg(feature = "usb")]
                         podxt_reply_pending: Arc::default(),
+                        #[cfg(feature = "usb")]
+                        podxt_saves: Arc::default(),
                         usb,
                         bridge: automatic.then(|| Bridge::new(open_candidate && can_identify)),
                         open_candidate,
@@ -803,6 +827,10 @@ impl DetectionService {
                 }
             };
             self.attachments.insert(path, attachment);
+        }
+        #[cfg(feature = "usb")]
+        for removed in previous.values() {
+            removed.podxt_saves.interrupt();
         }
         if let Some(worker) = &mut self.worker {
             let same_attachment = self
@@ -823,6 +851,12 @@ impl DetectionService {
                     && (worker.job.attachment.registry_id.is_some()
                         || worker.job.kind == JobKind::Listen)
             {
+                #[cfg(feature = "usb")]
+                if let Some(attachment) = self.attachments.get(&worker.job.attachment.path)
+                    && attachment.key == worker.job.attachment
+                {
+                    attachment.podxt_saves.interrupt();
+                }
                 worker.revoke_observation();
             } else if !same_attachment {
                 worker.cancel();
@@ -1139,7 +1173,20 @@ impl DetectionService {
             bridge.waiting_for_other_process = false;
             bridge.running = Some(job.kind);
         }
-        match Worker::start(job.clone(), identify) {
+        #[cfg(all(feature = "usb", target_os = "linux", not(test)))]
+        let save_listener = (job.kind == JobKind::Listen)
+            .then(|| &self.attachments[&job.attachment.path])
+            .filter(|attachment| {
+                attachment.bridge.as_ref().and_then(|bridge| bridge.pod) == Some("3.01")
+            })
+            .map(|attachment| attachment.podxt_saves.begin());
+        match Worker::start(job.clone(), move |job, cancel| {
+            #[cfg(all(feature = "usb", target_os = "linux", not(test)))]
+            if job.kind == JobKind::Listen {
+                return identity::listen(job, cancel, save_listener.as_ref());
+            }
+            identify(job, cancel)
+        }) {
             Ok(worker) => self.worker = Some(worker),
             Err(error) if job.kind == JobKind::Listen => {
                 eprintln!("PODxt Variax presence: could not start listener: {error}.");
@@ -1243,6 +1290,8 @@ impl DetectionService {
                         key,
                         #[cfg(feature = "usb")]
                         podxt_reply_pending: Arc::clone(&attachment.podxt_reply_pending),
+                        #[cfg(feature = "usb")]
+                        podxt_saves: Arc::clone(&attachment.podxt_saves),
                         #[cfg(feature = "usb")]
                         podxt_program: (info.id == "podxt" && !mac && attachment.open_candidate)
                             .then(|| bridge.and_then(|bridge| bridge.podxt_program))

@@ -1,4 +1,5 @@
 use super::*;
+use detection::SaveListener;
 use podxt::EditorBuffer;
 
 #[cfg(any(test, target_os = "macos"))]
@@ -19,6 +20,8 @@ pub(super) struct Update {
 }
 
 struct Worker {
+    device: detection::DeviceKey,
+    saves: Arc<SaveListener>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<Result<Outcome, String>>>,
 }
@@ -26,6 +29,7 @@ struct Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.saves.gap();
         if let Some(thread) = self.thread.take() {
             // A tab can close with passive Follow still running. Return its
             // interface before the application exits.
@@ -47,6 +51,7 @@ impl Follow {
         if let Some(worker) = &self.worker
             && !worker.stop.swap(true, Ordering::AcqRel)
         {
+            worker.saves.gap();
             self.reconcile = true;
         }
     }
@@ -61,6 +66,7 @@ impl Follow {
     pub(super) fn poll(
         &mut self,
         device: Option<&detection::DeviceKey>,
+        saves: &Arc<detection::PodxtSaveIngress>,
         reply_pending: &Arc<AtomicBool>,
         ctx: &egui::Context,
     ) -> Result<Option<Update>, String> {
@@ -77,7 +83,7 @@ impl Follow {
                 .expect("Follow worker")
                 .join()
                 .unwrap_or_else(|_| Err("PODxt Follow stopped unexpectedly.".into()));
-            if stopped {
+            if stopped || device != Some(&worker.device) || !worker.saves.is_current() {
                 if device.is_some() {
                     ctx.request_repaint();
                 }
@@ -122,10 +128,19 @@ impl Follow {
             let pending = Arc::clone(reply_pending);
             let repaint = ctx.clone();
             let reconcile = self.reconcile;
+            let saves = Arc::new(saves.begin());
+            let worker_saves = Arc::clone(&saves);
             let thread = std::thread::Builder::new()
                 .name("podxt-follow".into())
                 .spawn(move || {
-                    let result = platform_follow(&endpoint, &worker_stop, &pending, reconcile);
+                    let result = platform_follow(
+                        &endpoint,
+                        &worker_stop,
+                        &pending,
+                        reconcile,
+                        &worker_saves,
+                    );
+                    worker_saves.gap();
                     repaint.request_repaint();
                     result
                 })
@@ -134,6 +149,8 @@ impl Follow {
                     format!("Could not start PODxt Follow: {error}")
                 })?;
             self.worker = Some(Worker {
+                device: device.clone(),
+                saves,
                 stop,
                 thread: Some(thread),
             });
@@ -148,6 +165,7 @@ fn listen(
     stop: impl Fn() -> bool,
     reply_pending: &AtomicBool,
     reconcile: bool,
+    saves: &SaveListener,
 ) -> Result<Outcome, String> {
     use line6_devices::{midi::Event, session::POLL};
     let mut changed_at = None;
@@ -155,6 +173,9 @@ fn listen(
         let now = session.link.elapsed();
         let settled = changed_at.is_some_and(|at| now >= at);
         if settled || reconcile && changed_at.is_none() {
+            // The checked read consumes MIDI replies on this link without
+            // forwarding save notices, so passive coverage ends here.
+            saves.gap();
             // Finish a read already in flight before yielding the shared link.
             // Its result stays private until release, and a stopped worker's
             // result is discarded. Never start a read after a stop is observed.
@@ -171,7 +192,19 @@ fn listen(
         let wait = changed_at
             .filter(|&at| at > now)
             .map_or(POLL, |at| (at - now).min(POLL));
-        for event in session.poll(wait)?.into_iter().flatten() {
+        let Some(events) = session.poll(wait)? else {
+            continue;
+        };
+        // Save evidence invalidates immediately, including when another event
+        // in the same packet makes the playing-tone result unusable.
+        for event in &events {
+            if let Event::Sysex(frame) = event
+                && let Some(slot) = podxt::save_notification(frame)
+            {
+                saves.observe(slot);
+            }
+        }
+        for event in events {
             match event {
                 Event::Short(message)
                     if matches!(message.as_slice(), [status, program]
@@ -199,6 +232,7 @@ fn follow_on_link(
     stop: impl Fn() -> bool,
     reply_pending: &AtomicBool,
     reconcile: bool,
+    saves: &SaveListener,
     with_link: impl FnOnce(
         RunOnLink<'_, Result<Outcome, String>>,
     ) -> Result<Result<Outcome, String>, String>,
@@ -212,7 +246,9 @@ fn follow_on_link(
         let mut session = MidiSession::new(link, &policy, &mut quiet);
         session.log_packets = false;
         // Keep operation and release results separate until the link has closed.
-        Ok(listen(&mut session, stop, reply_pending, reconcile))
+        let outcome = listen(&mut session, stop, reply_pending, reconcile, saves);
+        saves.gap();
+        Ok(outcome)
     }));
     if result.is_err() && opened.get() {
         reply_pending.store(true, Ordering::Release);
@@ -227,12 +263,16 @@ fn platform_follow(
     stop: &AtomicBool,
     reply_pending: &AtomicBool,
     reconcile: bool,
+    saves: &SaveListener,
 ) -> Result<Outcome, String> {
     use line6_devices::device_lock::{FollowDeviceLock, LockError};
     use std::cell::Cell;
 
     let run = || {
-        if stop.load(Ordering::Acquire) || reply_pending.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire)
+            || reply_pending.load(Ordering::Acquire)
+            || !saves.is_current()
+        {
             return Ok(Outcome::Stopped);
         }
         let lease = match FollowDeviceLock::acquire() {
@@ -245,7 +285,7 @@ fn platform_follow(
             if !yielded.get() && lease.yield_requested() {
                 yielded.set(true);
             }
-            yielded.get() || stop.load(Ordering::Acquire)
+            yielded.get() || stop.load(Ordering::Acquire) || !saves.is_current()
         };
         if cancelled() || reply_pending.load(Ordering::Acquire) {
             return Ok(if yielded.get() {
@@ -259,6 +299,7 @@ fn platform_follow(
             cancelled,
             reply_pending,
             reconcile,
+            saves,
             |run| with_platform_link(device, lease.rig(), run),
             || lease.cleanup_failed(),
         )?;
@@ -279,6 +320,7 @@ fn platform_follow(
     _stop: &AtomicBool,
     _reply_pending: &AtomicBool,
     _reconcile: bool,
+    _saves: &SaveListener,
 ) -> Result<Outcome, String> {
     Ok(Outcome::Stopped)
 }
