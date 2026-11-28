@@ -1,6 +1,6 @@
 use super::*;
 use podxt::{
-    EditorBuffer, EditorRecall, LiveTarget, RecallConfirmation, Target, TonePayload,
+    EditorBuffer, EditorRecall, LiveTarget, OutgoingDraft, RecallConfirmation, Target, TonePayload,
     VerifiedToneBackup,
 };
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
@@ -36,6 +36,8 @@ pub(super) struct LiveEditor {
     fake_edit: Option<tests::FakeEdit>,
     #[cfg(test)]
     fake_dispatch: Option<Arc<tests::FakeDispatch>>,
+    #[cfg(test)]
+    fake_native_admission: bool,
 }
 
 impl Default for LiveEditor {
@@ -63,6 +65,8 @@ impl Default for LiveEditor {
             fake_edit: None,
             #[cfg(test)]
             fake_dispatch: None,
+            #[cfg(test)]
+            fake_native_admission: false,
         }
     }
 }
@@ -75,8 +79,13 @@ struct ActiveEdit {
 #[derive(Default)]
 struct Drafts {
     // LivePanel rotates this map whenever the verified attachment changes.
-    attached: HashMap<u16, TonePayload>,
-    previous_attachments: Vec<HashMap<u16, TonePayload>>,
+    attached: HashMap<u16, SessionDraft>,
+    previous_attachments: Vec<HashMap<u16, SessionDraft>>,
+}
+
+struct SessionDraft {
+    payload: TonePayload,
+    imported: bool,
 }
 
 impl Drafts {
@@ -104,7 +113,13 @@ impl Drafts {
             if after == original {
                 self.attached.remove(&slot.address());
             } else {
-                self.attached.insert(slot.address(), after);
+                self.attached.insert(
+                    slot.address(),
+                    SessionDraft {
+                        payload: after,
+                        imported: false,
+                    },
+                );
             }
         }
     }
@@ -201,6 +216,7 @@ struct EditWorker {
     stop: Arc<AtomicBool>,
     targets: Vec<LiveTarget>,
     superseded: bool,
+    program_read: bool,
     replay: Option<Arc<DraftReplay>>,
     thread: Option<std::thread::JoinHandle<Result<EditOutcome, String>>>,
 }
@@ -267,8 +283,14 @@ struct DraftReplay {
     backup: Arc<VerifiedToneBackup>,
 }
 
+enum RecallAuthorization {
+    Confirmed(RecallConfirmation),
+    RetainedDraft,
+}
+
 struct Job {
-    recall_confirmation: Option<RecallConfirmation>,
+    recall_authorization: Option<RecallAuthorization>,
+    outgoing_draft: Option<(Location, TonePayload)>,
     reply_pending: Arc<AtomicBool>,
     action: Action,
     whole_tone_backup: Option<Arc<VerifiedToneBackup>>,
@@ -302,10 +324,25 @@ fn edit_transaction<'a, G>(
                         .map(EditOutcome::Buffer);
                     }
                     Action::Recall(slot) => {
-                        return podxt::recall_live_channel(
+                        let authorization = job.recall_authorization.as_ref();
+                        let confirmation = match authorization {
+                            Some(RecallAuthorization::Confirmed(confirmation)) => {
+                                Some(confirmation)
+                            }
+                            _ => None,
+                        };
+                        let draft = job.outgoing_draft.as_ref().map(|(slot, payload)| {
+                            if matches!(authorization, Some(RecallAuthorization::RetainedDraft)) {
+                                OutgoingDraft::Required(*slot, payload)
+                            } else {
+                                OutgoingDraft::Available(*slot, payload)
+                            }
+                        });
+                        return podxt::recall_live_channel_with_draft(
                             session,
                             slot,
-                            job.recall_confirmation.as_ref(),
+                            confirmation,
+                            draft,
                             stopped,
                         )
                         .map(EditOutcome::Recall);
@@ -481,7 +518,8 @@ fn platform_edit(
         &job.current,
         &job.original,
         &job.targets,
-        &job.recall_confirmation,
+        &job.recall_authorization,
+        &job.outgoing_draft,
     );
     let _ = (EditOutcome::Buffer, EditOutcome::Recall);
     Err("PODxt Live editing is unavailable in this build.".into())
@@ -535,6 +573,22 @@ impl LiveEditor {
     }
 
     #[cfg(test)]
+    pub(super) fn use_scripted_actions(
+        &mut self,
+        steps: Arc<Mutex<std::collections::VecDeque<tests::ScriptedAction>>>,
+    ) {
+        self.fake_native_admission = true;
+        self.fake_dispatch = Some(Arc::new(move |job, stop| {
+            let step = steps
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected editor action");
+            step.run(job, stop)
+        }));
+    }
+
+    #[cfg(test)]
     pub(super) fn publish_test_edit(
         &mut self,
         device: &detection::DeviceKey,
@@ -574,7 +628,17 @@ impl LiveEditor {
     }
 
     pub(super) fn draft(&self, slot: Location) -> Option<&TonePayload> {
-        self.drafts.attached.get(&slot.address())
+        self.drafts
+            .attached
+            .get(&slot.address())
+            .map(|draft| &draft.payload)
+    }
+
+    pub(super) fn draft_is_imported(&self, slot: Location) -> bool {
+        self.drafts
+            .attached
+            .get(&slot.address())
+            .is_some_and(|draft| draft.imported)
     }
 
     pub(super) fn draft_counts(&self) -> (usize, usize) {
@@ -597,15 +661,21 @@ impl LiveEditor {
     }
 
     pub(super) fn playing_draft_status(&self, slot: Location) -> Option<&'static str> {
-        let draft = self.draft(slot)?;
+        let draft = self.drafts.attached.get(&slot.address())?;
         let confirmed = self.session.as_ref().filter(|active| {
             active.current.channel == slot
                 && !self.needs_get
                 && !self.reply_pending.load(Ordering::Acquire)
         });
         Some(match confirmed {
-            Some(active) if TonePayload::from_dump(&active.current.tone).as_ref() == Ok(draft) => {
-                "Session draft · playing"
+            Some(active)
+                if TonePayload::from_dump(&active.current.tone).as_ref() == Ok(&draft.payload) =>
+            {
+                if draft.imported {
+                    "Device edit buffer · retained as draft"
+                } else {
+                    "Session draft · playing"
+                }
             }
             Some(_) => "Draft retained · playing tone differs",
             None => "Draft retained · playing tone unverified",
@@ -616,16 +686,27 @@ impl LiveEditor {
         self.pending.0.clear();
     }
 
-    pub(super) fn observe_program(&mut self, slot: Location) {
+    pub(super) fn observe_program(&mut self, slot: Location) -> bool {
+        let expired = self
+            .recall_confirmation
+            .as_ref()
+            .is_some_and(|(_, confirmation)| slot != confirmation.playing().channel);
+        if expired {
+            self.clear_recall_confirmation();
+        }
         if let Some(worker) = &mut self.worker {
             match worker.action {
                 // The app's own program change can reach passive Follow.
-                Action::Recall(target) if slot != target => worker.superseded = true,
-                Action::Follow(_) => worker.superseded = true,
+                Action::Recall(target) if slot != target => {
+                    worker.superseded = true;
+                    worker.stop.store(true, Ordering::Release);
+                }
+                _ if worker.program_read => worker.superseded = true,
                 Action::ReplayDraft(_) => worker.stop.store(true, Ordering::Release),
                 _ => {}
             }
         }
+        expired
     }
 
     pub(super) fn accept_program_follow(
@@ -658,10 +739,7 @@ impl LiveEditor {
             });
         self.completed(Action::Get, Ok(buffer));
         if expired {
-            self.recall_confirmation = None;
-            self.message = Some(Err(
-                "The playing tone changed. Select the channel again.".into()
-            ));
+            self.expire_recall_confirmation();
         } else {
             self.message = None;
         }
@@ -689,6 +767,13 @@ impl LiveEditor {
 
     fn clear_recall_confirmation(&mut self) {
         self.recall_confirmation = None;
+    }
+
+    fn expire_recall_confirmation(&mut self) {
+        self.clear_recall_confirmation();
+        self.message = Some(Err(
+            "The playing tone changed. Select the channel again.".into()
+        ));
     }
 
     fn admitted(action: Action) -> bool {
@@ -721,7 +806,11 @@ impl LiveEditor {
             || self.fake_edit.is_some() && matches!(action, Action::Controls | Action::Undo);
         #[cfg(test)]
         if self.fake_dispatch.is_some() {
-            return Self::admitted_on(true, true, action);
+            return Self::admitted_on(
+                true,
+                !self.fake_native_admission || action.native_approval(),
+                action,
+            );
         }
         Self::admitted_on(available, action.native_approval(), action)
     }
@@ -735,7 +824,7 @@ impl LiveEditor {
         action: Action,
         device: &detection::DeviceKey,
         ctx: &egui::Context,
-        recall_confirmation: Option<RecallConfirmation>,
+        recall_authorization: Option<RecallAuthorization>,
         replay: Option<Arc<DraftReplay>>,
     ) {
         let admitted = if action == Action::Get {
@@ -750,7 +839,7 @@ impl LiveEditor {
                 && Self::admitted_on(true, action.native_approval(), action);
         // An initial recall reads the playing channel and buffer on the same
         // verified link before it can select anything.
-        let fresh_recall = matches!(action, Action::Recall(_)) && recall_confirmation.is_none();
+        let fresh_recall = matches!(action, Action::Recall(_)) && recall_authorization.is_none();
         if self.worker.is_some()
             || self.reply_pending.load(Ordering::Acquire)
             || !admitted
@@ -777,8 +866,31 @@ impl LiveEditor {
         if matches!(action, Action::Get | Action::Follow(_) | Action::Recall(_)) {
             self.whole_tone_backup = None;
         }
+        let outgoing_draft = self
+            .session
+            .as_ref()
+            .filter(|_| {
+                fresh_recall
+                    || matches!(
+                        recall_authorization,
+                        Some(RecallAuthorization::RetainedDraft)
+                    )
+            })
+            .and_then(|active| {
+                let slot = active.current.channel;
+                self.draft(slot).cloned().map(|payload| (slot, payload))
+            });
+        if matches!(
+            recall_authorization,
+            Some(RecallAuthorization::RetainedDraft)
+        ) && outgoing_draft.is_none()
+        {
+            self.expire_recall_confirmation();
+            return;
+        }
         let job = Job {
-            recall_confirmation,
+            recall_authorization,
+            outgoing_draft,
             reply_pending: Arc::clone(&self.reply_pending),
             action,
             whole_tone_backup: if action == Action::ResendWholeTone {
@@ -840,6 +952,7 @@ impl LiveEditor {
                     stop,
                     targets,
                     superseded: false,
+                    program_read: matches!(action, Action::Follow(_)),
                     replay,
                     thread: Some(thread),
                 });
@@ -870,13 +983,12 @@ impl LiveEditor {
                 active.current = buffer;
                 self.needs_get = false;
                 let message = match action {
-                    Action::Controls => None,
+                    Action::Controls | Action::Recall(_) => None,
                     Action::Get | Action::Follow(_) => Some(format!(
                         "Edit buffer read from {}.",
                         active.current.channel.label()
                     )),
                     Action::Undo => Some("Original snapshot verified byte for byte.".into()),
-                    Action::Recall(slot) => Some(format!("Playing {}.", slot.label())),
                     Action::Send => Some("Edit buffer sent and read back.".into()),
                     Action::ResendWholeTone => Some("Whole tone sent and read back.".into()),
                     Action::ReplayDraft(_) => Some("Session draft restored and read back.".into()),
@@ -925,7 +1037,7 @@ impl LiveEditor {
                 if !stopped && !self.stage_only && !self.has_pending() {
                     self.recall_confirmation = Some((device.clone(), confirmation));
                 }
-                self.message = Some(Ok("No channel switch was sent.".into()));
+                self.message = None;
                 self.session.as_ref().map(|active| &active.current)
             }
             Ok(EditOutcome::Recall(EditorRecall::ConfirmationExpired(playing))) => {
@@ -1051,10 +1163,16 @@ impl LiveEditor {
                     return None;
                 }
                 let stopped = worker.stop.load(Ordering::Acquire);
+                if worker.superseded {
+                    // A newer program notice will read back the latest selection.
+                    // Keep the previous verified highlight until that read completes.
+                    self.needs_get = true;
+                    return None;
+                }
                 let selection = match (&worker.action, &result) {
                     (Action::Recall(target), Ok(EditOutcome::Recall(EditorRecall::Playing(_))))
                     | (Action::Follow(target), Ok(EditOutcome::Buffer(_)))
-                        if !stopped && !worker.superseded =>
+                        if !stopped =>
                     {
                         Some(*target)
                     }
@@ -1069,11 +1187,12 @@ impl LiveEditor {
                     .complete_job(worker.action, device, stopped, result)
                     .is_some();
                 self.finish_queued_undo(device, read_idle, ctx, stopped, verified);
-                if verified
-                    && read_idle
-                    && let Some(target) = selection
-                {
-                    self.replay_selected(target, device, ctx);
+                if verified && read_idle {
+                    if let Some(target) = selection {
+                        self.replay_selected(target, device, ctx);
+                    } else if matches!(worker.action, Action::Recall(_)) {
+                        self.retain_outgoing_device_draft(device, ctx);
+                    }
                 }
                 return if verified {
                     self.session.as_ref().map(|active| &active.current)
@@ -1094,6 +1213,40 @@ impl LiveEditor {
             }
         }
         None
+    }
+
+    fn retain_outgoing_device_draft(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
+        let Some((attachment, confirmation)) = &self.recall_confirmation else {
+            return;
+        };
+        let playing = confirmation.playing();
+        if attachment != device
+            || !confirmation.comparison().can_retain_as_draft()
+            || self.draft(playing.channel).is_some()
+        {
+            return;
+        }
+        let Ok(payload) = TonePayload::from_dump(&playing.tone) else {
+            return;
+        };
+        let target = confirmation.target();
+        self.drafts.attached.insert(
+            playing.channel.address(),
+            SessionDraft {
+                payload,
+                imported: true,
+            },
+        );
+        // The candidate came from a checked transaction with a clean release.
+        // A continuation may select only if the freshly read outgoing bytes
+        // still exactly match the retained copy.
+        self.start_job(
+            Action::Recall(target),
+            device,
+            ctx,
+            Some(RecallAuthorization::RetainedDraft),
+            None,
+        );
     }
 
     fn finish_queued_undo(
@@ -1224,6 +1377,9 @@ impl LiveEditor {
                 Action::Get
             };
             self.start(action, device, ctx);
+            if let Some(worker) = &mut self.worker {
+                worker.program_read = true;
+            }
         }
     }
 
@@ -1233,6 +1389,14 @@ impl LiveEditor {
         device: &detection::DeviceKey,
         ctx: &egui::Context,
     ) {
+        if let Some((_, confirmation)) = &self.recall_confirmation {
+            if confirmation.target() != slot {
+                self.message = Some(Ok(
+                    "Cancel the pending switch before selecting another channel.".into(),
+                ));
+            }
+            return;
+        }
         if self.pending.0.is_empty() {
             self.start(Action::Recall(slot), device, ctx);
         } else {
@@ -1285,16 +1449,27 @@ impl LiveEditor {
         }
         let target = confirmation.target();
         ui.label(format!(
-            "The playing tone differs from saved channel {}. Switch to {} and discard unsaved changes on the PODxt?",
+            "The playing tone differs from the saved tone read from {}. Switch to {} and leave the playing tone behind?",
             confirmation.playing().channel.label(),
             target.label(),
         ));
+        ui.collapsing("Playing tone comparison", |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(110.0)
+                .show(ui, |ui| {
+                    ui.label(super::comparison_text(
+                        "Addressed saved slot read during this switch",
+                        confirmation.comparison(),
+                    ));
+                });
+        });
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Cancel switch").clicked() {
+            let cancel = ui.button("Cancel switch");
+            if cancel.clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                 self.cancel_switch();
             } else if ui
                 .add_enabled(
-                    idle && Self::admitted(Action::Recall(target)),
+                    idle && self.admits(Action::Recall(target)),
                     egui::Button::new(format!("Switch to {} and discard changes", target.label())),
                 )
                 .clicked()
@@ -1304,7 +1479,7 @@ impl LiveEditor {
                     Action::Recall(target),
                     device,
                     ui.ctx(),
-                    Some(confirmation),
+                    Some(RecallAuthorization::Confirmed(confirmation)),
                     None,
                 );
             }

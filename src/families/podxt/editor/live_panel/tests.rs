@@ -471,7 +471,7 @@ fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates()
     let visible = stage_frame(&ctx, &mut app);
     for label in [
         "Connected",
-        "Channel 5B",
+        "Playing · 5B",
         "Stage Current",
         "Saved 5B",
         "Edit",
@@ -498,7 +498,7 @@ fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates()
     snapshot.apply(ReadUpdate::Current(valid_dump("Followed Tone")), now);
     let visible = stage_frame(&ctx, &mut app);
     assert!(
-        visible.contains("Channel 5C") && visible.contains("Followed Tone"),
+        visible.contains("Playing · 5C") && visible.contains("Followed Tone"),
         "{visible}"
     );
 }
@@ -543,10 +543,7 @@ fn playing_view_does_not_substitute_a_file_when_the_dump_is_unreadable() {
         .snapshot
         .apply(ReadUpdate::Current(current), Instant::now());
     let visible = stage_frame(&ctx, &mut app);
-    assert!(
-        visible.contains("Channel 1B") && visible.contains("Class A-30 TB"),
-        "{visible}"
-    );
+    assert!(visible.contains("Class A-30 TB"), "{visible}");
     assert!(
         visible.contains("edit buffer could not be decoded"),
         "{visible}"

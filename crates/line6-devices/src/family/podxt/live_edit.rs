@@ -123,11 +123,90 @@ pub fn recall_editor_channel<L: Link>(
     select_editor_channel(session, target, &target_stored, packs)
 }
 
-/// The exact playing buffer the user was asked to discard, and its intended destination.
+/// Byte differences between a playing dump and a saved slot. Callers supply
+/// the provenance of the saved slot (cached or addressed on the current link).
+#[derive(Clone, Debug)]
+pub struct RecallComparison {
+    pub name_changed: bool,
+    pub controls: Vec<RecallControlDifference>,
+    pub opaque_offsets: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RecallControlDifference {
+    pub cc: u8,
+    pub playing: u8,
+    pub saved: u8,
+}
+
+impl RecallControlDifference {
+    pub fn volatile(self) -> bool {
+        LIVE_STATE_CCS.contains(&self.cc)
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        Control::ALL
+            .into_iter()
+            .map(LiveControl::Basic)
+            .chain(Setting::ALL.into_iter().map(LiveControl::Additional))
+            .find(|control| control.cc() == self.cc || control.low_cc() == Some(self.cc))
+            .map(LiveControl::name)
+            .or(match self.cc {
+                4 => Some("Wah position"),
+                7 => Some("Volume pedal"),
+                105 => Some("Bypass volume"),
+                _ => None,
+            })
+    }
+}
+
+impl RecallComparison {
+    pub fn between(playing: &EditBuffer, saved: &EditBuffer) -> Self {
+        Self {
+            name_changed: playing.name() != saved.name(),
+            controls: playing
+                .differences(saved)
+                .into_iter()
+                .map(|(cc, playing, saved)| RecallControlDifference { cc, playing, saved })
+                .collect(),
+            opaque_offsets: (23..39)
+                .filter(|&offset| playing.raw[offset] != saved.raw[offset])
+                .collect(),
+        }
+    }
+
+    pub fn has_name_or_control_difference(&self) -> bool {
+        self.name_changed
+            || self
+                .controls
+                .iter()
+                .any(|difference| !difference.volatile())
+    }
+
+    /// A supported comparison with a saved tone that allows retaining the
+    /// checked playing payload without guessing what unknown bytes mean.
+    pub fn can_retain_as_draft(&self) -> bool {
+        self.opaque_offsets.is_empty()
+            && self.has_name_or_control_difference()
+            && self
+                .controls
+                .iter()
+                .all(|difference| difference.volatile() || difference.name().is_some())
+    }
+}
+
+fn same_recall_source(left: &EditBuffer, right: &EditBuffer) -> bool {
+    // Match the clean-recall rules, including the opaque bytes. Changes in
+    // proven live state or name padding alone cannot expire a decision.
+    left.same_tone(right) && left.raw[23..39] == right.raw[23..39]
+}
+
+/// The playing tone the user was asked to leave and its intended destination.
 #[derive(Clone, Debug)]
 pub struct RecallConfirmation {
     target: Location,
     playing: EditorBuffer,
+    comparison: RecallComparison,
 }
 
 impl RecallConfirmation {
@@ -139,8 +218,14 @@ impl RecallConfirmation {
         &self.playing
     }
 
+    pub fn comparison(&self) -> &RecallComparison {
+        &self.comparison
+    }
+
     pub fn matches_playing(&self, buffer: &EditorBuffer) -> bool {
-        self.playing.channel == buffer.channel && self.playing.tone == buffer.tone
+        self.playing.channel == buffer.channel
+            && self.playing.packs == buffer.packs
+            && same_recall_source(&self.playing.tone, &buffer.tone)
     }
 }
 
@@ -151,12 +236,30 @@ pub enum EditorRecall {
     ConfirmationExpired(EditorBuffer),
 }
 
-/// Workbench Live recall. Only an exact, freshly re-read buffer can use a
-/// discard confirmation. Rig Check uses the separate strict entry point above.
+/// Workbench Live recall. Rig Check uses the separate strict entry point.
 pub fn recall_live_channel<L: Link>(
     session: &mut Session<L>,
     target: Location,
     confirmation: Option<&RecallConfirmation>,
+    cancelled: impl Fn() -> bool,
+) -> Result<EditorRecall, String> {
+    recall_live_channel_with_draft(session, target, confirmation, None, cancelled)
+}
+
+/// A verified session draft that the caller owns for this attachment.
+pub enum OutgoingDraft<'a> {
+    Available(Location, &'a TonePayload),
+    Required(Location, &'a TonePayload),
+}
+
+/// A caller may supply a checked session draft from this attachment. It
+/// protects the outgoing tone only if both fresh reads match it byte for
+/// byte. Recall selects the saved destination and never sends the draft.
+pub fn recall_live_channel_with_draft<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    confirmation: Option<&RecallConfirmation>,
+    retained: Option<OutgoingDraft<'_>>,
     cancelled: impl Fn() -> bool,
 ) -> Result<EditorRecall, String> {
     if target.kind() != BankKind::Tones || !session.allows(Operation::PodxtChannelSwitch) {
@@ -167,24 +270,33 @@ pub fn recall_live_channel<L: Link>(
     check_stop(&cancelled)?;
     let tone = editor_tone(session)?;
     check_stop(&cancelled)?;
-    let expired = confirmation.is_some_and(|consent| {
-        consent.target != target
-            || consent.playing.channel != channel
-            || consent.playing.tone != tone
-    });
-    let saved_playing = if channel != target && confirmation.is_none() {
+    let retains = |tone: &EditBuffer| {
+        let Some(OutgoingDraft::Available(slot, payload) | OutgoingDraft::Required(slot, payload)) =
+            retained
+        else {
+            return false;
+        };
+        slot == channel && TonePayload::from_dump(tone).as_ref() == Ok(payload)
+    };
+    let retention_required = matches!(retained, Some(OutgoingDraft::Required(..)));
+    let retained_before = retains(&tone);
+    let expired = (retention_required && !retained_before)
+        || confirmation.is_some_and(|consent| {
+            consent.target != target
+                || consent.playing.channel != channel
+                || !same_recall_source(&consent.playing.tone, &tone)
+        });
+    let saved_playing = if channel != target && confirmation.is_none() && !expired {
         let stored = read_stored(session, channel)?;
         validate_editor_tone(&stored)?;
         Some(stored)
     } else {
         None
     };
-    let differs_from_saved = |tone: &EditBuffer| {
-        saved_playing
+    let needs_confirmation = !retained_before
+        && saved_playing
             .as_ref()
-            .is_some_and(|saved| !saved.same_tone(tone) || saved.raw[23..39] != tone.raw[23..39])
-    };
-    let needs_confirmation = differs_from_saved(&tone);
+            .is_some_and(|saved| !same_recall_source(&tone, saved));
     check_stop(&cancelled)?;
     let target_stored = if channel != target && !expired && !needs_confirmation {
         let stored = read_stored(session, target)?;
@@ -210,13 +322,21 @@ pub fn recall_live_channel<L: Link>(
     check_channel(session, channel)?;
     check_stop(&cancelled)?;
 
-    if expired || confirmation.is_some_and(|consent| !consent.matches_playing(&playing)) {
+    if expired
+        || retention_required && !retains(&playing.tone)
+        || confirmation.is_some_and(|consent| !consent.matches_playing(&playing))
+    {
         return Ok(EditorRecall::ConfirmationExpired(playing));
     }
-    if differs_from_saved(&playing.tone) {
+    if let Some(saved) = saved_playing
+        && !(retained_before && retains(&playing.tone))
+        && !same_recall_source(&playing.tone, &saved)
+    {
+        let comparison = RecallComparison::between(&playing.tone, &saved);
         return Ok(EditorRecall::ConfirmationRequired(RecallConfirmation {
             target,
             playing,
+            comparison,
         }));
     }
     let Some(target_stored) = target_stored else {

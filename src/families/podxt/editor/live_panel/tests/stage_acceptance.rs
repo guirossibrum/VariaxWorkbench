@@ -325,7 +325,7 @@ fn connected_file_and_device_library_previews_keep_the_playing_snapshot_until_di
 
     click_text(&ctx, &mut app, "Back to playing tone");
     assert!(app.podxt().stage_is_current());
-    rendered(&ctx, &mut app, &["Playing Tone", "Channel 1A"]);
+    rendered(&ctx, &mut app, &["Playing Tone", "Playing · 1A"]);
 
     presence.attached.set(false);
     app.next_detection = Instant::now();
@@ -535,14 +535,8 @@ fn live_sidebar_protects_unsaved_tone_after_an_unobserved_device_save() {
     assert_eq!(panel.snapshot.tone.as_ref(), Some(&cached_source));
     assert_eq!(panel.snapshot.library, downloaded);
     assert_eq!(panel.stored_tone(target).unwrap().name(), "Saved Channel");
-    rendered(
-        &ctx,
-        &mut app,
-        &[
-            "No channel switch was sent.",
-            "Switch to 1B and discard changes",
-        ],
-    );
+    let visible = rendered(&ctx, &mut app, &["Switch to 1B and discard changes"]);
+    assert!(!visible.contains("No channel switch was sent."));
     click_text(&ctx, &mut app, "Cancel switch");
     let panel = &app.podxt().live;
     assert!(!panel.editor.awaiting_recall_confirmation());
@@ -782,11 +776,7 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
     assert_eq!(fs::read(path).unwrap(), disk_bytes);
 
     click_text(&ctx, &mut app, "Back to playing tone");
-    rendered(
-        &ctx,
-        &mut app,
-        &["Stage Current", "Channel 5B", "Playing · 5B"],
-    );
+    rendered(&ctx, &mut app, &["Stage Current", "Playing · 5B"]);
     let editor = app.podxt_mut();
     assert!(editor.stage_is_current());
     let (displayed, _) = editor.live.stage_tone().unwrap().unwrap();
@@ -927,4 +917,549 @@ fn same_port_replacement_keeps_failed_and_cancelled_downloads_as_historical() {
         preview.contains("Previous PODxt library copy · file only"),
         "{preview}"
     );
+}
+
+type RecallSteps = Arc<Mutex<VecDeque<super::super::edit::tests::ScriptedAction>>>;
+
+fn recall_channel(slot: Location) -> (PodxtRequest, Vec<u8>) {
+    let index = slot.index() as u8;
+    (
+        PodxtRequest::QueryGlobal(podxt::Global::CurrentChannel),
+        vec![
+            0xf0,
+            0,
+            1,
+            0x0c,
+            3,
+            0x56,
+            17,
+            0,
+            0,
+            index >> 4,
+            index & 15,
+            0xf7,
+        ],
+    )
+}
+
+fn recall_source(slot: Location, tone: &EditBuffer) -> Vec<(PodxtRequest, Vec<u8>)> {
+    vec![
+        (
+            PodxtRequest::Identity,
+            variax_workbench::identity_stage::bridge_reply(),
+        ),
+        recall_channel(slot),
+        (PodxtRequest::EditBuffer, tone.raw.clone()),
+    ]
+}
+
+fn recall_packs() -> (PodxtRequest, Vec<u8>) {
+    (
+        PodxtRequest::InstalledPacks,
+        vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7],
+    )
+}
+
+fn expect_action(
+    steps: &RecallSteps,
+    target: Option<Location>,
+    requests: Vec<(PodxtRequest, Vec<u8>)>,
+    release: impl FnOnce() -> Result<(), String> + Send + 'static,
+) {
+    steps
+        .lock()
+        .unwrap()
+        .push_back(super::super::edit::tests::ScriptedAction {
+            expected_target: target,
+            requests: requests.into(),
+            release: Box::new(release),
+        });
+}
+
+fn finish_action(ctx: &egui::Context, app: &mut Workbench, steps: &RecallSteps) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.podxt().live.editor.busy() {
+        assert!(
+            Instant::now() < deadline,
+            "scripted editor action did not finish"
+        );
+        std::thread::yield_now();
+        render_stage(ctx, app, vec![]);
+    }
+    assert!(steps.lock().unwrap().is_empty());
+}
+
+fn recall_pair() -> (Location, Location) {
+    (
+        Location::tone_from_label("2A").unwrap(),
+        Location::tone_from_label("2B").unwrap(),
+    )
+}
+
+fn recall_fixture(
+    ctx: &egui::Context,
+    playing: &EditBuffer,
+    cached: &EditBuffer,
+) -> (Workbench, Presence, RecallSteps, EditBuffer) {
+    let (mut app, presence) = connected_fixture(ctx);
+    let (a, b) = recall_pair();
+    let saved_b = valid_dump("Saved 2B");
+    let panel = &mut app.podxt_mut().live;
+    panel.snapshot = Snapshot::default();
+    let steps = RecallSteps::default();
+    panel.editor.use_scripted_actions(Arc::clone(&steps));
+    panel.startup = Some(Startup::Current);
+    panel.resume_live = true;
+    let mut requests = recall_source(a, playing);
+    requests.extend([recall_packs(), recall_channel(a)]);
+    expect_action(&steps, None, requests, || Ok(()));
+    render_stage(ctx, &mut app, vec![]);
+    finish_action(ctx, &mut app, &steps);
+    assert!(app.podxt().live.live_editing);
+    assert_eq!(app.podxt().live.playing_channel(), Some(a));
+    assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(playing));
+    assert!(app.podxt().live.snapshot.library.is_empty());
+    assert!(app.podxt().live.channel_draft(a).is_none());
+
+    // Take the startup Current -> ToneBank handoff using the real read
+    // transaction and the managed worker completion path.
+    let panel = &mut app.podxt_mut().live;
+    assert_eq!(panel.next_startup(), Some(Startup::Tones));
+    let mut captured = panel.snapshot.clone();
+    let held = Cell::new(false);
+    let writes = Cell::new(0);
+    let default = valid_dump("Saved Channel");
+    let script = std::iter::once((
+        PodxtRequest::Identity,
+        variax_workbench::identity_stage::bridge_reply(),
+    ))
+    .chain(Location::all(&[BankKind::Tones]).map(|slot| {
+        let tone = if slot == a {
+            cached
+        } else if slot == b {
+            &saved_b
+        } else {
+            &default
+        };
+        (PodxtRequest::Stored(slot), tone.raw.clone())
+    }))
+    .collect();
+    let result = transaction(
+        ReadCommand::ToneBank,
+        &AtomicBool::new(false),
+        &panel.editor.reply_pending,
+        || {
+            assert!(!held.replace(true));
+            Ok(FakeLock(&held))
+        },
+        |_, run| {
+            run(&mut FakeLink {
+                held: &held,
+                script,
+                reply: None,
+                time: &Cell::new(Duration::ZERO),
+                writes: &writes,
+            })
+        },
+        |update| captured.apply(update, Instant::now()),
+    );
+    assert_eq!(writes.get(), 129);
+    assert!(!held.get());
+    let thread = std::thread::spawn(move || result);
+    while !thread.is_finished() {
+        std::thread::yield_now();
+    }
+    panel.worker = Some(Worker {
+        command: ReadCommand::ToneBank,
+        device: panel.device.clone().unwrap(),
+        stop: Arc::default(),
+        acquired: Some(Arc::new(AtomicBool::new(true))),
+        snapshot: Arc::new(Mutex::new(captured)),
+        thread: Some(thread),
+    });
+    panel.poll(ctx);
+    assert!(matches!(
+        panel.connection_sync_update(),
+        Some(SyncUpdate::Finished(Ok(())))
+    ));
+    assert_eq!(panel.snapshot.library_count, Some(128));
+    assert_eq!(panel.snapshot.tone.as_ref(), Some(playing));
+    assert_eq!(panel.stored_tone(a), Some(cached));
+    (app, presence, steps, saved_b)
+}
+
+fn recall_destination(
+    requests: &mut Vec<(PodxtRequest, Vec<u8>)>,
+    source: Location,
+    playing: &EditBuffer,
+    target: Location,
+    saved: &EditBuffer,
+    readback: &EditBuffer,
+) {
+    requests.extend([
+        (PodxtRequest::Stored(target), saved.raw.clone()),
+        recall_packs(),
+        (PodxtRequest::EditBuffer, playing.raw.clone()),
+        recall_channel(source),
+        (PodxtRequest::Program(target), vec![]),
+        (PodxtRequest::EditBuffer, readback.raw.clone()),
+        recall_channel(target),
+    ]);
+}
+
+#[test]
+fn connected_sidebar_recall_2a_2b_2a_publishes_only_after_checked_release() {
+    let ctx = egui::Context::default();
+    let (a, b) = recall_pair();
+    let saved_a = valid_dump("Saved 2A");
+    let mut playing_a = saved_a.clone();
+    playing_a.raw[39 + 7] = 91;
+    let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &playing_a, &saved_a);
+    assert!(!app.podxt().live.channel_modified(a));
+    let library = app.podxt().live.snapshot.library.clone();
+
+    for (source, playing, saved, target, after, row) in [
+        (a, &playing_a, &saved_a, b, &saved_b, "2B  Saved 2B"),
+        (b, &saved_b, &saved_b, a, &saved_a, "2A  Saved 2A"),
+    ] {
+        let mut requests = recall_source(source, playing);
+        requests.push((PodxtRequest::Stored(source), saved.raw.clone()));
+        recall_destination(&mut requests, source, playing, target, after, after);
+        let (read_back, ready) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        expect_action(&steps, Some(target), requests, move || {
+            read_back.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(())
+        });
+
+        click_text(&ctx, &mut app, row);
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        rendered(&ctx, &mut app, &[&format!("Playing · {}", source.label())]);
+        assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(playing));
+        release.send(()).unwrap();
+        finish_action(&ctx, &mut app, &steps);
+        let visible = rendered(&ctx, &mut app, &[&format!("Playing · {}", target.label())]);
+        assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(after));
+        assert!(!visible.contains("Read playing tone"));
+        assert!(!visible.contains("Connected · firmware"));
+        assert!(!visible.contains("Live · edit buffer"));
+    }
+    assert_eq!(app.podxt().live.snapshot.library, library);
+}
+
+#[test]
+fn connected_sidebar_consent_survives_volatile_motion_and_second_destination() {
+    let ctx = egui::Context::default();
+    let (a, b) = recall_pair();
+    let mut saved_a = valid_dump("Saved 2A");
+    let mut edited = saved_a.clone();
+    edited.raw[39 + usize::from(Control::Drive.cc())] = 42;
+    let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &edited, &saved_a);
+    assert!(app.podxt().live.channel_modified(a));
+    // Unknown bytes cannot be assumed to be a known editable parameter.
+    saved_a.raw[23] = 1;
+    let mut requests = recall_source(a, &edited);
+    requests.extend([
+        (PodxtRequest::Stored(a), saved_a.raw),
+        recall_packs(),
+        recall_channel(a),
+    ]);
+    expect_action(&steps, Some(b), requests, || Ok(()));
+    click_text(&ctx, &mut app, "2B  Saved 2B");
+    finish_action(&ctx, &mut app, &steps);
+
+    let affirmative = "Switch to 2B and discard changes";
+    click_text(&ctx, &mut app, "Playing tone comparison");
+    let text = rendered(
+        &ctx,
+        &mut app,
+        &[affirmative, "Addressed saved slot", "drive, CC 13"],
+    );
+    assert!(!text.contains("No channel switch was sent."));
+    click_text(&ctx, &mut app, "1B  Saved Channel");
+    rendered(&ctx, &mut app, &[affirmative, "Cancel the pending switch"]);
+    assert!(steps.lock().unwrap().is_empty());
+
+    let mut moved = edited;
+    moved.raw[39 + 7] = 99;
+    let update = podxt::EditorBuffer {
+        channel: a,
+        tone: moved.clone(),
+        packs: Packs(4),
+    };
+    let panel = &mut app.podxt_mut().live;
+    panel.editor.accept_follow(update.clone());
+    panel.update_playing(update);
+    rendered(&ctx, &mut app, &[affirmative]);
+
+    let mut requests = recall_source(a, &moved);
+    recall_destination(&mut requests, a, &moved, b, &saved_b, &saved_b);
+    expect_action(&steps, Some(b), requests, || Ok(()));
+    click_text(&ctx, &mut app, affirmative);
+    finish_action(&ctx, &mut app, &steps);
+    rendered(&ctx, &mut app, &["Playing · 2B"]);
+    assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&saved_b));
+}
+
+#[test]
+fn connected_sidebar_distinguishes_cached_and_opaque_comparisons_and_cancel_sends_zero() {
+    let (a, b) = recall_pair();
+    for stale in [false, true] {
+        let ctx = egui::Context::default();
+        let playing = valid_dump("Saved 2A");
+        let mut cached = playing.clone();
+        let mut addressed = playing.clone();
+        // A cached CC difference has no bearing on the checked protection.
+        if stale {
+            cached.raw[39 + usize::from(Control::Drive.cc())] = 25;
+        }
+        addressed.raw[23] = 1;
+        addressed.raw[38] = 2;
+        let (mut app, _, steps, _) = recall_fixture(&ctx, &playing, &cached);
+        assert_eq!(app.podxt().live.channel_modified(a), stale);
+        if stale {
+            let details = app.podxt().live.channel_comparison_text(a).unwrap();
+            assert!(details.contains("Cached saved slot"));
+            assert!(details.contains("drive, CC 13"));
+        }
+        let mut requests = recall_source(a, &playing);
+        requests.extend([
+            (PodxtRequest::Stored(a), addressed.raw),
+            recall_packs(),
+            recall_channel(a),
+        ]);
+        expect_action(&steps, Some(b), requests, || Ok(()));
+        click_text(&ctx, &mut app, "2B  Saved 2B");
+        finish_action(&ctx, &mut app, &steps);
+        click_text(&ctx, &mut app, "Playing tone comparison");
+        rendered(
+            &ctx,
+            &mut app,
+            &[
+                "Addressed saved slot",
+                "Opaque dump offsets (zero-based) 23, 38",
+            ],
+        );
+        let before = app.podxt().live.snapshot.library.clone();
+        click_text(&ctx, &mut app, "Cancel switch");
+        rendered(&ctx, &mut app, &["Playing · 2A"]);
+        assert!(!app.podxt().live.editor.awaiting_recall_confirmation());
+        assert!(!app.podxt().live.editor.busy());
+        assert_eq!(app.podxt().live.snapshot.library, before);
+        assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&playing));
+    }
+}
+
+#[test]
+fn connected_sidebar_keeps_old_highlight_after_uncertain_readback_or_release() {
+    let (a, b) = recall_pair();
+    for release_failed in [false, true] {
+        let ctx = egui::Context::default();
+        let saved_a = valid_dump("Saved 2A");
+        let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &saved_a, &saved_a);
+        let readback = if release_failed { &saved_b } else { &saved_a };
+        let mut requests = recall_source(a, &saved_a);
+        requests.push((PodxtRequest::Stored(a), saved_a.raw.clone()));
+        recall_destination(&mut requests, a, &saved_a, b, &saved_b, readback);
+        expect_action(&steps, Some(b), requests, move || {
+            if release_failed {
+                Err("USB release failed.".into())
+            } else {
+                Ok(())
+            }
+        });
+
+        click_text(&ctx, &mut app, "2B  Saved 2B");
+        finish_action(&ctx, &mut app, &steps);
+        rendered(
+            &ctx,
+            &mut app,
+            &[
+                "Playing · 2A",
+                "Read playing tone",
+                if release_failed {
+                    "USB release failed"
+                } else {
+                    "The channel switch could not be verified"
+                },
+            ],
+        );
+        assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&saved_a));
+        assert!(app.podxt().live.editor.needs_refresh());
+    }
+}
+
+#[test]
+fn connected_sidebar_follows_latest_physical_notice_across_recall_release() {
+    let ctx = egui::Context::default();
+    let (a, b) = recall_pair();
+    let c = Location::tone_from_label("2C").unwrap();
+    let d = Location::tone_from_label("2D").unwrap();
+    let saved_a = valid_dump("Saved 2A");
+    let (mut app, presence, steps, saved_b) = recall_fixture(&ctx, &saved_a, &saved_a);
+    let mut requests = recall_source(a, &saved_a);
+    requests.push((PodxtRequest::Stored(a), saved_a.raw.clone()));
+    recall_destination(&mut requests, a, &saved_a, b, &saved_b, &saved_b);
+    let (read_back, ready) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    expect_action(&steps, Some(b), requests, move || {
+        read_back.send(()).unwrap();
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(())
+    });
+    click_text(&ctx, &mut app, "2B  Saved 2B");
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let now = Instant::now();
+    app.podxt_mut().live.live_since = Some(now - Duration::from_secs(1));
+    for (index, slot) in [c, d].into_iter().enumerate() {
+        let observed_at = now - Duration::from_millis(200 - index as u64);
+        presence
+            .notices
+            .borrow_mut()
+            .push(detection::SimulatedNotice::PodxtProgram(
+                detection::SimulatedPodxtProgram {
+                    channel: slot.index() as u8,
+                    observed_at,
+                },
+            ));
+        app.next_detection = Instant::now();
+        render_stage(&ctx, &mut app, vec![]);
+    }
+    assert_eq!(app.podxt().live.playing_channel(), Some(a));
+
+    let latest = valid_dump("Physical 2D");
+    let mut requests = recall_source(d, &latest);
+    requests.extend([recall_packs(), recall_channel(d)]);
+    let (follow_read, follow_ready) = std::sync::mpsc::channel();
+    let (follow_release, follow_wait) = std::sync::mpsc::channel();
+    expect_action(&steps, None, requests, move || {
+        follow_read.send(()).unwrap();
+        follow_wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(())
+    });
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while follow_ready.try_recv().is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "latest checked read did not finish"
+        );
+        assert_eq!(app.podxt().live.playing_channel(), Some(a));
+        std::thread::yield_now();
+        render_stage(&ctx, &mut app, vec![]);
+    }
+    assert_eq!(app.podxt().live.playing_channel(), Some(a));
+    follow_release.send(()).unwrap();
+    finish_action(&ctx, &mut app, &steps);
+    rendered(&ctx, &mut app, &["Playing · 2D", "Physical 2D"]);
+    assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&latest));
+}
+
+#[test]
+fn fresh_startup_can_show_a_hardware_buffer_difference_without_any_app_edit() {
+    let ctx = egui::Context::default();
+    let (a, b) = recall_pair();
+    let saved = valid_dump("Bridge of Sighs");
+    let mut playing = saved.clone();
+    playing.raw[39 + usize::from(Control::Drive.cc())] = 42;
+    let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &playing, &saved);
+    rendered(&ctx, &mut app, &["Playing · 2A", "2A !"]);
+    assert!(!app.podxt().dirty());
+    assert!(app.podxt().live.channel_draft(a).is_none());
+    assert!(!app.podxt().live.has_staged_edits());
+
+    // Now simulate the slot being saved on the hardware outside the cached
+    // bank. The fresh addressed read matches the current tone, so the cache
+    // marker cannot block recall or claim a verified unretained edit.
+    let mut requests = recall_source(a, &playing);
+    requests.push((PodxtRequest::Stored(a), playing.raw.clone()));
+    recall_destination(&mut requests, a, &playing, b, &saved_b, &saved_b);
+    expect_action(&steps, Some(b), requests, || Ok(()));
+    click_text(&ctx, &mut app, "2B  Saved 2B");
+    finish_action(&ctx, &mut app, &steps);
+    rendered(&ctx, &mut app, &["Playing · 2B"]);
+    assert!(!app.podxt().live.editor.awaiting_recall_confirmation());
+    assert_eq!(app.podxt().live.stored_tone(a), Some(&saved));
+}
+
+#[test]
+fn one_sidebar_click_retains_exact_startup_device_edit_before_switching() {
+    let (a, b) = recall_pair();
+    for drift in [false, true] {
+        let ctx = egui::Context::default();
+        let saved = valid_dump("Bridge of Sighs");
+        let mut playing = saved.clone();
+        playing.raw[39 + usize::from(Control::Drive.cc())] = 42;
+        let (mut app, _, steps, saved_b) = recall_fixture(&ctx, &playing, &saved);
+        rendered(&ctx, &mut app, &["Playing · 2A", "2A !"]);
+        assert!(!app.podxt().dirty());
+
+        let mut requests = recall_source(a, &playing);
+        requests.extend([
+            (PodxtRequest::Stored(a), saved.raw.clone()),
+            recall_packs(),
+            recall_channel(a),
+        ]);
+        expect_action(&steps, Some(b), requests, || Ok(()));
+
+        let mut latest = playing.clone();
+        if drift {
+            latest.raw[39 + 7] = 111;
+        }
+        let mut requests = recall_source(a, &latest);
+        if drift {
+            // Exact retention is stricter than the comparison used to
+            // describe a playing tone. This continuation must not switch.
+            requests.extend([recall_packs(), recall_channel(a)]);
+        } else {
+            requests.push((PodxtRequest::Stored(a), saved.raw.clone()));
+            recall_destination(&mut requests, a, &latest, b, &saved_b, &saved_b);
+        }
+        let (read_back, ready) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        expect_action(&steps, Some(b), requests, move || {
+            read_back.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(())
+        });
+
+        click_text(&ctx, &mut app, "2B  Saved 2B");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ready.try_recv().is_err() {
+            assert!(Instant::now() < deadline, "retained recall did not run");
+            assert_eq!(app.podxt().live.playing_channel(), Some(a));
+            std::thread::yield_now();
+            render_stage(&ctx, &mut app, vec![]);
+        }
+        let live = &app.podxt().live;
+        assert_eq!(live.playing_channel(), Some(a));
+        assert_eq!(
+            live.channel_draft(a),
+            Some(&podxt::TonePayload::from_dump(&playing).unwrap())
+        );
+        assert!(live.channel_draft_is_imported(a));
+        assert_eq!(live.stored_tone(a), Some(&saved));
+        release.send(()).unwrap();
+        finish_action(&ctx, &mut app, &steps);
+
+        let live = &app.podxt().live;
+        assert_eq!(
+            live.channel_draft(a),
+            Some(&podxt::TonePayload::from_dump(&playing).unwrap())
+        );
+        assert_eq!(live.stored_tone(a), Some(&saved));
+        assert_eq!(live.stored_tone(b), Some(&saved_b));
+        assert!(!live.editor.awaiting_recall_confirmation());
+        assert_eq!(live.playing_channel(), Some(if drift { a } else { b }));
+        if drift {
+            rendered(
+                &ctx,
+                &mut app,
+                &["The playing tone changed. Select the channel again."],
+            );
+        } else {
+            rendered(&ctx, &mut app, &["Playing · 2B", "2A · Draft"]);
+        }
+    }
 }

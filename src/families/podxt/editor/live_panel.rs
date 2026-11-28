@@ -469,10 +469,14 @@ impl LivePanel {
                 self.linux_program_seen = Some(program.observed_at);
                 self.linux_follow_due =
                     Some((program.observed_at + follow::CHANNEL_SETTLE, target));
-                self.editor.observe_program(target);
+                if self.editor.observe_program(target) {
+                    self.message =
+                        Some("The playing channel changed. Select the channel again.".into());
+                }
             }
             return false;
         }
+        let expired = self.editor.awaiting_recall_confirmation();
         self.tuner.detach();
         self.cancel();
         self.editor.detach_attachment();
@@ -502,7 +506,8 @@ impl LivePanel {
             self.snapshot.channel = previous.channel;
             self.snapshot.packs = previous.packs;
         }
-        self.message = None;
+        self.message =
+            expired.then(|| "The PODxt Live attachment changed. Select the channel again.".into());
         self.device.is_some()
     }
 
@@ -914,6 +919,10 @@ impl LivePanel {
         self.editor.draft(slot)
     }
 
+    pub(super) fn channel_draft_is_imported(&self, slot: Location) -> bool {
+        self.editor.draft_is_imported(slot)
+    }
+
     pub(super) fn playing_draft_status(&self) -> Option<&'static str> {
         self.editor.playing_draft_status(self.playing_channel()?)
     }
@@ -922,11 +931,38 @@ impl LivePanel {
         self.snapshot.channel == Some(slot)
             && (self.editor.has_pending()
                 || self
-                    .snapshot
-                    .tone
-                    .as_ref()
-                    .zip(self.stored_tone(slot))
-                    .is_some_and(|(playing, saved)| !playing.same_tone(saved)))
+                    .cached_channel_comparison(slot)
+                    .is_some_and(|comparison| comparison.has_name_or_control_difference()))
+    }
+
+    fn cached_channel_comparison(&self, slot: Location) -> Option<podxt::RecallComparison> {
+        if self.playing_channel() != Some(slot) {
+            return None;
+        }
+        Some(podxt::RecallComparison::between(
+            self.snapshot.tone.as_ref()?,
+            self.stored_tone(slot)?,
+        ))
+    }
+
+    pub(super) fn channel_comparison_text(&self, slot: Location) -> Option<String> {
+        let pending = self.playing_channel() == Some(slot) && self.editor.has_pending();
+        let comparison = self.cached_channel_comparison(slot);
+        let mut details = String::new();
+        if pending {
+            details.push_str("PODxt edits are queued.\n");
+        }
+        if let Some(comparison) = comparison
+            && (comparison.name_changed
+                || !comparison.controls.is_empty()
+                || !comparison.opaque_offsets.is_empty())
+        {
+            details.push_str(&comparison_text(
+                "Cached saved slot compared with the editor's last playing readback",
+                &comparison,
+            ));
+        }
+        (!details.is_empty()).then_some(details)
     }
 
     pub(super) fn stored_tone(&self, slot: Location) -> Option<&EditBuffer> {
@@ -983,7 +1019,10 @@ impl LivePanel {
         if !self.live_editing || !self.device_ready() {
             return;
         }
-        if self.busy() {
+        if self.editor.awaiting_recall_confirmation() {
+            self.message =
+                Some("Cancel the pending switch before selecting another channel.".into());
+        } else if self.busy() {
             self.message =
                 Some("Wait for the current PODxt operation, then select the channel again.".into());
         } else if let Some(device) = &self.device {
@@ -1076,7 +1115,7 @@ impl LivePanel {
             && ui
                 .add_enabled(
                     self.can_refresh_current(),
-                    egui::Button::new(if self.live_editing { "Reconnect" } else { "Read playing tone" }),
+                    egui::Button::new("Read playing tone"),
                 )
                 .on_hover_text(if self.editor.needs_refresh() {
                     "Read the PODxt edit buffer and refresh the editor before editing or recalling a channel."
@@ -1478,3 +1517,38 @@ fn tone_panel(ui: &mut egui::Ui, heading: &str, tone: &EditBuffer, show_values: 
 
 #[cfg(test)]
 mod tests;
+
+fn comparison_text(source: &str, comparison: &podxt::RecallComparison) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = source.to_owned();
+    if comparison.name_changed {
+        text.push_str("\nTone name differs.");
+    }
+    for &difference in &comparison.controls {
+        let label = difference.name().unwrap_or("Unidentified control");
+        let category = if difference.volatile() {
+            " · volatile live state"
+        } else {
+            ""
+        };
+        let _ = write!(
+            text,
+            "\n{label}, CC {}{category} · playing {}, saved {}",
+            difference.cc, difference.playing, difference.saved,
+        );
+    }
+    if !comparison.opaque_offsets.is_empty() {
+        let offsets = comparison
+            .opaque_offsets
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>();
+        let _ = write!(
+            text,
+            "\nOpaque dump offsets (zero-based) {}",
+            offsets.join(", ")
+        );
+    }
+    text
+}

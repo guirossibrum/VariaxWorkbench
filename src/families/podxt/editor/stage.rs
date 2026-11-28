@@ -464,10 +464,6 @@ impl PodxtEditor {
                     ui.label("Drafts from a previous PODxt connection stay in this tab and cannot play on this connection.");
                 }
             }
-            #[cfg(feature = "usb")]
-            if self.stage_is_current() {
-                self.live.recall_controls(ui);
-            }
             let selected = self.pod_selected.and_then(|index| {
                 self.pod_library
                     .tone(index)
@@ -663,18 +659,7 @@ impl PodxtEditor {
                 Some((tabs::Connection::Disconnected, _)) => {
                     chrome::status_chip(ui, chrome::LinkState::Disconnected);
                 }
-                Some((tabs::Connection::Present, detection::DeviceSupport::Verified(firmware))) => {
-                    let status = format!("Connected · firmware {firmware}");
-                    #[cfg(feature = "usb")]
-                    let status = self
-                        .live
-                        .playing_channel()
-                        .filter(|_| current)
-                        .map_or(status.clone(), |ch| {
-                            format!("{status} · Channel {}", ch.label())
-                        });
-                    controls::readout(ui, &status);
-                }
+                Some((tabs::Connection::Present, detection::DeviceSupport::Verified(_))) => {}
                 Some((tabs::Connection::Present, detection::DeviceSupport::UsbOnly)) => {
                     controls::readout(ui, "USB detected · identity unverified");
                 }
@@ -685,24 +670,26 @@ impl PodxtEditor {
             let source = if current {
                 #[cfg(feature = "usb")]
                 if self.live.live_editing {
-                    "Live · edit buffer"
+                    None
                 } else if self.live.connected() {
-                    "Edit · Send applies staged edits"
+                    Some("Edit · Send applies staged edits")
                 } else {
-                    "Edit · staged tone offline"
+                    Some("Edit · staged tone offline")
                 }
                 #[cfg(not(feature = "usb"))]
-                "Current tone"
+                Some("Current tone")
             } else {
-                match self.stage.source {
+                Some(match self.stage.source {
                     StageSource::File => "File editor · nothing is sent",
                     StageSource::Default => "Default tone · offline",
                     StageSource::Backup(_) => "Library backup · offline",
                     StageSource::DeviceCopy(_) => "Device library copy · file only",
                     StageSource::HistoricalCopy(_) => "Previous PODxt library copy · file only",
-                }
+                })
             };
-            controls::readout(ui, source);
+            if let Some(source) = source {
+                controls::readout(ui, source);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 controls::readout(ui, "No live audio");
             });
@@ -883,19 +870,28 @@ impl PodxtEditor {
                     let unsynchronized = false;
                     let unsaved = browsing && self.pod_selected.is_some_and(|index| self.pod_library.is_dirty(index));
                     let suffix = if *draft { " · Draft" } else if unsaved || unsynchronized { " !" } else { "" };
-                    let response = ui.add(
-                        egui::Button::selectable(playing || browsing, format!("{}{suffix}  {name}", slot.slot_name())).truncate()
-                    ).on_hover_text(if *draft {
+                    #[cfg(feature = "usb")]
+                    let imported = self.live.channel_draft_is_imported(*slot);
+                    #[cfg(not(feature = "usb"))]
+                    let imported = false;
+                    let hover = if imported {
+                        "Draft copied from the verified PODxt playing buffer. Channel switches use the saved POD tone."
+                    } else if *draft {
                         "Session draft retained on this computer. Channel switches use the saved POD tone."
-                    } else if unsynchronized {
-                        "Unsynchronized with the saved POD slot"
                     } else if unsaved {
                         "Unsaved file edits"
                     } else if historical {
                         "Open a copy of the previous connection’s tone."
                     } else if on_device && current {
                         "Select a channel in Live to recall it, or right-click to open a file copy."
-                    } else { "" });
+                    } else { "" };
+                    #[cfg(feature = "usb")]
+                    let details = on_device.then(|| self.live.channel_comparison_text(*slot)).flatten();
+                    #[cfg(feature = "usb")]
+                    let hover = details.as_deref().unwrap_or(hover);
+                    let response = ui.add(
+                        egui::Button::selectable(playing || browsing, format!("{}{suffix}  {name}", slot.slot_name())).truncate()
+                    ).on_hover_text(hover);
                     #[cfg(feature = "usb")]
                     if playing && self.live.live_editing && self.stage.library_highlight != Some(*slot) {
                         response.scroll_to_me(Some(egui::Align::Center));
