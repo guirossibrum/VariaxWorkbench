@@ -1,5 +1,5 @@
 use super::super::podxt_panel::tests::sample_pod_tone;
-use super::super::tests::{app, click_prompt, recording_frame};
+use super::super::tests::{app, click_prompt, click_toolbar_tools, recording_frame};
 use super::*;
 
 fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
@@ -40,6 +40,7 @@ fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
         save: [Some(path.clone())].into(),
         ..Default::default()
     });
+    click_toolbar_tools(&context, &mut app);
     click_recording(&context, &mut app, "open-recording");
     assert!(app.recording_open);
     assert!(app.recording_visible.contains(recording::OFFLINE_BANNER));
@@ -130,6 +131,7 @@ fn rendered_simulated_callback_workflow_is_synthetic_and_offline() {
         save: [Some(path.clone())].into(),
         ..Default::default()
     });
+    click_toolbar_tools(&context, &mut app);
     click_recording(&context, &mut app, "open-recording");
     click_recording(&context, &mut app, "route-clean");
     click_recording(&context, &mut app, "clock-48000");

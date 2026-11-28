@@ -32,38 +32,63 @@ impl VariaxEditor {
             } else {
                 self.html_export_button(ui, services, available);
             }
+            self.device_edit_controls(ui);
             return;
         }
         let enabled = available && document.selected_slot_model().is_ok();
         ui.scope(|ui| {
             let spacing = ui.spacing_mut();
             spacing.interact_size.y = 22.0;
-            spacing.item_spacing = egui::vec2(5.0, 3.0);
-            spacing.button_padding = egui::vec2(4.0, 2.0);
+            spacing.item_spacing = egui::vec2(6.0, 2.0);
+            spacing.button_padding = egui::vec2(6.0, 2.0);
             ui.horizontal_wrapped(|ui| {
-                let save = ui.add_enabled(enabled, egui::Button::new("Save model as…").small());
-                let replace = ui.add_enabled(
-                    enabled,
-                    egui::Button::new("Replace slot with model file…").small(),
-                );
+                let model = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        ui.menu_button("Model actions", |ui| {
+                            let save = ui.button("Save model as…");
+                            let replace = ui.button("Replace slot with model file…");
+                            #[cfg(test)]
+                            {
+                                self.slot_file_buttons.insert("save-model", save.rect);
+                                self.slot_file_buttons.insert("replace-slot", replace.rect);
+                            }
+                            if save.clicked() {
+                                self.save_slot_model(ui.ctx(), services);
+                                ui.close();
+                            }
+                            if replace.clicked() {
+                                self.choose_slot_replacement(ui.ctx(), services);
+                                ui.close();
+                            }
+                            ui.separator();
+                            self.model_transfer_actions(ui);
+                        })
+                    })
+                    .inner;
+                let library_menu = ui.menu_button("Library actions", |ui| {
+                    if let Some(library) = library {
+                        ui.label(library);
+                        ui.separator();
+                    }
+                    let rename = self.rename_bank_button(ui, available);
+                    let export = self.html_export_button(ui, services, available);
+                    if rename || export {
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.add_enabled_ui(enabled, |ui| self.bank_transfer_actions(ui));
+                });
                 #[cfg(test)]
                 {
-                    self.slot_file_buttons.insert("save-model", save.rect);
-                    self.slot_file_buttons.insert("replace-slot", replace.rect);
+                    self.slot_file_buttons
+                        .insert("slot-transfers", model.response.rect);
+                    self.slot_file_buttons
+                        .insert("library-actions", library_menu.response.rect);
                 }
-                if save.clicked() {
-                    self.save_slot_model(ui.ctx(), services);
-                }
-                if replace.clicked() {
-                    self.choose_slot_replacement(ui.ctx(), services);
-                }
-                self.slot_transfer_menu(ui, enabled);
-                self.rename_bank_button(ui, available);
-                self.html_export_button(ui, services, available);
+                #[cfg(not(test))]
+                let _ = (model, library_menu);
                 self.factory_selector_reference(ui);
-                if let Some(library) = library {
-                    ui.add(egui::Label::new(egui::RichText::new(library).small()).extend());
-                }
+                self.device_edit_controls(ui);
             });
         });
     }
@@ -351,17 +376,26 @@ mod tests {
             );
         }
 
-        frame(ctx, app, vec![]);
-        frame(ctx, app, vec![]);
-        let pos = app.variax().slot_file_buttons[id].center();
-        let button = |pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
+        let click = |app: &mut Workbench, pos| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(ctx, app, vec![egui::Event::PointerMoved(pos), button(true)]);
+            frame(ctx, app, vec![button(false)]);
+            frame(ctx, app, vec![]);
         };
-        frame(ctx, app, vec![egui::Event::PointerMoved(pos), button(true)]);
-        frame(ctx, app, vec![button(false)]);
+        frame(ctx, app, vec![]);
+        frame(ctx, app, vec![]);
+        if matches!(id, "save-model" | "replace-slot") {
+            click(
+                app,
+                app.variax().slot_file_buttons["slot-transfers"].center(),
+            );
+        }
+        click(app, app.variax().slot_file_buttons[id].center());
     }
 
     #[test]

@@ -1055,11 +1055,8 @@ impl VariaxEditor {
         if self.device_sync.stopped_after_store() {
             ui.label("Guitar actions are paused after an unverified store. Follow the store recovery instructions before using the guitar again.");
         }
-        #[cfg(feature = "usb")]
-        self.follow_panel(ui);
-        #[cfg(feature = "usb")]
-        self.edit_buffer_controls(ui);
         if self.document.is_none() {
+            self.device_edit_controls(ui);
             guitar_panel().show(ui, |ui| {
                 ui.heading("No Variax library is available");
                 if self.connection_status.is_some() {
@@ -1098,6 +1095,7 @@ impl VariaxEditor {
             .and_then(EditorDocument::selected_preset)
             .is_none()
         {
+            self.device_edit_controls(ui);
             guitar_panel().show(ui, |ui| {
                 self.empty_collection(ui, available, services);
                 ui.add_enabled_ui(available, |ui| self.preference_button(ui));
@@ -1174,6 +1172,18 @@ impl VariaxEditor {
             self.workspace_tuning = Some(regions.tuning);
         }
         ui.advance_cursor_after_rect(workspace);
+    }
+
+    fn device_edit_controls(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "usb")]
+        if self.connection_status.is_some() {
+            ui.horizontal_top(|ui| {
+                self.live_edit_toggle(ui);
+                ui.vertical(|ui| self.follow_panel(ui));
+            });
+        }
+        #[cfg(not(feature = "usb"))]
+        let _ = ui;
     }
 
     pub(super) fn variax_pending_dialog(
@@ -1478,25 +1488,28 @@ impl FamilyTab for VariaxEditor {
             || self.new_model_collision.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
-        ui.horizontal_wrapped(|ui| {
-            self.new_file_menu(ui, services);
-            #[cfg(feature = "usb")]
-            self.sync_button(ui);
-            #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
-            self.string_volume_button(ui);
-            #[cfg(feature = "usb")]
-            let has_download = {
-                self.open_download_button(ui);
-                let ready = self.download_target_ready();
-                if ready && self.document.is_some() {
-                    self.download_button(ui);
-                }
-                ready
-            };
-            #[cfg(not(feature = "usb"))]
-            let has_download = false;
-            self.connection_controls(ui, services, has_download);
-        });
+        self.new_file_menu(ui, services);
+        #[cfg(feature = "usb")]
+        self.sync_button(ui);
+        #[cfg(feature = "usb")]
+        let has_download = {
+            self.open_download_button(ui);
+            let ready = self.download_target_ready();
+            if self.connection_status.is_some() {
+                ui.menu_button("Guitar actions", |ui| {
+                    if ready && self.document.is_some() && self.download_button(ui).clicked() {
+                        ui.close();
+                    }
+                    self.edit_buffer_actions(ui);
+                    #[cfg(any(target_os = "linux", test))]
+                    self.string_volume_button(ui);
+                });
+            }
+            ready
+        };
+        #[cfg(not(feature = "usb"))]
+        let has_download = false;
+        self.connection_controls(ui, services, has_download);
     }
 }
 

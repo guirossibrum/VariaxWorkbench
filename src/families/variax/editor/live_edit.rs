@@ -268,62 +268,71 @@ impl VariaxEditor {
         self.live_edit.seen = self.live_model();
     }
 
-    pub(super) fn edit_buffer_controls(&mut self, ui: &mut egui::Ui) {
-        if self.connection_status.is_none() {
-            return;
-        }
-        let free = !self.device_sync.stopped_after_store()
+    fn edit_buffer_available(&self) -> bool {
+        !self.device_sync.stopped_after_store()
             && !self.is_reading()
             && !self.follow.disconnected()
-            && !self.blocking_prompt();
-        let has_model = !self.has_historical_guitar_library()
+            && !self.blocking_prompt()
+    }
+
+    fn has_edit_buffer_model(&self) -> bool {
+        !self.has_historical_guitar_library()
             && self
                 .document
                 .as_ref()
                 .and_then(|doc| doc.selected_preset())
-                .is_some_and(PresetFile::is_legacy_electric);
-        ui.horizontal_wrapped(|ui| {
-            let mut enabled = self.live_edit.enabled();
-            if ui
-                .add_enabled(
-                    enabled || free && has_model && self.live_edit.ready(Action::Automatic),
-                    egui::Checkbox::new(&mut enabled, "Live editing"),
-                )
-                .on_disabled_hover_text("Live editing awaits its first owner test.")
-                .changed()
-            {
-                if enabled {
-                    self.live_edit.enabled = true;
-                } else {
-                    self.live_edit.stop();
-                }
+                .is_some_and(PresetFile::is_legacy_electric)
+    }
+
+    pub(super) fn live_edit_toggle(&mut self, ui: &mut egui::Ui) {
+        let mut enabled = self.live_edit.enabled();
+        let can_enable = self.edit_buffer_available()
+            && self.has_edit_buffer_model()
+            && self.live_edit.ready(Action::Automatic);
+        if ui
+            .add_enabled(
+                enabled || can_enable,
+                egui::Checkbox::new(&mut enabled, "Live editing"),
+            )
+            .on_disabled_hover_text("Live editing awaits its first owner test.")
+            .changed()
+        {
+            if enabled {
+                self.live_edit.enabled = true;
+            } else {
+                self.live_edit.stop();
             }
-            let idle = free && !self.live_edit.busy();
-            if ui
-                .add_enabled(
-                    idle && has_model && self.live_edit.ready(Action::Send),
-                    egui::Button::new("Send Edit Buffer"),
-                )
-                .clicked()
-            {
-                self.start_edit_buffer(Action::Send, self.live_model());
+        }
+    }
+
+    pub(super) fn edit_buffer_actions(&mut self, ui: &mut egui::Ui) {
+        let idle = self.edit_buffer_available() && !self.live_edit.busy();
+        if ui
+            .add_enabled(
+                idle && self.has_edit_buffer_model() && self.live_edit.ready(Action::Send),
+                egui::Button::new("Send Edit Buffer"),
+            )
+            .clicked()
+        {
+            self.start_edit_buffer(Action::Send, self.live_model());
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                idle && self.live_edit.ready(Action::Get),
+                egui::Button::new("Get Edit Buffer"),
+            )
+            .clicked()
+        {
+            if self.dirty() {
+                self.pending = Some(super::GuitarPending::Open(
+                    super::OpenDestination::EditBuffer,
+                ));
+            } else {
+                self.get_edit_buffer();
             }
-            if ui
-                .add_enabled(
-                    idle && self.live_edit.ready(Action::Get),
-                    egui::Button::new("Get Edit Buffer"),
-                )
-                .clicked()
-            {
-                if self.dirty() {
-                    self.pending = Some(super::GuitarPending::Open(
-                        super::OpenDestination::EditBuffer,
-                    ));
-                } else {
-                    self.get_edit_buffer();
-                }
-            }
-        });
+            ui.close();
+        }
     }
 
     pub(super) fn get_edit_buffer(&mut self) {

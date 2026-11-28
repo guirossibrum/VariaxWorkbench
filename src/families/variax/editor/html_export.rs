@@ -12,11 +12,8 @@ impl VariaxEditor {
         ui: &mut egui::Ui,
         services: &mut EditorServices<'_>,
         available: bool,
-    ) {
-        let button = ui.add_enabled(
-            available,
-            egui::Button::new("Export HTML Model List…").small(),
-        );
+    ) -> bool {
+        let button = ui.add_enabled(available, egui::Button::new("Export HTML Model List…"));
         #[cfg(test)]
         {
             self.html_export_button = Some(button.rect);
@@ -50,6 +47,7 @@ impl VariaxEditor {
                 }
             });
         }
+        button.clicked()
     }
 }
 
@@ -222,19 +220,26 @@ mod tests {
         fn export(ctx: &egui::Context, app: &mut Workbench) {
             frame(ctx, app, vec![]);
             frame(ctx, app, vec![]);
-            let position = app.variax().html_export_button.unwrap().center();
-            let button = |pressed| egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
+            let click = |app: &mut Workbench, position| {
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                frame(
+                    ctx,
+                    app,
+                    vec![egui::Event::PointerMoved(position), button(true)],
+                );
+                frame(ctx, app, vec![button(false)]);
+                frame(ctx, app, vec![]);
             };
-            frame(
-                ctx,
+            click(
                 app,
-                vec![egui::Event::PointerMoved(position), button(true)],
+                app.variax().slot_file_buttons["library-actions"].center(),
             );
-            frame(ctx, app, vec![button(false)]);
+            click(app, app.variax().html_export_button.unwrap().center());
         }
 
         let (ctx, mut app) = app();

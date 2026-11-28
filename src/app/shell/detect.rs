@@ -145,12 +145,14 @@ impl Workbench {
     }
 
     pub(super) fn detect_button(&mut self, ui: &mut egui::Ui, start_panel: bool) {
-        let response = chrome::toolbar_button(
-            ui,
-            "Detect devices",
-            self.detection.is_some(),
-            variax_workbench::offline_device_notice().unwrap_or(chrome::DETECTION_UNAVAILABLE),
-        );
+        let enabled = self.detection.is_some();
+        let reason =
+            variax_workbench::offline_device_notice().unwrap_or(chrome::DETECTION_UNAVAILABLE);
+        let response = if start_panel {
+            chrome::toolbar_button(ui, "Detect devices", enabled, reason)
+        } else {
+            super::toolbar_command(ui, "Detect devices", enabled).on_disabled_hover_text(reason)
+        };
         #[cfg(test)]
         {
             self.detection_buttons.insert(
@@ -165,8 +167,6 @@ impl Workbench {
                 self.detection_buttons.insert("start-detect", response.rect);
             }
         }
-        #[cfg(not(test))]
-        let _ = start_panel;
         if response.clicked() {
             self.detect_confirmation = Some(DetectConfirmation::Start);
         }

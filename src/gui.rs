@@ -1756,9 +1756,21 @@ mod tests {
     }
 
     fn click_device_check(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        if id == "open" {
+            click_toolbar_tools(context, app);
+        }
         recording_frame(context, app, vec![]);
         recording_frame(context, app, vec![]);
-        let pos = app.device_check_buttons[id].center();
+        click_recording_frame(context, app, app.device_check_buttons[id].center());
+    }
+
+    pub(super) fn click_toolbar_tools(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        recording_frame(context, app, vec![]);
+        click_recording_frame(context, app, app.recording_buttons["tools-menu"].center());
+    }
+
+    fn click_recording_frame(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
         recording_frame(
             context,
             app,
