@@ -2,7 +2,7 @@
 
 [#311 assignment](https://github.com/guirossibrum/VariaxWorkbench/issues/311#issuecomment-7224743104) · [Pinned desktop builds](spider-v30-static-trace.md#reproducible-binary-references) · [Preset codec](spider-v30-preset-format.md)
 
-This trace follows one non-HD amp model, `BlackfaceLux`, and its `Drive` control in Spider V Remote 2.01. Both desktop binary preset writers resolve the same model and control keys for product `0x220000` with the bundled Parker default symbol table. The effective device symbol table, firmware scaling and live-edit protocol remain open.
+This trace follows one non-HD amp model, `BlackfaceLux`, and its `Drive` control in Spider V Remote 2.01. Both desktop binary preset writers resolve the same model and control keys for product `0x220000` with the bundled Parker default symbol table. The standalone Drive edit also reaches a dedicated editor command on both platforms. The effective device symbol table and firmware scaling remain open.
 
 ## Product and catalogue guards
 
@@ -17,7 +17,7 @@ The Windows and macOS `amps.models` share the parsed `BlackfaceLux` record at ze
 
 ## Model and control representation
 
-**Family static units.** The `Drive` definition at `amps.models` → row 1 → `params[3]` has `valueType: 1`, bounds `0.0..1.0`, default `0.75` and no unit field. Windows `0x100a1fc0` and macOS `0x1000714a0` handle that catalogue type as a floating-point scalar and apply the configured bounds to numeric values. The desktop representation is dimensionless and normalized. Display scaling, firmware quantization and physical gain units remain open.
+**Family static units.** The `Drive` definition at `amps.models` → row 1 → `params[3]` has `valueType: 1`, bounds `0.0..1.0`, default `0.75` and no unit field. Windows `0x100a1fc0` and macOS `0x1000714a0` handle that catalogue type as a floating-point scalar and apply the configured bounds to numeric values. The desktop representation is dimensionless and normalized. The UI display range is documented below. Firmware quantization and physical gain units remain open.
 
 **Windows family preset-body path, applicable to the V30 product branch.** The full preset writer `0x1008e850` includes the `Amp` group (xref `0x1008efcd` → `0x10175904`). The product table selected by `0x10083aa0` for `0x220000..0x220005` maps `Amp` to the desktop `amp` object (row at VA `0x1018e4f0`). The group writer `0x1008e710` checks the group symbol before writing it. Its group-body writer `0x1008f7b0` reads `amp.@model` and resolves the model string in the supplied symbol table. A missing model returns an error before model emission. For ordinary control keys such as `Drive`, the catalogue-backed path validates the parameter and passes it to `0x1008e7b0` (call at `0x10090c80`). That function appends `State`, then requires an exact symbol match before producing a control record. Lookup `0x100ac660` uses the name's CRC-32 (`0x1009ddb0`) and then compares the name bytes, returning the zero-based index or `0xffffffff` on a miss.
 
@@ -49,7 +49,61 @@ The table compares the record fields in macOS with those in the landed Windows t
 | Set `DriveState` in the model record | 51 | 3 | Binary32 normalized value |
 | Close `Amp` | `0x80000004` | 0 | None |
 
-The static match covers this preset-body record sequence on both platforms. It leaves open the effective symbol table on a V30, the firmware's accepted range and gain mapping, and the bytes or opcodes used by a standalone model change or Drive edit on the wire. This checkpoint used the packaged resources and desktop code. An authentic V30 preset, device table and live capture are still needed to verify those claims.
+The static match covers the preset-body record sequence on both platforms. An authentic V30 preset is still needed for saved-file parity. Standalone model changes are outside the Drive trace below.
+
+## Standalone Drive edit
+
+Both copies of `AssetDefs.plist` bind the first control of `BlackfaceLux` to the
+engine parameter `Drive`. The row is
+`Categories[0].childCategories[1].assets[3].assetParameters[0]`. It describes a
+single continuous control with UI and engine ranges of `0..1`, a display
+range of `0..100`, no step constraint and no group override. The selected
+amp slot supplies the group `amp`. The display range comes from the UI
+resource. The value that reaches the editor command is the normalized
+binary32 scalar.
+
+| Stage | Windows Remote 2.01 | macOS Remote 2.01 |
+| --- | --- | --- |
+| Control to typed setter | In the UI PE, `SingleSlider.configure` loads the parameter's engine ID at `0x0041c7ac` and configures the control at `0x0041c849`. `ParamControlManager.sendValuesToEngine` calls the single-control sender at `0x0041b93f`. At `0x0041a7ac` that sender supplies the two configured keys and a float to `ParamValueServer.setFloatParamValue`. The server calls the CLI wrapper at `0x0040283b` (MemberRef `0x0a000063`). In the mixed-mode DLL, MethodDef `0x0600014d` calls `0x060000ff` at `0x100030f8`. Its native thunk at `0x10008118` jumps through IAT slot `0x1000905c` to the engine export `0x100b5520`. | `ParamControlView` dispatches drag and release through `0x1002b0e10` and `0x1002b0eb0`. The latter calls the throttled send routine `0x1002b19c0` at `0x1002b0f21`. Its single-control branch passes the configured group, parameter and typed value at `0x1002b1caf` to `0x1001c75e0`. The float case sends the Objective-C setter at `0x1001c78e2`. Engine initialization installs the delegate at `0x1000038a3`. The selector's `APIV3Engine` implementation `0x10000404d` calls the native setter at `0x1000040f8`. |
+| Native edit dispatch | The export calls `0x10024e20` at `0x100b5599`. The ordinary float path calls the editor table's `+0x7c` slot at `0x100250d6`. Table `0x10175270` resolves it to the forwarding stub `0x10075950`, then slot `+0x78` to `0x1007b120`. The ordinary parameter branch calls `0x1006e220` at `0x1007b46b`. A changed value that passes the host update goes to `0x10072fa0` at `0x1006f17c`. | Native setter `0x10007cef2` calls the ordinary parameter slot `+0xf8` at `0x10007d37f`. The editor table `0x10036b750` points to stub `0x100051954`, which jumps through `+0x100` to `0x100045b70`. The ordinary parameter branch calls `0x1000e1424` at `0x100045e05`. After the host update it calls the send helper `0x1000eca54` at `0x1000e1ed3`. |
+| Symbol lookup and scalar type | The send helper validates the model parameter through `0x100a1fc0`. The call at `0x1007433b` maps `amp` to `Amp` through the product row at `0x1018e4f0` and preserves `Drive`. At `0x1007437d` it passes the resulting names and value to `0x10097d40`. The two `0x100ac660` calls at `0x10097da4` and `0x10097dc3` read the editor service's table at object offset `+0x44`. Converter `0x10084a90` changes float variant 6 to editor scalar tag 4 and copies the value word. | The ordinary branch maps the same names via `0x1000ed632` to `0x10001ccc8` and the product row at `0x10036acd0`. The call at `0x1000ed672` enters `0x1000383ac`, then `0x10000b298`. Its calls at `0x10000b2eb` and `0x10000b2ff` use lookup `0x1000d2460` and the editor service's table at object offset `+0x70`. Converter `0x10000b380` produces the same tag 4 and copies the value word. |
+| Command and stream write | `0x10097df4` uses slot `+0x30`, which is `0x10176284` → `0x100999a0` in the `ToneMatchEdit_Remote` table. It passes command 10 and a 16-byte body to `0x100991b0` at `0x100999f9`. The header and body go to the configured editor port at `0x10099298` and `0x100992af` via slot `+0x14`. | `0x10000b33a` uses slot `+0x68`, which is `0x10036a0c8` → `0x1000152f6`. That stub clears the reply arguments and jumps to `0x100015248`. It passes command 10 and a 16-byte body to `0x100014a9c` at `0x100015288`. The header and body go to the configured editor port at `0x100014b7c` and `0x100014b96` via slot `+0x30`. |
+
+The command stream starts with two little-endian 32-bit words, opcode
+`0x0a` and body length `0x10`. The four little-endian 32-bit body words are the
+`Amp` symbol index, the `Drive` symbol index, scalar tag 4 and the binary32
+value bits, in that order. The two writes use the same port. The standalone
+control branch uses the variant without a synchronous reply wait. The
+alternate reply-wait entries are Windows `0x100998e0` and macOS
+`0x1000152a4`.
+
+For a multiplexed Parker client, the configured port's write forwards
+its registered client index and bytes to the Parker sender. The Windows
+client slot `0x10173694` → `0x10054370` calls mux slot `+0x10` at
+table base `0x101737ec`, which resolves to `0x10057810`. The macOS
+client slot `0x100369a88` → `0x10000dda8` calls mux slot `+0x28` at
+table base `0x10036d888`, which resolves to `0x1000be25a`. These are the
+[Parker framing routines](spider-v30-static-trace.md#parker-sysex-transport-and-lifecycle).
+The client forwarders take the port object and client index from the
+connection. The Parker senders pack each write under SysEx class `0x4d`
+and hand the frame to the underlying port at Windows `0x100579c0` (slot
+`+0x40`) or macOS `0x1000be39f` (slot `+0x98`). This trace ends at those
+virtual port calls. It leaves the join from the attached editor service
+to a particular client registration and physical endpoint open. The
+sequence byte comes from the connection state.
+
+The TRTG preset writer uses the caller-supplied preset table, an explicit
+`BlackfaceLux` model record and the `DriveState` parameter key with record
+type 3. The live command uses the active editor service table, `Drive`
+and scalar tag 4. Only the symbolic lookup and the normalized value
+representation are shared. With the packaged Parker default the names in
+the live command would resolve to 42 and 38. This is a conditional lookup
+result. The binary follows a service-owned pointer and rejects missing names,
+so the actual indices require the effective table from the attached V30.
+The device-side handler for this command has yet to be traced. A device
+handler or a correlated capture is needed to verify accepted values and
+quantization. A firmware mapping or measurement is needed to establish any
+physical gain unit.
 
 ## Reproduce offline
 
@@ -66,3 +120,22 @@ Use the existing extraction under `backups/spider-v30-audit-311.OIUQg5qW/` in th
 3. Run `python3 scripts/verify_spider_amp_symbols.py -v`. Seven synthetic checks cover catalogue filtering, CRC collisions and exact names, malformed symbol records, the state-suffix lookup, and literal group/model/scalar record bytes. The fixture uses invented names and a fabricated scalar.
 
 The follow-on verified both executable hashes and all five resource hashes above. Four local data checks replayed the catalogue join, all 910 Parker symbol records and the macOS CRC table, the two macOS selector rows, and the relative calls on the writer path.
+
+For the live edit, verify all four executable hashes in the pinned builds
+table. The UI resource SHA-256 values are
+`a5c1bbe71a701a58db25eb4865d0032bcd87089bdf5cefa00334d8ebebbf76f6` for
+Windows `AssetDefs.plist` beside the executable, and
+`2eca985ebe359ff2de607af3441d05f58ac6022eb71dee5026251bba48fad7f1` for
+macOS `Contents/Resources/AssetDefs.plist`. Read the two managed PE
+MethodDef/MemberRef tables through Ghidra's CLR metadata parser, then decode
+the IL using the MethodDef RVAs. For the mixed-mode thunk, read the
+six bytes at RVA `0x8118` and resolve its IAT slot against the import
+directory. On macOS, use the Objective-C method list to resolve the
+selector implementation and inspect the float argument in the listing.
+Use Ghidra's listing and decompiler on the native call sites above and
+read the virtual entries as pointers at the listed image bases. Raw IL,
+disassembly and analysis logs are retained in the ignored local backups.
+
+The live checkpoint verified four executable and seven resource hashes.
+Five local checks replayed the two UI rows, the conditional symbol lookup,
+the mixed-mode thunk import, and the two native call and dispatch joins.
