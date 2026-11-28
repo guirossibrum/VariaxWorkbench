@@ -11,6 +11,7 @@ pub(super) const WINDOW_ID: &str = "device-connections";
 pub enum Action {
     EnterWorkbench,
     EditOffline,
+    OpenEditor(Attachment),
     OpenOfflineEditor(&'static str),
     Retry(Attachment),
     AllowDownload(Attachment),
@@ -43,7 +44,7 @@ pub fn show_startup(
                     vec2(width, height + theme::TARGET + theme::SPACE_16),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        let action = show_rows(ui, connections, height, &mut paint_artwork, false);
+                        let action = show_rows(ui, connections, height, &mut paint_artwork, true);
                         ui.add_space(theme::SPACE_8);
                         let offline = ui.add(action_button("Edit offline")).clicked();
                         if offline {
@@ -69,10 +70,14 @@ pub fn show(
     now: Instant,
     mut paint_artwork: impl FnMut(&egui::Ui, &'static str, Rect) -> bool,
 ) -> Option<Action> {
+    let was_hidden = connections.progress_hidden();
     if let Some(delay) = connections.advance(now) {
         ctx.request_repaint_after(delay);
     }
-    if !connections.visible {
+    if was_hidden && !connections.visible {
+        ctx.request_repaint();
+    }
+    if !connections.visible || connections.hidden {
         return None;
     }
 
@@ -102,7 +107,7 @@ pub fn show(
     let rendered = window.show(ctx, |ui| {
         ui.set_width(width);
         ui.spacing_mut().item_spacing.y = theme::SPACE_8;
-        let action = show_rows(ui, connections, max_rows_height, &mut paint_artwork, true);
+        let action = show_rows(ui, connections, max_rows_height, &mut paint_artwork, false);
         ui.separator();
         ui.allocate_ui_with_layout(
             vec2(ui.available_width(), theme::TARGET),
@@ -115,8 +120,16 @@ pub fn show(
                             Status::Checking | Status::Waiting | Status::Reading { .. }
                         )
                     });
-                let close = ui.add_enabled(!busy, action_button("Close"));
-                (action, close.clicked())
+                let mut close = false;
+                if busy && connections.background {
+                    if ui.add(action_button("Hide progress")).clicked() {
+                        connections.hidden = true;
+                        ctx.request_repaint();
+                    }
+                } else {
+                    close = ui.add_enabled(!busy, action_button("Close")).clicked();
+                }
+                (action, close)
             },
         )
         .inner
@@ -143,21 +156,21 @@ fn show_rows(
     connections: &Connections,
     height: f32,
     paint_artwork: &mut impl FnMut(&egui::Ui, &'static str, Rect) -> bool,
-    offline_in_summary: bool,
+    startup: bool,
 ) -> Option<Action> {
     egui::ScrollArea::vertical()
         .id_salt("connection-rows")
         .max_height(height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            let mut action = detection_summary(ui, connections, offline_in_summary);
+            let mut action = detection_summary(ui, connections, !startup);
             for diagnostic in &connections.diagnostics {
                 ui.label(RichText::new(diagnostic).color(theme::DANGER));
             }
             for row in connections.shown_rows() {
                 let row_action = ui
                     .push_id(row.attachment.device, |ui| {
-                        device_row(ui, row, paint_artwork)
+                        device_row(ui, row, paint_artwork, startup)
                     })
                     .inner;
                 action = action.or(row_action);
@@ -202,6 +215,7 @@ fn device_row(
     ui: &mut egui::Ui,
     row: &Row,
     paint_artwork: &mut impl FnMut(&egui::Ui, &'static str, Rect) -> bool,
+    startup: bool,
 ) -> Option<Action> {
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::same(12))
@@ -237,7 +251,7 @@ fn device_row(
                     if row.reconnected && row.status != Status::Disconnected {
                         ui.label("Reconnected after disconnect");
                     }
-                    row_status(ui, row)
+                    row_status(ui, row, startup)
                 })
                 .inner
             })
@@ -246,7 +260,7 @@ fn device_row(
         .inner
 }
 
-fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
+fn row_status(ui: &mut egui::Ui, row: &Row, startup: bool) -> Option<Action> {
     match &row.status {
         Status::Checking => ui.label("Checking connection…"),
         Status::Connected => ui.label("Library sync has not started"),
@@ -281,10 +295,10 @@ fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
                 .inner;
         }
         Status::Skipped(reason) => ui.label(*reason),
-        Status::Waiting => return waiting(ui, row),
+        Status::Waiting => return waiting(ui, row, startup),
         Status::Reading { done, total, .. } => {
             if row.wait_reason.is_some() {
-                return waiting(ui, row);
+                return waiting(ui, row, false);
             }
             ui.label(format!("Model Sync {done} of {total}"));
             ui.add(
@@ -294,7 +308,11 @@ fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
             );
             return cancel(ui, row);
         }
-        Status::Complete => ui.label("Model Sync Complete"),
+        Status::Complete => {
+            ui.label("Model Sync Complete");
+            return (startup && ui.add(action_button("Open editor")).clicked())
+                .then_some(Action::OpenEditor(row.attachment));
+        }
         Status::Failed(reason) => {
             ui.label(RichText::new("Sync failed").color(theme::DANGER));
             ui.label(reason);
@@ -308,13 +326,18 @@ fn row_status(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
     None
 }
 
-fn waiting(ui: &mut egui::Ui, row: &Row) -> Option<Action> {
+fn waiting(ui: &mut egui::Ui, row: &Row, can_skip: bool) -> Option<Action> {
     if let Some(resource) = row.wait_reason {
         ui.label(format!("Waiting to sync · {resource}"));
     } else {
         ui.label("Waiting to sync");
     }
-    cancel(ui, row)
+    ui.horizontal_wrapped(|ui| {
+        let action = cancel(ui, row);
+        let skip = can_skip && ui.add(action_button("Skip")).clicked();
+        action.or(skip.then_some(Action::SkipDownload(row.attachment)))
+    })
+    .inner
 }
 
 fn cancel(ui: &mut egui::Ui, row: &Row) -> Option<Action> {

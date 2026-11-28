@@ -685,6 +685,11 @@ impl Workbench {
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_4);
+                        if self.connections.progress_hidden()
+                            && command_button(ui, "Show sync progress", true).clicked()
+                        {
+                            self.connections.show_progress();
+                        }
                         self.with_active(|entry, _| {
                             if entry.editor.busy() {
                                 ui.spinner();
@@ -935,6 +940,18 @@ impl Workbench {
             ctx.request_repaint();
         }
         match action {
+            Action::OpenEditor(attachment) => {
+                if self.startup_connection
+                    && !self.has_prompt()
+                    && !self.permit_close
+                    && let Some(tab) = self.completed_connection_tab(attachment)
+                {
+                    self.tabs.active = Some(tab);
+                    self.startup_connection = false;
+                    self.connections.continue_in_background();
+                    ctx.request_repaint();
+                }
+            }
             Action::EnterWorkbench => {}
             Action::EditOffline => self.tabs.active = None,
             Action::OpenOfflineEditor(editor) => {

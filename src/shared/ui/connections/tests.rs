@@ -616,3 +616,54 @@ fn startup_advances_only_after_all_supported_reads_finish_and_completion_is_visi
         Some(Action::EnterWorkbench)
     );
 }
+
+#[test]
+fn hidden_background_progress_auto_closes_after_checked_success() {
+    let mut connections = Connections::default();
+    connections.detection(Detection::Complete);
+    connections.arrived(POD, pod());
+    connections.verified(POD, Verification::Verified);
+    let read = started(&mut connections, POD, 128);
+    connections.continue_in_background();
+    connections.hidden = true;
+    assert!(connections.progress_hidden());
+
+    let now = Instant::now();
+    connections.progress(read, 128);
+    assert_eq!(connections.advance(now), None);
+    assert!(connections.progress_hidden());
+    connections.finished(read, Ok(()));
+    assert_eq!(connections.advance(now), Some(COMPLETE_PAUSE));
+    assert_eq!(connections.advance(now + COMPLETE_PAUSE), None);
+    assert!(!connections.progress_hidden());
+    assert!(!connections.visible);
+}
+
+#[test]
+fn hidden_background_progress_surfaces_failure_and_disconnect() {
+    for disconnected in [false, true] {
+        let mut connections = Connections::default();
+        connections.detection(Detection::Complete);
+        connections.arrived(POD, pod());
+        connections.verified(POD, Verification::Verified);
+        let read = started(&mut connections, POD, 128);
+        connections.continue_in_background();
+        connections.hidden = true;
+
+        if disconnected {
+            connections.disconnected(POD);
+            connections.finished(read, Ok(()));
+            assert_eq!(status(&connections, POD), &Status::Disconnected);
+        } else {
+            connections.finished(read, Err("Checked release failed".into()));
+            assert_eq!(
+                status(&connections, POD),
+                &Status::Failed("Checked release failed".into())
+            );
+        }
+
+        assert!(!connections.progress_hidden());
+        assert_eq!(connections.advance(Instant::now() + COMPLETE_PAUSE), None);
+        assert!(connections.visible);
+    }
+}

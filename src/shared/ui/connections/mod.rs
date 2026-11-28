@@ -93,6 +93,8 @@ pub struct Connections {
     rows: Vec<Row>,
     diagnostics: Vec<String>,
     visible: bool,
+    hidden: bool,
+    background: bool,
     manual_close: bool,
     completed_read: bool,
     close_at: Option<Instant>,
@@ -205,6 +207,10 @@ impl Connections {
     }
 
     pub fn waiting_for_editor(&mut self, attachment: Attachment) {
+        self.waiting_for_resource(attachment, "the editor’s current operation");
+    }
+
+    pub fn waiting_for_resource(&mut self, attachment: Attachment, resource: &'static str) {
         if let Some(row) = self.row_mut(attachment)
             && matches!(
                 row.status,
@@ -212,7 +218,7 @@ impl Connections {
             )
         {
             row.status = Status::Waiting;
-            row.wait_reason = Some("the editor’s current operation");
+            row.wait_reason = Some(resource);
         }
     }
 
@@ -248,6 +254,7 @@ impl Connections {
         {
             row.wait_reason = None;
             row.status = Status::Failed(reason);
+            self.hidden = false;
         }
     }
 
@@ -294,7 +301,7 @@ impl Connections {
     /// Success means the caller has accepted the full library result.
     /// A stall or cancellation can be reported as a failed read.
     pub fn finished(&mut self, read: Read, result: Result<(), String>) {
-        let completed_read = self.visible && result.is_ok();
+        let succeeded = result.is_ok();
         let Some(row) = self.reading_mut(read) else {
             return;
         };
@@ -303,7 +310,10 @@ impl Connections {
             Ok(()) => Status::Complete,
             Err(reason) => Status::Failed(reason),
         };
-        self.completed_read |= completed_read;
+        self.completed_read |= self.visible && succeeded;
+        if !succeeded {
+            self.hidden = false;
+        }
     }
 
     /// A UI request has no read authority. The caller accepts it after
@@ -373,6 +383,7 @@ impl Connections {
     }
 
     fn open(&mut self) {
+        self.hidden = false;
         if !self.visible {
             self.visible = true;
             self.manual_close = false;
@@ -390,8 +401,28 @@ impl Connections {
         self.close_at = None;
     }
 
+    pub fn is_complete(&self, attachment: Attachment) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.attachment == attachment && row.status == Status::Complete)
+    }
+
+    pub fn continue_in_background(&mut self) {
+        self.background = true;
+    }
+
+    pub fn progress_hidden(&self) -> bool {
+        self.visible && self.hidden
+    }
+
+    pub fn show_progress(&mut self) {
+        self.hidden = false;
+    }
+
     pub fn dismiss(&mut self) {
         self.visible = false;
+        self.hidden = false;
+        self.background = false;
         self.close_at = None;
         self.diagnostics.clear();
     }
