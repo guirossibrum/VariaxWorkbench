@@ -501,7 +501,11 @@ impl Workbench {
                 i.key_pressed(egui::Key::Questionmark) && !ctx.wants_keyboard_input(),
             )
         });
-        if !self.has_prompt() {
+        // The focused text edit owns its keyboard history.
+        let editing_text = ctx
+            .memory(|memory| memory.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+        if !self.has_prompt() && !editing_text {
             if open {
                 self.request_editor_open(ctx);
             }
@@ -536,11 +540,12 @@ impl Workbench {
         if quit || ctx.input(|i| i.viewport().close_requested()) {
             self.request_close(ctx);
         }
-        let variax_active = self
+        let active_family = self
             .tabs
             .active
             .and_then(|id| self.tabs.index(id))
-            .is_some_and(|index| self.tabs.entries[index].family.info().id == "variax");
+            .map(|index| self.tabs.entries[index].family.info().id);
+        let variax_active = active_family == Some("variax");
         // The first frame needs room for wrapped commands before the panel has a saved height.
         egui::TopBottomPanel::top("header")
             .resizable(false)
@@ -563,10 +568,10 @@ impl Workbench {
                     }
                     if self.has_prompt() {
                         ui.add_enabled_ui(false, |ui| {
-                            self.editor_commands(ui, ctx, variax_active);
+                            self.editor_commands(ui, ctx, active_family);
                         });
                     } else {
-                        self.editor_commands(ui, ctx, variax_active);
+                        self.editor_commands(ui, ctx, active_family);
                     }
                     if variax_active {
                         let tools = ui.menu_button("Tools", |ui| {
@@ -811,23 +816,11 @@ impl Workbench {
                             .color(theme::TEXT),
                     );
                     ui.separator();
+                    ui.heading("Keyboard shortcuts");
+                    shortcut_help(ui, active_family);
+                    ui.separator();
                     for &family in registry::FAMILIES {
                         family.help(ui);
-                    }
-                    ui.separator();
-                    ui.heading("Keyboard shortcuts");
-                    for (key, action) in [
-                        ("Ctrl+O", "Open file in a new tab"),
-                        ("Ctrl+S", "Save a new copy"),
-                        ("Ctrl+Z", "Undo"),
-                        ("Ctrl+Shift+Z", "Redo"),
-                        ("Ctrl+Q", "Quit"),
-                        ("?", "Toggle Help"),
-                    ] {
-                        ui.horizontal(|ui| {
-                            ui.monospace(key);
-                            ui.label(action);
-                        });
                     }
                 });
         }
@@ -840,7 +833,25 @@ impl Workbench {
         self.poll_picker(ctx);
     }
 
-    fn editor_commands(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, variax_active: bool) {
+    fn editor_commands(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, family: Option<&str>) {
+        let variax_active = family == Some("variax");
+        if matches!(family, Some("variax" | "podxt")) {
+            let enabled = !self.picker.is_open()
+                && self
+                    .tabs
+                    .active
+                    .and_then(|id| self.tabs.index(id))
+                    .is_some_and(|index| {
+                        let editor = &self.tabs.entries[index].editor;
+                        !editor.busy() && !editor.blocking_prompt()
+                    });
+            if toolbar_command(ui, "Open…", enabled)
+                .on_hover_text("Open a file in this editor")
+                .clicked()
+            {
+                self.request_editor_open(ctx);
+            }
+        }
         if variax_active {
             self.with_active(|entry, services| {
                 let editor = (&mut *entry.editor as &mut dyn std::any::Any)
@@ -848,9 +859,6 @@ impl Workbench {
                     .expect("Variax tab has a Variax editor");
                 let enabled =
                     !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt();
-                if toolbar_command(ui, "Open…", enabled).clicked() {
-                    editor.open_dialog(ctx, services);
-                }
                 let can_save = enabled && editor.has_document();
                 if toolbar_command(ui, "Save", can_save).clicked() {
                     editor.save_file(ctx, services, false);
@@ -859,8 +867,9 @@ impl Workbench {
                     editor.save_copy(ctx, services);
                 }
             });
-        } else if self.tabs.active.is_some()
-            && toolbar_command(ui, "Open file…", !self.picker.is_open()).clicked()
+        }
+        if family.is_some()
+            && toolbar_command(ui, "Open in new tab…", !self.picker.is_open()).clicked()
         {
             self.request_open_file(ctx);
         }
@@ -874,7 +883,8 @@ impl Workbench {
                 return;
             }
             if !variax_active {
-                if toolbar_command(ui, "Save copy…", enabled).clicked() {
+                if family != Some("podxt") && toolbar_command(ui, "Save copy…", enabled).clicked()
+                {
                     entry.editor.save_copy(ctx, services);
                 }
                 // Keep the other family editors' actions together.
@@ -1221,6 +1231,59 @@ fn chrome_family(id: &str) -> chrome::Family {
         "variax" => chrome::Family::Variax,
         "podxt" => chrome::Family::Podxt,
         _ => chrome::Family::Hd,
+    }
+}
+
+fn shortcut_help(ui: &mut egui::Ui, family: Option<&str>) {
+    let command = if ui.ctx().os().is_mac() {
+        "Cmd"
+    } else {
+        "Ctrl"
+    };
+    let open = match family {
+        Some("variax") => "Open a file in the active Variax editor",
+        Some("podxt") => "Open a tone or bank in the active PODxt editor",
+        _ => "Open a file in a new tab",
+    };
+    let mut rows = vec![(format!("{command}+O"), open)];
+    match family {
+        Some("variax") => rows.extend([
+            (format!("{command}+S"), "Save the active Variax file"),
+            (
+                format!("{command}+Shift+S"),
+                "Save the active Variax file as a new copy",
+            ),
+        ]),
+        Some("podxt") => rows.push((
+            format!("{command}+S or {command}+Shift+S"),
+            "Save a new copy of the PODxt file selection",
+        )),
+        Some(_) => rows.push((
+            format!("{command}+S or {command}+Shift+S"),
+            "Save a new copy of the active file",
+        )),
+        None => {}
+    }
+    if family.is_some() {
+        let (undo, redo) = if family == Some("podxt") {
+            ("Undo a PODxt file edit", "Redo a PODxt file edit")
+        } else {
+            ("Undo an editor change", "Redo an editor change")
+        };
+        rows.extend([
+            (format!("{command}+Z"), undo),
+            (format!("{command}+Shift+Z"), redo),
+        ]);
+    }
+    rows.extend([
+        ("Ctrl+Q".into(), "Quit"),
+        ("?".into(), "Toggle Help when no control has keyboard focus"),
+    ]);
+    for (key, action) in rows {
+        ui.horizontal_wrapped(|ui| {
+            ui.monospace(key);
+            ui.label(action);
+        });
     }
 }
 

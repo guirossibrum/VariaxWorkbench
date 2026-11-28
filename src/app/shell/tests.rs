@@ -458,39 +458,37 @@ fn wrapped_status_does_not_grow_over_successive_frames() {
     );
 }
 
+fn shortcut_input(ctx: &egui::Context, key: egui::Key, shift: bool) -> egui::RawInput {
+    let mac = ctx.os().is_mac();
+    let modifiers = egui::Modifiers {
+        command: true,
+        ctrl: !mac,
+        mac_cmd: mac,
+        shift,
+        ..Default::default()
+    };
+    egui::RawInput {
+        modifiers,
+        events: [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .collect(),
+        ..layout_input(1120.0, 760.0, 1.0)
+    }
+}
+
+fn shortcut(ctx: &egui::Context, app: &mut Workbench, key: egui::Key, shift: bool) {
+    let _ = ctx.run(shortcut_input(ctx, key, shift), |ctx| app.render(ctx));
+}
+
 #[test]
 fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterward() {
-    fn shortcut(ctx: &egui::Context, app: &mut Workbench, key: egui::Key, shift: bool) {
-        let modifiers = egui::Modifiers {
-            command: true,
-            shift,
-            ..Default::default()
-        };
-        let _ = ctx.run(
-            egui::RawInput {
-                modifiers,
-                events: vec![
-                    egui::Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed: true,
-                        repeat: false,
-                        modifiers,
-                    },
-                    egui::Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed: false,
-                        repeat: false,
-                        modifiers,
-                    },
-                ],
-                ..Default::default()
-            },
-            |ctx| app.render(ctx),
-        );
-    }
-
     let ctx = egui::Context::default();
     let mut app = empty_shell(&ctx);
     let directory = tempfile::tempdir().unwrap();
@@ -545,51 +543,214 @@ fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterwar
     assert!(!app.tabs.entries[0].editor.dirty());
 }
 
+fn shell_command_positions(ctx: &egui::Context, app: &mut Workbench) -> Vec<(String, egui::Rect)> {
+    let mut output = egui::FullOutput::default();
+    for _ in 0..2 {
+        output = ctx.run(layout_input(1120.0, 760.0, 1.0), |ctx| app.render(ctx));
+    }
+    let header = egui::containers::panel::PanelState::load(ctx, egui::Id::new("header"))
+        .unwrap()
+        .rect;
+    painted_text(&output)
+        .into_iter()
+        .filter(|(_, rect)| header.contains(rect.center()))
+        .collect()
+}
+
+fn click_shell_command(ctx: &egui::Context, app: &mut Workbench, label: &str) {
+    let pos = shell_command_positions(ctx, app)
+        .into_iter()
+        .find(|(text, _)| text == label)
+        .unwrap_or_else(|| panic!("missing shell command {label}"))
+        .1
+        .center();
+    for pressed in [true, false] {
+        let mut input = layout_input(1120.0, 760.0, 1.0);
+        input.events = vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ];
+        let _ = ctx.run(input, |ctx| app.render(ctx));
+    }
+}
+
 #[test]
-fn podxt_open_command_replaces_the_document_in_the_same_tab() {
+fn podxt_visible_open_and_shortcut_share_the_editor_and_new_tab_is_separate() {
     let ctx = egui::Context::default();
     let mut app = empty_shell(&ctx);
     app.new_tab(&super::podxt_panel::FAMILY);
     let original = app.tabs.active;
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("Replacement.l6t");
-    fs::write(&path, sample_pod_tone()).unwrap();
+    let visible = directory.path().join("Visible.l6t");
+    let keyboard = directory.path().join("Keyboard.l6t");
+    let new_tab = directory.path().join("Another.vwm");
+    for path in [&visible, &keyboard] {
+        fs::write(path, sample_pod_tone()).unwrap();
+    }
+    fs::write(&new_tab, GUITAR).unwrap();
     app.dialogs = Box::new(FakeDialogs {
-        pod_open: [Some(path.clone())].into(),
+        pod_open: [Some(visible.clone()), Some(keyboard.clone())].into(),
+        open: [Some(new_tab.clone())].into(),
         ..Default::default()
     });
-    let modifiers = egui::Modifiers {
-        command: true,
-        ctrl: true,
-        ..Default::default()
-    };
-    let _ = ctx.run(
-        egui::RawInput {
-            modifiers,
-            events: vec![egui::Event::Key {
-                key: egui::Key::O,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers,
-            }],
-            ..Default::default()
-        },
-        |ctx| app.render(ctx),
-    );
-    app.poll_picker(&ctx);
+    let commands = shell_command_positions(&ctx, &mut app);
+    assert!(commands.iter().all(|(text, _)| text != "Save copy…"));
+
+    click_shell_command(&ctx, &mut app, "Open…");
     assert_eq!(app.tabs.active, original);
     assert_eq!(app.tabs.entries.len(), 1);
     assert_eq!(
         app.tabs.entries[0].editor.source_path(),
-        Some(path.as_path())
+        Some(visible.as_path())
     );
-    assert!(app.tabs.entries[0].title().ends_with("Replacement.l6t"));
+
+    ctx.set_os(egui::os::OperatingSystem::Mac);
+    shortcut(&ctx, &mut app, egui::Key::O, false);
+    assert_eq!(app.tabs.active, original);
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert_eq!(
+        app.tabs.entries[0].editor.source_path(),
+        Some(keyboard.as_path())
+    );
+
+    click_shell_command(&ctx, &mut app, "Open in new tab…");
+    assert_eq!(app.tabs.entries.len(), 2);
+    assert_ne!(app.tabs.active, original);
+    assert_eq!(
+        app.tabs.entries[0].editor.source_path(),
+        Some(keyboard.as_path())
+    );
+    assert_eq!(
+        app.tabs.entries[1].editor.source_path(),
+        Some(new_tab.as_path())
+    );
+}
+
+#[test]
+fn podxt_save_shortcuts_use_the_existing_copy_workflow() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    let directory = tempfile::tempdir().unwrap();
+    let original = directory.path().join("Original.l6t");
+    let bytes = sample_pod_tone();
+    fs::write(&original, &bytes).unwrap();
+    app.dialogs = Box::new(FakeDialogs {
+        open: [Some(original.clone())].into(),
+        ..Default::default()
+    });
+    app.open_file_dialog();
+
+    let copy = directory.path().join("Copy.l6t");
+    let shifted = directory.path().join("Shifted.l6t");
+    app.dialogs = Box::new(FakeDialogs {
+        pod_save: [Some(copy.clone()), Some(shifted.clone())].into(),
+        ..Default::default()
+    });
+    shortcut(&ctx, &mut app, egui::Key::S, false);
+    shortcut(&ctx, &mut app, egui::Key::S, true);
+    for path in [&original, &copy, &shifted] {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(
+        app.tabs.entries[0].editor.source_path(),
+        Some(original.as_path())
+    );
+}
+
+#[test]
+fn shell_shortcuts_leave_focused_text_and_document_edits_alone() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(registry::LEGACY_STARTUP);
+    let tab = app.tabs.active.unwrap();
+    guitar_editor(&mut app, tab, "Document edit");
+    let title = app.tabs.entries[0].title();
+    app.dialogs = Box::new(FakeDialogs::default());
+    let id = egui::Id::new("shell-test-text");
+    let mut text = String::new();
+    let mut frame = |input| {
+        let _ = ctx.run(input, |ctx| {
+            app.render(ctx);
+            egui::Window::new("Text entry").show(ctx, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut text).id(id));
+            });
+        });
+    };
+    frame(layout_input(1120.0, 760.0, 1.0));
+    ctx.memory_mut(|memory| memory.request_focus(id));
+    let mut typed = layout_input(1120.0, 760.0, 1.0);
+    typed.events.push(egui::Event::Text("Typed text".into()));
+    frame(typed);
+    for (key, shift) in [
+        (egui::Key::O, false),
+        (egui::Key::S, false),
+        (egui::Key::Z, false),
+    ] {
+        frame(shortcut_input(&ctx, key, shift));
+        assert_eq!(ctx.memory(|memory| memory.focused()), Some(id));
+    }
+    assert!(text.is_empty(), "the focused text edit should receive Undo");
+    assert!(app.tabs.entries[0].editor.dirty());
+    assert_eq!(app.tabs.entries[0].title(), title);
+    assert!(!app.picker.is_open());
+}
+
+#[test]
+fn shortcut_help_tracks_the_active_editor_and_platform() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(registry::LEGACY_STARTUP);
+    let variax = app.tabs.active;
+    app.new_tab(&super::podxt_panel::FAMILY);
+    let podxt = app.tabs.active;
+    app.help = true;
+    for (tab, platform, expected, excluded) in [
+        (
+            variax,
+            egui::os::OperatingSystem::Nix,
+            [
+                "Ctrl+O",
+                "Open a file in the active Variax editor",
+                "Save the active Variax file as a new copy",
+            ],
+            "Save a new copy of the PODxt file selection",
+        ),
+        (
+            podxt,
+            egui::os::OperatingSystem::Mac,
+            [
+                "Cmd+O",
+                "Open a tone or bank in the active PODxt editor",
+                "Save a new copy of the PODxt file selection",
+            ],
+            "Save the active Variax file as a new copy",
+        ),
+    ] {
+        app.tabs.active = tab;
+        ctx.set_os(platform);
+        // The first frame measures the window before settling its size.
+        let _ = ctx.run(layout_input(1120.0, 760.0, 1.0), |ctx| app.render(ctx));
+        let output = ctx.run(layout_input(1120.0, 760.0, 1.0), |ctx| app.render(ctx));
+        let texts = painted_text(&output);
+        for label in expected {
+            assert!(
+                texts.iter().any(|(text, _)| text == label),
+                "missing {label}"
+            );
+        }
+        assert!(texts.iter().all(|(text, _)| text != excluded));
+    }
 }
 
 const SHELL_COMMANDS: &[&str] = &[
     "Open file…",
     "Open…",
+    "Open in new tab…",
     "Save",
     "Save As…",
     "Save copy…",
@@ -812,6 +973,7 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
                         let required: &[&str] = if editor {
                             &[
                                 "Open…",
+                                "Open in new tab…",
                                 "Save",
                                 "Save As…",
                                 "New offline tab",
