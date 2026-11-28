@@ -6,6 +6,7 @@ use podxt::{
 use podxt::{EditorEdit, WholeToneSource};
 
 const EDIT_INTERVAL: Duration = Duration::from_millis(150);
+const UNDO_PENDING: &str = "Undo pending while the live control change finishes";
 // #222's full-payload transfer has a separate first-run decision.
 const WHOLE_TONE_SEND_APPROVED: bool = false;
 
@@ -14,6 +15,7 @@ pub(super) struct LiveEditor {
     session: Option<ActiveEdit>,
     worker: Option<EditWorker>,
     pending: Pending,
+    queued_undo: Option<QueuedUndo>,
     whole_tone_backup: Option<VerifiedToneBackup>,
     stage_only: bool,
     needs_get: bool,
@@ -24,6 +26,8 @@ pub(super) struct LiveEditor {
     fake_get: bool,
     #[cfg(test)]
     fake_recall: Option<tests::FakeRecall>,
+    #[cfg(test)]
+    fake_edit: Option<tests::FakeEdit>,
 }
 
 impl Default for LiveEditor {
@@ -33,6 +37,7 @@ impl Default for LiveEditor {
             session: None,
             worker: None,
             pending: Pending::default(),
+            queued_undo: None,
             whole_tone_backup: None,
             stage_only: true,
             needs_get: false,
@@ -43,6 +48,8 @@ impl Default for LiveEditor {
             fake_get: false,
             #[cfg(test)]
             fake_recall: None,
+            #[cfg(test)]
+            fake_edit: None,
         }
     }
 }
@@ -50,6 +57,11 @@ impl Default for LiveEditor {
 struct ActiveEdit {
     original: EditorBuffer,
     current: EditorBuffer,
+}
+
+struct QueuedUndo {
+    device: detection::DeviceKey,
+    snapshot: EditorBuffer,
 }
 
 #[derive(Default)]
@@ -80,7 +92,7 @@ impl Pending {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Get,
     Controls,
@@ -305,8 +317,11 @@ fn platform_edit(
             )
         },
         |rig, run| {
-            if matches!(job.action, Action::Recall(_)) {
-                with_recall_link(device, rig, stop, run)
+            if matches!(
+                job.action,
+                Action::Recall(_) | Action::Controls | Action::Undo
+            ) {
+                with_checked_edit_link(device, rig, stop, run)
             } else {
                 with_platform_link(device, rig, run)
             }
@@ -315,7 +330,7 @@ fn platform_edit(
 }
 
 #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
-fn with_recall_link(
+fn with_checked_edit_link(
     device: &detection::DeviceKey,
     rig: &line6_devices::device_lock::DeviceLock,
     stop: &AtomicBool,
@@ -394,6 +409,7 @@ impl LiveEditor {
         self.needs_get = false;
         self.last_dispatch = None;
         self.message = None;
+        self.cancel_queued_undo("The PODxt Live attachment changed.");
     }
 
     #[cfg(test)]
@@ -444,6 +460,10 @@ impl LiveEditor {
             .recall_confirmation
             .as_ref()
             .is_some_and(|(_, confirmation)| !confirmation.matches_playing(&buffer));
+        let changed_during_undo = self.queued_undo.is_some()
+            && self.session.as_ref().is_none_or(|active| {
+                active.current.channel != buffer.channel || active.current.tone != buffer.tone
+            });
         self.completed(Action::Get, Ok(buffer));
         if expired {
             self.recall_confirmation = None;
@@ -452,6 +472,14 @@ impl LiveEditor {
             ));
         } else {
             self.message = None;
+        }
+        if changed_during_undo {
+            self.cancel_queued_undo("The playing tone changed.");
+            // The in-flight result predates the newly observed tone.
+            if let Some(worker) = &mut self.worker {
+                worker.device = None;
+                worker.stop.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -494,6 +522,14 @@ impl LiveEditor {
             }
     }
 
+    fn admits(&self, action: Action) -> bool {
+        let available = platform_available();
+        #[cfg(test)]
+        let available = available
+            || self.fake_edit.is_some() && matches!(action, Action::Controls | Action::Undo);
+        Self::admitted_on(available, action)
+    }
+
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
         self.start_job(action, device, ctx, None);
     }
@@ -508,7 +544,7 @@ impl LiveEditor {
         let admitted = if action == Action::Get {
             self.can_get()
         } else {
-            Self::admitted(action)
+            self.admits(action)
         };
         #[cfg(test)]
         let admitted = admitted
@@ -563,6 +599,11 @@ impl LiveEditor {
         let fake_recall = self
             .fake_recall
             .filter(|_| matches!(action, Action::Recall(_)));
+        #[cfg(test)]
+        let fake_edit = self
+            .fake_edit
+            .clone()
+            .filter(|_| matches!(action, Action::Controls | Action::Undo));
         let thread = std::thread::Builder::new()
             .name("podxt-edit-buffer".into())
             .spawn(move || {
@@ -573,6 +614,8 @@ impl LiveEditor {
                         tests::fake_get(&job, &worker_stop)
                     } else if let Some(scenario) = fake_recall {
                         tests::fake_recall(scenario, &job, &worker_stop)
+                    } else if let Some(fake_edit) = fake_edit {
+                        fake_edit.run(&job, &worker_stop)
                     } else {
                         run()
                     }
@@ -618,7 +661,7 @@ impl LiveEditor {
                 }
                 active.current = buffer;
                 self.needs_get = false;
-                self.message = match action {
+                let message = match action {
                     Action::Controls => None,
                     Action::Get => Some(format!(
                         "Edit buffer read from {}.",
@@ -630,6 +673,10 @@ impl LiveEditor {
                     Action::ResendWholeTone => Some("Whole tone sent and read back.".into()),
                 }
                 .map(Ok);
+                // Keep any queued Undo cancellation visible after Controls completes.
+                if action != Action::Controls {
+                    self.message = message;
+                }
                 Some(&active.current)
             }
             Err(error) => {
@@ -708,13 +755,18 @@ impl LiveEditor {
                     self.message = Some(result.map(|_| String::new()));
                     return None;
                 }
-                return self.complete_job(
-                    worker.action,
-                    device,
-                    worker.stop.load(Ordering::Acquire),
-                    result,
-                );
+                let stopped = worker.stop.load(Ordering::Acquire);
+                let verified = self
+                    .complete_job(worker.action, device, stopped, result)
+                    .is_some();
+                self.finish_queued_undo(device, read_idle, ctx, stopped, verified);
+                return if verified {
+                    self.session.as_ref().map(|active| &active.current)
+                } else {
+                    None
+                };
             }
+            self.cancel_queued_undo("The PODxt Live attachment changed.");
         }
         if let Some(device) =
             device.filter(|_| read_idle && !self.stage_only && !self.pending.0.is_empty())
@@ -727,6 +779,96 @@ impl LiveEditor {
             }
         }
         None
+    }
+
+    fn finish_queued_undo(
+        &mut self,
+        device: &detection::DeviceKey,
+        read_idle: bool,
+        ctx: &egui::Context,
+        stopped: bool,
+        verified: bool,
+    ) {
+        let Some(undo) = self.queued_undo.take() else {
+            return;
+        };
+        let failure = if stopped {
+            Some("The control operation was cancelled.")
+        } else if self.reply_pending.load(Ordering::Acquire) {
+            Some(PENDING_REPLY)
+        } else if !verified {
+            self.status_text()
+                .or(Some("The control operation could not be verified."))
+        } else if undo.device != *device {
+            Some("The PODxt Live attachment changed.")
+        } else if !self.session.as_ref().is_some_and(|active| {
+            active.current.channel == undo.snapshot.channel
+                && active.original.channel == undo.snapshot.channel
+                && active.original.tone == undo.snapshot.tone
+        }) {
+            Some("The playing channel or Undo snapshot changed.")
+        } else if !read_idle || self.stage_only || !self.admits(Action::Undo) {
+            Some("The Live editor is no longer ready.")
+        } else {
+            None
+        };
+        if let Some(reason) = failure {
+            self.message = Some(Err(format!("Undo cancelled. {reason}")));
+        } else if self.can_undo() {
+            self.start(Action::Undo, device, ctx);
+        } else if self
+            .session
+            .as_ref()
+            .is_some_and(|active| active.current.tone == undo.snapshot.tone)
+        {
+            self.message = Some(Ok("No live edits to restore.".into()));
+        } else {
+            self.message = Some(Err(
+                "Undo cancelled. The playing tone has differences Undo cannot restore.".into(),
+            ));
+        }
+    }
+
+    fn cancel_queued_undo(&mut self, reason: &str) {
+        if self.queued_undo.take().is_some() {
+            self.message = Some(Err(format!("Undo cancelled. {reason}")));
+        }
+    }
+
+    fn can_request_undo(&self, device: &detection::DeviceKey) -> bool {
+        self.recall_ready()
+            && !self.reply_pending.load(Ordering::Acquire)
+            && self.admits(Action::Undo)
+            && self.queued_undo.is_none()
+            && match self.worker.as_ref() {
+                Some(worker) => {
+                    !self.stage_only
+                        && worker.action == Action::Controls
+                        && worker.device.as_ref() == Some(device)
+                        && !worker.stop.load(Ordering::Acquire)
+                }
+                None => self.can_undo() || !self.stage_only && self.has_pending(),
+            }
+    }
+
+    fn request_undo(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
+        if !self.can_request_undo(device) {
+            return;
+        }
+        self.clear_recall_confirmation();
+        self.pending.0.clear();
+        if self.worker.is_some() {
+            let active = self.session.as_ref().expect("Undo request has a snapshot");
+            self.queued_undo = Some(QueuedUndo {
+                device: device.clone(),
+                snapshot: active.original.clone(),
+            });
+            ctx.request_repaint();
+        } else if self.can_undo() {
+            self.start(Action::Undo, device, ctx);
+        } else {
+            self.message = Some(Ok("Pending live edits discarded.".into()));
+        }
     }
 
     fn can_undo(&self) -> bool {
@@ -768,7 +910,7 @@ impl LiveEditor {
         }
     }
 
-    fn keep_playing(&mut self) {
+    fn cancel_switch(&mut self) {
         self.clear_recall_confirmation();
         self.message = Some(Ok("Kept the playing tone.".into()));
     }
@@ -811,17 +953,17 @@ impl LiveEditor {
         }
         let target = confirmation.target();
         ui.label(format!(
-            "The playing tone differs from saved channel {}. Recall {} and discard any unsaved changes on the PODxt?",
+            "The playing tone differs from saved channel {}. Switch to {} and discard unsaved changes on the PODxt?",
             confirmation.playing().channel.label(),
             target.label(),
         ));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Keep playing tone").clicked() {
-                self.keep_playing();
+            if ui.button("Cancel switch").clicked() {
+                self.cancel_switch();
             } else if ui
                 .add_enabled(
                     idle && Self::admitted(Action::Recall(target)),
-                    egui::Button::new(format!("Discard and recall {}", target.label())),
+                    egui::Button::new(format!("Switch to {} and discard changes", target.label())),
                 )
                 .clicked()
                 && let Some(confirmation) = self.take_recall_confirmation(device)
@@ -886,14 +1028,12 @@ impl LiveEditor {
             .is_none_or(|model| value(model) == model.read(&active.current.tone))
     }
 
-    pub(super) fn live_edit_admitted() -> bool {
-        Self::admitted(Action::Controls)
-    }
-
     pub(super) fn stage_editable(&self) -> bool {
         self.session.is_some()
             && !self.needs_get
-            && Self::live_edit_admitted()
+            && self.queued_undo.is_none()
+            && !self.reply_pending.load(Ordering::Acquire)
+            && self.admits(Action::Controls)
             && self
                 .worker
                 .as_ref()
@@ -946,25 +1086,31 @@ impl LiveEditor {
             && self.worker.is_none()
             && self.session.is_some()
             && !self.needs_get;
-        for (action, title, enabled) in [
-            (Action::Send, "Apply to playing tone", self.has_pending()),
-            (Action::Undo, "Undo live edits", self.can_undo()),
-        ] {
-            let response = ui.add_enabled(
-                ready && enabled && Self::admitted(action),
-                egui::Button::new(title),
-            );
-            let response = if action == Action::Send {
-                let help = "Apply staged edits to the playing edit buffer. Store to POD… saves to a hardware channel.";
-                response.on_hover_text(help).on_disabled_hover_text(help)
-            } else {
-                response
-            };
-            if response.clicked()
-                && let Some(device) = device
-            {
-                self.start(action, device, ui.ctx());
-            }
+        let help = "Apply staged edits to the playing edit buffer. Store to POD… saves to a hardware channel.";
+        if ui
+            .add_enabled(
+                ready && self.has_pending() && Self::admitted(Action::Send),
+                egui::Button::new("Apply to playing tone"),
+            )
+            .on_hover_text(help)
+            .on_disabled_hover_text(help)
+            .clicked()
+            && let Some(device) = device
+        {
+            self.start(Action::Send, device, ui.ctx());
+        }
+        if ui
+            .add_enabled(
+                idle && device.is_some_and(|device| self.can_request_undo(device)),
+                egui::Button::new("Undo live edits"),
+            )
+            .clicked()
+            && let Some(device) = device
+        {
+            self.request_undo(device, ui.ctx());
+        }
+        if self.queued_undo.is_some() && ui.button("Cancel pending Undo").clicked() {
+            self.cancel_queued_undo("The pending restore was cancelled.");
         }
         if self.stage_only && self.has_pending() && ui.button("Discard staged edits").clicked() {
             self.discard_staged();
@@ -978,6 +1124,9 @@ impl LiveEditor {
     }
 
     pub(super) fn status_text(&self) -> Option<&str> {
+        if self.queued_undo.is_some() {
+            return Some(UNDO_PENDING);
+        }
         self.progress_label().or_else(|| {
             self.message.as_ref().map(|result| match result {
                 Ok(message) | Err(message) => message.as_str(),
@@ -986,7 +1135,9 @@ impl LiveEditor {
     }
 
     pub(super) fn status(&self, ui: &mut egui::Ui) {
-        if let Some(label) = self.progress_label() {
+        if self.queued_undo.is_some() {
+            ui.weak(format!("{UNDO_PENDING}…"));
+        } else if let Some(label) = self.progress_label() {
             ui.weak(format!("{label}…"));
         } else if let Some(message) = &self.message {
             match message {

@@ -457,8 +457,18 @@ fn live_sidebar_protects_unsaved_tone_after_an_unobserved_device_save() {
     rendered(
         &ctx,
         &mut app,
-        &["No channel switch was sent.", "Discard and recall 1B"],
+        &[
+            "No channel switch was sent.",
+            "Switch to 1B and discard changes",
+        ],
     );
+    click_text(&ctx, &mut app, "Cancel switch");
+    let panel = &app.podxt().live;
+    assert!(!panel.editor.awaiting_recall_confirmation());
+    assert!(!panel.editor.busy());
+    assert_eq!(panel.playing_channel(), Some(source));
+    assert_eq!(panel.snapshot.tone.as_ref(), Some(&cached_source));
+    assert_eq!(panel.device_requests, requests + 1);
 }
 
 #[test]

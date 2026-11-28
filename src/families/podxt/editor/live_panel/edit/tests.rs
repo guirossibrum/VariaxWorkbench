@@ -563,7 +563,7 @@ fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
         assert!(!editor.needs_refresh());
         assert_eq!(editor.awaiting_recall_confirmation(), !stopped);
         if !stopped {
-            editor.keep_playing();
+            editor.cancel_switch();
         }
         assert!(editor.take_recall_confirmation(&device).is_none());
         assert!(!editor.busy());
@@ -578,8 +578,8 @@ fn clean_refusal_keeps_controls_ready_and_keep_or_cancel_never_dispatches() {
     panel.live_editing = true;
     panel.startup = None;
     let text = super::super::tests::stage_frame(&ctx, &mut app);
-    assert!(text.contains("Keep playing tone"), "{text}");
-    assert!(text.contains("Discard and recall 1B"), "{text}");
+    assert!(text.contains("Cancel switch"), "{text}");
+    assert!(text.contains("Switch to 1B and discard changes"), "{text}");
     assert!(!text.lines().any(|line| line == "Read playing tone"));
     assert!(!text.lines().any(|line| line == "Reconnect"));
 }
@@ -673,7 +673,7 @@ fn failed_release_or_unverified_switch_needs_refresh_and_keeps_staged_values() {
     panel.startup = None;
     let text = super::super::tests::stage_frame(&ctx, &mut app);
     assert_eq!(text.lines().filter(|line| *line == "Reconnect").count(), 1);
-    assert!(!text.contains("Discard and recall"), "{text}");
+    assert!(!text.contains("and discard changes"), "{text}");
 }
 
 #[test]
@@ -765,4 +765,382 @@ fn automatic_edits_hide_progress_and_success_but_keep_errors_visible() {
     assert_eq!(editor.status_text(), None);
     editor.completed(Action::Controls, Err("Device update failed.".into()));
     assert_eq!(editor.status_text(), Some("Device update failed."));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlResult {
+    Verified,
+    BadReadback,
+    CloseFailed,
+    PendingReply,
+    ChannelChanged,
+    ChannelChangedBeforeUndo,
+}
+
+#[derive(Clone)]
+pub(super) struct FakeEdit {
+    outcome: ControlResult,
+    actions: Arc<Mutex<Vec<Action>>>,
+    readback_done: std::sync::mpsc::Sender<()>,
+    release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl FakeEdit {
+    pub(super) fn run(&self, job: &Job, stop: &AtomicBool) -> Result<EditOutcome, String> {
+        let held = Cell::new(false);
+        let writes = Cell::new(0);
+        let current = job.current.as_ref().unwrap();
+        let original = job.original.as_ref().unwrap();
+        let control = job.action == Action::Controls;
+        let channel = |index| {
+            (
+                PodxtRequest::QueryGlobal(Global::CurrentChannel),
+                vec![0xf0, 0, 1, 0x0c, 3, 0x56, 17, 0, 0, 0, index, 0xf7],
+            )
+        };
+        let before_channel = if !control && self.outcome == ControlResult::ChannelChangedBeforeUndo
+        {
+            4
+        } else {
+            3
+        };
+        let mut script = VecDeque::from([
+            (
+                PodxtRequest::Identity,
+                variax_workbench::identity_stage::bridge_reply(),
+            ),
+            channel(before_channel),
+        ]);
+        if before_channel == 3 {
+            let value = if control {
+                assert_eq!(job.targets, [drive(45)]);
+                45
+            } else {
+                assert_eq!(job.action, Action::Undo);
+                assert!(job.targets.is_empty());
+                original.tone.cc(13)
+            };
+            let readback = if control && self.outcome == ControlResult::BadReadback {
+                43
+            } else {
+                value
+            };
+            let after_channel = if control && self.outcome == ControlResult::ChannelChanged {
+                4
+            } else {
+                3
+            };
+            script.extend([
+                (PodxtRequest::EditBuffer, current.tone.raw.clone()),
+                channel(3),
+                (
+                    PodxtRequest::Set(Control::Drive, Value::new(value).unwrap()),
+                    Vec::new(),
+                ),
+                (PodxtRequest::EditBuffer, sample(readback, 3).tone.raw),
+                channel(after_channel),
+            ]);
+        }
+
+        let result = edit_transaction(
+            job,
+            stop,
+            || {
+                assert!(!held.replace(true));
+                Ok(FakeLock(&held))
+            },
+            |_, run| {
+                let expected_actions = if control {
+                    vec![]
+                } else {
+                    vec![Action::Controls]
+                };
+                assert!(*self.actions.lock().unwrap() == expected_actions);
+                let result = run(&mut FakeLink {
+                    held: &held,
+                    script,
+                    reply: None,
+                    time: &Cell::new(Duration::ZERO),
+                    writes: &writes,
+                });
+                if control {
+                    self.readback_done.send(()).unwrap();
+                    self.release
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                    if self.outcome == ControlResult::PendingReply {
+                        job.reply_pending.store(true, Ordering::Release);
+                    }
+                }
+                self.actions.lock().unwrap().push(job.action);
+                if control && self.outcome == ControlResult::CloseFailed {
+                    Err("Checked release failed.".into())
+                } else {
+                    result
+                }
+            },
+        );
+        assert_eq!(writes.get(), if before_channel == 3 { 7 } else { 2 });
+        assert!(!held.get());
+        result
+    }
+}
+
+struct UndoFixture {
+    editor: LiveEditor,
+    device: detection::DeviceKey,
+    ctx: egui::Context,
+    readback_done: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+    actions: Arc<Mutex<Vec<Action>>>,
+}
+
+impl UndoFixture {
+    fn new(outcome: ControlResult) -> Self {
+        let ctx = egui::Context::default();
+        let (app, _) = super::super::tests::connected_fixture(&ctx);
+        let device = app.podxt().live.device.clone().unwrap();
+        let (readback, readback_done) = std::sync::mpsc::channel();
+        let (release, finish) = std::sync::mpsc::channel();
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let mut editor = LiveEditor {
+            fake_edit: Some(FakeEdit {
+                outcome,
+                actions: Arc::clone(&actions),
+                readback_done: readback,
+                release: Arc::new(Mutex::new(finish)),
+            }),
+            ..Default::default()
+        };
+        editor.completed(Action::Get, Ok(sample(20, 3)));
+        editor.set_live(true);
+        Self {
+            editor,
+            device,
+            ctx,
+            readback_done,
+            release,
+            actions,
+        }
+    }
+
+    fn queue_undo_while_controls_run(&mut self) {
+        self.editor.queue_stage_target(drive(45), &self.ctx);
+        self.editor.poll(Some(&self.device), true, &self.ctx);
+        self.readback_done
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        self.editor.queue_stage_target(drive(60), &self.ctx);
+        assert!(self.editor.can_request_undo(&self.device));
+        self.editor.request_undo(&self.device, &self.ctx);
+        assert!(!self.editor.has_pending());
+        assert!(
+            self.editor
+                .status_text()
+                .unwrap()
+                .starts_with("Undo pending")
+        );
+        assert!(!self.editor.can_request_undo(&self.device));
+        self.editor.request_undo(&self.device, &self.ctx);
+        self.editor.queue_stage_target(drive(70), &self.ctx);
+        assert!(
+            !self.editor.has_pending(),
+            "controls cannot queue behind Undo"
+        );
+        assert!(
+            self.editor
+                .poll(Some(&self.device), true, &self.ctx)
+                .is_none()
+        );
+        assert!(
+            self.actions.lock().unwrap().is_empty(),
+            "no Undo before checked release"
+        );
+    }
+
+    fn poll_finished(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self
+            .editor
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.thread.as_ref().unwrap().is_finished())
+        {
+            assert!(Instant::now() < deadline, "fake editor worker timed out");
+            std::thread::yield_now();
+        }
+        self.editor.poll(Some(&self.device), true, &self.ctx);
+    }
+
+    fn assert_actions(&self, expected: &[Action]) {
+        assert!(*self.actions.lock().unwrap() == expected);
+    }
+}
+
+#[test]
+fn undo_discards_unsent_live_targets_without_sending_or_applying_staged_edits() {
+    let mut fixture = UndoFixture::new(ControlResult::Verified);
+    let editor = &mut fixture.editor;
+    editor.queue_stage_target(drive(60), &fixture.ctx);
+    editor.request_undo(&fixture.device, &fixture.ctx);
+    assert!(!editor.has_pending());
+    assert!(!editor.busy());
+    editor.poll(Some(&fixture.device), true, &fixture.ctx);
+    assert_eq!(
+        editor.session.as_ref().unwrap().current.tone,
+        sample(20, 3).tone
+    );
+
+    editor.set_live(false);
+    editor.queue_stage_target(drive(60), &fixture.ctx);
+    assert!(!editor.can_request_undo(&fixture.device));
+    editor.request_undo(&fixture.device, &fixture.ctx);
+    assert_eq!(editor.pending.0, [drive(60)]);
+    assert!(editor.worker.is_none());
+    fixture.assert_actions(&[]);
+}
+
+#[test]
+fn queued_undo_runs_once_after_the_control_readback_and_checked_release() {
+    let mut fixture = UndoFixture::new(ControlResult::Verified);
+    fixture.queue_undo_while_controls_run();
+    fixture.release.send(()).unwrap();
+    fixture.poll_finished();
+    assert!(fixture.editor.worker.as_ref().unwrap().action == Action::Undo);
+    fixture.poll_finished();
+    assert_eq!(
+        fixture.editor.status_text(),
+        Some("Original snapshot verified byte for byte.")
+    );
+    assert_eq!(
+        fixture.editor.session.as_ref().unwrap().current.tone,
+        sample(20, 3).tone
+    );
+    assert!(!fixture.editor.busy());
+    fixture.assert_actions(&[Action::Controls, Action::Undo]);
+}
+
+#[test]
+fn queued_undo_drops_after_unverified_controls_or_ambiguous_reply() {
+    for (outcome, reason) in [
+        (ControlResult::BadReadback, "read back"),
+        (ControlResult::CloseFailed, "Checked release failed"),
+        (ControlResult::PendingReply, "reply may still be pending"),
+        (ControlResult::ChannelChanged, "playing channel changed"),
+    ] {
+        let mut fixture = UndoFixture::new(outcome);
+        fixture.queue_undo_while_controls_run();
+        fixture.release.send(()).unwrap();
+        fixture.poll_finished();
+        let status = fixture.editor.status_text().unwrap();
+        assert!(
+            status.starts_with("Undo cancelled.") && status.contains(reason),
+            "{status}"
+        );
+        assert!(!fixture.editor.busy());
+        assert!(!fixture.editor.can_request_undo(&fixture.device));
+        fixture.assert_actions(&[Action::Controls]);
+    }
+}
+
+#[test]
+fn queued_undo_rechecks_the_playing_channel_before_restore_writes() {
+    let mut fixture = UndoFixture::new(ControlResult::ChannelChangedBeforeUndo);
+    fixture.queue_undo_while_controls_run();
+    fixture.release.send(()).unwrap();
+    fixture.poll_finished();
+    fixture.poll_finished();
+    assert!(
+        fixture
+            .editor
+            .status_text()
+            .unwrap()
+            .contains("playing channel changed")
+    );
+    assert!(fixture.editor.needs_refresh());
+    fixture.assert_actions(&[Action::Controls, Action::Undo]);
+}
+
+#[test]
+fn queued_undo_is_cleared_on_attachment_change_or_cancel() {
+    for detach in [true, false] {
+        let mut fixture = UndoFixture::new(ControlResult::Verified);
+        fixture.queue_undo_while_controls_run();
+        if detach {
+            fixture.editor.cancel();
+            fixture.editor.detach_attachment();
+        } else {
+            fixture
+                .editor
+                .cancel_queued_undo("The pending restore was cancelled.");
+            assert!(
+                !fixture
+                    .editor
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .stop
+                    .load(Ordering::Acquire)
+            );
+        }
+        fixture.release.send(()).unwrap();
+        fixture.poll_finished();
+        assert!(
+            fixture
+                .editor
+                .status_text()
+                .unwrap()
+                .starts_with("Undo cancelled.")
+        );
+        assert!(!fixture.editor.busy());
+        if !detach {
+            assert_eq!(
+                fixture.editor.session.as_ref().unwrap().current.tone,
+                sample(45, 3).tone
+            );
+        }
+        fixture.assert_actions(&[Action::Controls]);
+    }
+}
+
+#[test]
+fn undo_never_queues_behind_non_control_jobs() {
+    let mut fixture = UndoFixture::new(ControlResult::Verified);
+    for action in [
+        Action::Get,
+        Action::Send,
+        Action::ResendWholeTone,
+        Action::Undo,
+        Action::Recall(sample(20, 3).channel),
+    ] {
+        fixture.editor.worker = Some(EditWorker {
+            action,
+            device: Some(fixture.device.clone()),
+            stop: Arc::default(),
+            targets: Vec::new(),
+            thread: None,
+        });
+        fixture.editor.request_undo(&fixture.device, &fixture.ctx);
+        assert!(fixture.editor.queued_undo.is_none());
+    }
+}
+
+#[test]
+fn queued_undo_expires_when_a_fresh_read_updates_the_snapshot() {
+    let mut fixture = UndoFixture::new(ControlResult::Verified);
+    fixture.queue_undo_while_controls_run();
+    let other_channel = sample(87, 4);
+    fixture.editor.accept_follow(other_channel.clone());
+    fixture.release.send(()).unwrap();
+    fixture.poll_finished();
+    assert_eq!(
+        fixture.editor.status_text(),
+        Some("Undo cancelled. The playing tone changed.")
+    );
+    let active = fixture.editor.session.as_ref().unwrap();
+    assert_eq!(active.current.channel, other_channel.channel);
+    assert_eq!(active.original.tone, other_channel.tone);
+    fixture.assert_actions(&[Action::Controls]);
 }
